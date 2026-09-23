@@ -1,0 +1,3 @@
+# Local development only (git-ignored). Copy to .dev.vars.
+COOKIE_SECURE=false
+ANTHROPIC_API_KEY=sk-ant-...

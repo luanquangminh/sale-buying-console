@@ -1,0 +1,3 @@
+INVOICE 3200
+FMCG TRADING LTD -> Acme Foods Ltd
+E2E fixture: attached as the INV document on PFI 3200.

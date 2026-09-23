@@ -1,0 +1,61 @@
+// Copy to wrangler.jsonc and fill in your own Cloudflare ids. wrangler.jsonc is git-ignored.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "sale-buying-console",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-08-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/mcp", "/mcp/*", "/.well-known/*"]
+  },
+  "observability": { "enabled": true },
+  "ai": { "binding": "AI" },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "console-db",
+      "database_id": "<d1-database-id from: wrangler d1 create console-db>",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "console-files" }],
+  "vars": {
+    "COOKIE_SECURE": "true",
+    "AI_PROVIDER": "workers-ai",
+    "WORKERS_AI_TEXT_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "WORKERS_AI_VISION_MODEL": "@cf/meta/llama-4-scout-17b-16e-instruct",
+    "ANTHROPIC_MODEL": "claude-opus-5",
+    "GEMINI_MODEL": "gemini-2.5-flash"
+  },
+  // Staging: same code, its own Worker name, D1 and R2. Build with CLOUDFLARE_ENV=staging (npm run deploy:staging).
+  // Wrangler environments do not inherit bindings or vars, so they are repeated here.
+  "env": {
+    "staging": {
+      "name": "sale-buying-console-staging",
+      "assets": {
+        "not_found_handling": "single-page-application",
+        "run_worker_first": ["/api/*", "/mcp", "/mcp/*", "/.well-known/*"]
+      },
+      "observability": { "enabled": true },
+      "ai": { "binding": "AI" },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "console-db-staging",
+          "database_id": "<d1-database-id from: wrangler d1 create console-db-staging>",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [{ "binding": "FILES", "bucket_name": "console-files-staging" }],
+      "vars": {
+        "COOKIE_SECURE": "true",
+        "AI_PROVIDER": "workers-ai",
+        "WORKERS_AI_TEXT_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "WORKERS_AI_VISION_MODEL": "@cf/meta/llama-4-scout-17b-16e-instruct",
+        "ANTHROPIC_MODEL": "claude-opus-5",
+        "GEMINI_MODEL": "gemini-2.5-flash"
+      }
+    }
+  }
+}

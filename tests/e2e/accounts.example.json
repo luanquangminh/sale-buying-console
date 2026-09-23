@@ -1,0 +1,22 @@
+{
+  "admin": {
+    "username": "admin",
+    "password": "changeme",
+    "name": "Administrator"
+  },
+  "sale": {
+    "username": "rep-username",
+    "password": "rep-password",
+    "name": "Rep Full Name"
+  },
+  "buyer": {
+    "username": "buyer-username",
+    "password": "buyer-password",
+    "name": "Buyer Name"
+  },
+  "warehouse": {
+    "username": "warehouse-username",
+    "password": "warehouse-password",
+    "name": "Warehouse Name"
+  }
+}

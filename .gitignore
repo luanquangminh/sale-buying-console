@@ -1,0 +1,16 @@
+node_modules
+dist
+.wrangler
+.dev.vars
+*.local
+worker-configuration.d.ts
+.DS_Store
+backups
+test-results
+playwright-report
+CLAUDE.md
+wrangler.jsonc
+tests/e2e/accounts.json
+scripts/verify-*.mjs
+scripts/shot-*.mjs
+scripts/check-real-data.mjs

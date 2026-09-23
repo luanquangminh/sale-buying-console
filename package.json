@@ -1,0 +1,43 @@
+{
+  "name": "sale-buying-console",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "vite build && wrangler d1 migrations apply console-db --remote && wrangler deploy",
+    "deploy:staging": "CLOUDFLARE_ENV=staging vite build && wrangler d1 migrations apply console-db-staging --remote --env staging && wrangler deploy",
+    "backup": "bash scripts/backup-d1.sh",
+    "types": "wrangler types",
+    "db:migrate:local": "wrangler d1 migrations apply console-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply console-db --remote",
+    "test": "vitest run",
+    "e2e": "playwright test",
+    "e2e:staging": "E2E_BASE_URL=${E2E_STAGING_URL:?set E2E_STAGING_URL to your staging URL} playwright test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.127.0",
+    "@hono/mcp": "^0.3.2",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "hono": "^4.13.8",
+    "lucide-react": "^1.47.0",
+    "pdfjs-dist": "^6.3.289",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.56.0",
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260920.1",
+    "@playwright/test": "^1.63.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "pdf-lib": "^1.17.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.135.0"
+  }
+}
