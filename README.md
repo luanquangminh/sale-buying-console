@@ -22,7 +22,7 @@ Accounts straight away. Create Sale, Buyer, Admin and Warehouse logins there.
 npx vitest run                                              # Workers runtime: API, sync, roles, helpers
 cp tests/e2e/accounts.example.json tests/e2e/accounts.json  # logins of the environment under test (git-ignored)
 E2E_BASE_URL=http://localhost:5173 npm run e2e              # Playwright, against `npm run dev`
-E2E_STAGING_URL=https://<your-staging> npm run e2e:staging
+E2E_STAGING_URL=https://<your-staging> E2E_ACCOUNTS=accounts.staging.json npm run e2e:staging
 BASE=http://localhost:5173 node scripts/explore-e2e.mjs     # wider exploratory pass
 ```
 

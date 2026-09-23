@@ -11,6 +11,8 @@ playwright-report
 CLAUDE.md
 wrangler.jsonc
 tests/e2e/accounts.json
+tests/e2e/accounts.*.json
+!tests/e2e/accounts.example.json
 scripts/verify-*.mjs
 scripts/shot-*.mjs
 scripts/check-real-data.mjs
