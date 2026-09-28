@@ -1355,3 +1355,116 @@ test("suppliers: edit renames the supplier on its POs; delete waits until its PO
   await expect(page.locator(".supplier-row")).toHaveCount(others);
   await expect(supRow(NEW)).toHaveCount(0);
 });
+
+test("payment tracking: admin adds, ticks, edits and deletes payments; overdue rows stand out; other roles never see the tab", async ({ page }) => {
+  const iso = (offsetDays: number) => { const d = new Date(); d.setDate(d.getDate() + offsetDays); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const dmy = (offsetDays: number) => { const [y, m, d] = iso(offsetDays).split("-"); return `${d}/${m}/${y}`; };
+  const typeDate = async (field: ReturnType<Page["locator"]>, value: string) => { const box = field.locator('.date-field input[type="text"]'); await box.fill(value); await box.press("Enter"); };
+
+  for (const who of [A.sale, A.buyer, A.warehouse]) {
+    await signIn(page, who.username, who.password);
+    await expect(page.locator(".side-item", { hasText: "Payment tracking" })).toHaveCount(0);
+    const state = await page.evaluate(async () => (await fetch("/api/state")).json());
+    expect(state.slices.paymentTracks).toEqual([]);
+  }
+
+  await signIn(page, A.admin.username, A.admin.password);
+  await side(page, "Payment tracking").click();
+  const row = (inv: string) => page.locator("tr.pay-row", { hasText: inv });
+  for (const inv of ["E2E-INV-1", "E2E-INV-2", "E2E-INV-2B"]) {
+    while (await row(inv).count()) {
+      await row(inv).first().getByTitle("Delete payment").click();
+      await page.locator(".confirm-strip").getByRole("button", { name: "Yes, delete" }).click();
+    }
+  }
+  const before = await page.locator("tr.pay-row").count();
+
+  // Add: every field of the request, the customer picked from the suggestions.
+  await page.getByRole("button", { name: "Add payment" }).click();
+  const form = page.locator(".add-form").first();
+  const field = (label: string) => form.locator(".form-grid > div", { has: page.locator("label", { hasText: new RegExp(`^${label}$`) }) });
+  await expect(form.locator(".form-grid > div > label:first-child")).toHaveText(["Customer", "INV", "Loading date", "ETA", "Currency", "Amount", "Due date", "Container on hold"]);
+  await expect(form.getByRole("button", { name: "Save payment" })).toBeDisabled();
+  await field("Customer").locator("input").fill("acme");
+  await page.locator(".suggest-panel .suggest-option", { hasText: "Acme Foods Ltd" }).click();
+  await field("INV").locator("input").fill("E2E-INV-1");
+  await typeDate(field("Loading date"), dmy(-20));
+  await typeDate(field("ETA"), dmy(8));
+  await field("Currency").locator("select").selectOption("GBP");
+  await field("Amount").locator("input").fill("12500.5");
+  await typeDate(field("Due date"), dmy(-3)); // three days late
+  await field("Container on hold").locator('input[type="checkbox"]').check();
+  await form.getByRole("button", { name: "Save payment" }).click();
+
+  await page.getByRole("button", { name: "Add payment" }).click();
+  await field("Customer").locator("input").fill("E2E Walk-in Trading"); // not in the customer list: still accepted
+  await field("INV").locator("input").fill("E2E-INV-2");
+  await field("Amount").locator("input").fill("800");
+  await typeDate(field("Due date"), dmy(10));
+  await form.getByRole("button", { name: "Save payment" }).click();
+  await expect(page.locator("tr.pay-row")).toHaveCount(before + 2);
+
+  // The table: one column per field, plus Paid and the status.
+  await expect(page.locator(".pay-track-table thead th")).toHaveText(["Customer", "INV", "Loading date", "ETA", "Currency", "Amount", "Due date", "Container on hold", "Paid", "Status", ""]);
+  const cells = row("E2E-INV-1").locator("td");
+  await expect(cells.nth(0)).toHaveText("Acme Foods Ltd");
+  await expect(cells.nth(2)).toHaveText(dmy(-20));
+  await expect(cells.nth(3)).toHaveText(dmy(8));
+  await expect(cells.nth(4)).toHaveText("GBP");
+  await expect(cells.nth(5)).toHaveText("£12,500.50");
+  await expect(cells.nth(6)).toHaveText(dmy(-3));
+  await expect(cells.nth(7).locator("input")).toBeChecked();
+  await expect(cells.nth(8).locator("input")).not.toBeChecked();
+  await expect(cells.nth(9)).toHaveText(/overdue 3 days/i);
+  await expect(row("E2E-INV-1")).toHaveClass(/is-overdue/);
+  await expect(cells.nth(0)).toHaveCSS("background-color", "rgb(255, 241, 239)");
+  await expect(row("E2E-INV-2").locator("td").nth(9)).toHaveText(/due in 10 days/i);
+  await expect(row("E2E-INV-2")).not.toHaveClass(/is-overdue/);
+  await expect(row("E2E-INV-2").locator("td").nth(7).locator("input")).not.toBeChecked();
+
+  // Ticks work from the row: paid clears the overdue mark, the container comes off hold.
+  await cells.nth(8).locator("input").check();
+  await expect(cells.nth(9)).toHaveText(/^paid$/i);
+  await expect(row("E2E-INV-1")).not.toHaveClass(/is-overdue/);
+  await cells.nth(7).locator("input").uncheck();
+  await expect(cells.nth(7)).toContainText("No");
+  await cells.nth(8).locator("input").uncheck();
+  await expect(cells.nth(9)).toHaveText(/overdue 3 days/i);
+
+  // Edit: Cancel keeps the row, Save changes it.
+  await row("E2E-INV-2").getByTitle("Edit payment").click();
+  const edit = page.locator("tr.pay-edit-row");
+  const editField = (label: string) => edit.locator(".form-grid > div", { has: page.locator("label", { hasText: new RegExp(`^${label}$`) }) });
+  await expect(editField("INV").locator("input")).toHaveValue("E2E-INV-2");
+  await editField("Amount").locator("input").fill("1");
+  await edit.getByRole("button", { name: "Cancel" }).click();
+  await expect(row("E2E-INV-2").locator("td").nth(5)).toHaveText("$800.00");
+  await row("E2E-INV-2").getByTitle("Edit payment").click();
+  await editField("INV").locator("input").fill("E2E-INV-2B");
+  await editField("Amount").locator("input").fill("950.25");
+  await editField("Currency").locator("select").selectOption("EUR");
+  await typeDate(editField("Due date"), dmy(0));
+  await edit.getByRole("button", { name: "Save", exact: true }).click();
+  const edited = row("E2E-INV-2B").locator("td");
+  await expect(edited.nth(5)).toHaveText("€950.25");
+  await expect(edited.nth(9)).toHaveText(/due today/i);
+
+  // Find, reload, delete.
+  await page.locator(".overview-bar input").fill("walk-in");
+  await expect(page.locator("tr.pay-row")).toHaveCount(1);
+  await page.locator(".overview-bar input").fill("");
+  await page.waitForTimeout(1200);
+  await page.reload();
+  await side(page, "Payment tracking").click();
+  await expect(row("E2E-INV-1").locator("td").nth(9)).toHaveText(/overdue 3 days/i);
+  await expect(row("E2E-INV-2B").locator("td").nth(5)).toHaveText("€950.25");
+  for (const inv of ["E2E-INV-1", "E2E-INV-2B"]) {
+    await row(inv).getByTitle("Delete payment").click();
+    await page.locator(".confirm-strip").getByRole("button", { name: "Cancel" }).click();
+    await expect(row(inv)).toHaveCount(1);
+    await row(inv).getByTitle("Delete payment").click();
+    await page.locator(".confirm-strip").getByRole("button", { name: "Yes, delete" }).click();
+    await expect(row(inv)).toHaveCount(0);
+  }
+  await expect(page.locator("tr.pay-row")).toHaveCount(before);
+});

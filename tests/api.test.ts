@@ -203,6 +203,29 @@ describe("a rep's own notes on a customer", () => {
   });
 });
 
+describe("payment tracking", () => {
+  it("round-trips for admin and stays away from every other role", async () => {
+    const { cookie: admin } = await login();
+    const accounts = [
+      { id: "sale-1700000000030-aaaaaa", role: "sale", name: "Rep Pay", username: "reppay", password: "pw-sale-test", createdAt: "2026-09-20T00:00:00.000Z" },
+      { id: "buyer-1700000000030-bbbbbb", role: "buyer", name: "Buyer Pay", username: "buyerpay", password: "pw-buyer-test", createdAt: "2026-09-20T00:00:00.000Z" },
+      { id: "warehouse-1700000000030-cccccc", role: "warehouse", name: "WH Pay", username: "whpay", password: "pw-wh-test", createdAt: "2026-09-20T00:00:00.000Z" },
+    ];
+    await post(admin, "/sync", { changes: accounts.map((a) => ({ kind: "accounts", id: a.id, createdAt: a.createdAt, data: a })) });
+    const row = { id: "ptrack-1700000000030-dddddd", customer: "Acme Foods Ltd", inv: "INV-3376", loadingDate: "2026-09-20", eta: "2026-10-18", currency: "USD", amount: 12500.5, dueDate: "2026-10-05", onHold: true, paid: false, createdBy: "Admin", createdAt: "2026-09-28T00:00:00.000Z", updatedAt: "2026-09-28T00:00:00.000Z" };
+    expect((await post(admin, "/sync", { changes: [{ kind: "paymentTracks", id: row.id, createdAt: row.createdAt, data: row }] })).status).toBe(200);
+    expect((await (await call(admin, "/state")).json()).slices.paymentTracks).toEqual([row]);
+
+    for (const [user, pw] of [["reppay", "pw-sale-test"], ["buyerpay", "pw-buyer-test"], ["whpay", "pw-wh-test"]]) {
+      const { cookie } = await login(user, pw);
+      expect((await (await call(cookie, "/state")).json()).slices.paymentTracks).toEqual([]);
+      expect((await post(cookie, "/sync", { changes: [{ kind: "paymentTracks", id: row.id, data: { ...row, paid: true } }] })).status).toBe(403);
+      expect((await post(cookie, "/sync", { changes: [{ kind: "paymentTracks", id: row.id, deleted: true }] })).status).toBe(403);
+    }
+    expect((await (await call(admin, "/state")).json()).slices.paymentTracks).toEqual([row]);
+  });
+});
+
 describe("role-aware PFI writes", () => {
   const F = "pfi-1700000000100-mmmmmm";
   const line = (extra: Record<string, unknown>) => ({ id: "L1", product: "Tea", quantity: 10, rate: 1, orderStatus: "not_ordered", receivedQuantity: "", ...extra });

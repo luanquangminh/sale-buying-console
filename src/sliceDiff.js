@@ -18,6 +18,7 @@ export const SLICES = {
   buyerJobs: { kind: "buyerJobs" },
   warehouseEvents: { kind: "warehouseEvents" },
   customerMemos: { kind: "customerMemos" },
+  paymentTracks: { kind: "paymentTracks" },
 };
 
 export function flatten(name, value) {

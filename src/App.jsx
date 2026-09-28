@@ -7,6 +7,7 @@ import { fmtDate, fmtMonth, parseDmy, parseMonth, todayIso } from "./dates";
 import { keepRemoved, pfiTrackingStatus, rollupStatusLabel, TRACKING_TONE } from "./status";
 import { matchNames, uniqueNames } from "./suggest";
 import { orderTotals, vatOption, VAT_OPTIONS } from "./money";
+import { DUE_TONE, dueLabel, dueState } from "./payments";
 import { applyReceipts, matchPfiLine, stripDerived } from "./receipts";
 import { mergeOtherRole } from "./merge";
 import { addMonths, inMonth, monthGrid, monthLabel, startOfMonth, todayLocalIso } from "./calendar";
@@ -251,6 +252,19 @@ const GlobalStyle = () => (
     .confirm-strip { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:11px 18px; background:#FFF4F2; border-bottom:1px solid #F2CFCA; border-left:3px solid #C64B4B; font-size:12.5px; color:#5A2A2A; }
     .confirm-strip.blocked { background:#FFF9EC; border-bottom-color:#EEDDB0; border-left-color:#C9A227; color:#5C4A12; }
     .confirm-strip > span { flex:1; min-width:220px; line-height:1.5; }
+    .form-grid.pay-track-grid { grid-template-columns:1.6fr 1fr 1fr 1fr; }
+    .pay-track-grid .date-field { display:flex; }
+    .hold-tick, .paid-tick, .form-grid label.hold-tick { display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600; text-transform:none; letter-spacing:0; border-radius:3px; padding:5px 9px; margin:0; cursor:pointer; background:#EEF2EF; color:#5B6570; white-space:nowrap; }
+    .form-grid label.hold-tick { padding:8px 12px; font-size:12.5px; }
+    .hold-tick input, .paid-tick input, .data-table .hold-tick input, .data-table .paid-tick input, .form-grid .hold-tick input { width:auto; min-width:0; margin:0; padding:0; border:none; }
+    .hold-tick.on, .form-grid label.hold-tick.on { background:#FCEBC9; color:#7A5410; }
+    .paid-tick.on { background:#D5EEDC; color:#1B5237; }
+    .data-table tr.pay-row.is-overdue td { background:#FFF1EF; }
+    .data-table tr.pay-row.is-overdue td:first-child { box-shadow:inset 3px 0 0 #C64B4B; }
+    .data-table tr.pay-row.is-paid .ro { color:#7C8891; }
+    .data-table tr.pay-edit-row td { background:#F7FBF8; padding:14px 16px; }
+    .data-table tr.pay-confirm-row td { padding:0; }
+    @media (max-width: 860px) { .form-grid.pay-track-grid { grid-template-columns:1fr 1fr; } }
     .btn-sm { padding:5px 10px; font-size:11.5px; }
     .btn-icon { border:none; background:transparent; cursor:pointer; color:#9AA3A9; padding:4px; display:inline-flex; align-items:center; border-radius:3px; }
     .btn-icon:hover { color:#B23B3B; background:#FBE4E1; }
@@ -3558,6 +3572,167 @@ function DeliveryBookingTab({ bookings, actions }) {
   );
 }
 
+/* ---------------- Payment tracking (Admin only): invoices to collect ---------------- */
+
+const EMPTY_PAYMENT = { customer: "", inv: "", loadingDate: "", eta: "", currency: CURRENCIES[0], amount: "", dueDate: "", onHold: false };
+
+function PaymentFields({ value, onChange, names }) {
+  const set = (patch) => onChange({ ...value, ...patch });
+  return (
+    <div className="form-grid pay-track-grid">
+      <div><label>Customer</label><SuggestInput names={names} value={value.customer} onChange={(v) => set({ customer: v })} placeholder="Type or pick a customer" /></div>
+      <div><label>INV</label><input placeholder="Invoice number" value={value.inv} onChange={(e) => set({ inv: e.target.value })} /></div>
+      <div><label>Loading date</label><DateField value={value.loadingDate} onChange={(v) => set({ loadingDate: v })} /></div>
+      <div><label>ETA</label><DateField value={value.eta} onChange={(v) => set({ eta: v })} /></div>
+      <div>
+        <label>Currency</label>
+        <select value={value.currency} onChange={(e) => set({ currency: e.target.value })}>
+          {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </div>
+      <div><label>Amount</label><input type="number" placeholder="0.00" value={value.amount} onChange={(e) => set({ amount: e.target.value })} /></div>
+      <div><label>Due date</label><DateField value={value.dueDate} onChange={(v) => set({ dueDate: v })} /></div>
+      <div>
+        <label>Container on hold</label>
+        <label className={`hold-tick ${value.onHold ? "on" : ""}`}>
+          <input type="checkbox" checked={!!value.onHold} onChange={(e) => set({ onHold: e.target.checked })} /> On hold
+        </label>
+      </div>
+    </div>
+  );
+}
+
+function PaymentTrackingTab({ rows, customerNames, actions, userName }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState(EMPTY_PAYMENT);
+  const [editing, setEditing] = useState(null); // the row being edited, as a draft
+  const [removing, setRemoving] = useState(null);
+  const [find, setFind] = useState("");
+  const today = todayLocalIso();
+  const list = rows || [];
+  const names = React.useMemo(() => uniqueNames([...customerNames, ...list.map((r) => r.customer)]), [customerNames, list]);
+  const fq = find.trim().toLowerCase();
+  const visible = fq ? list.filter((r) => [r.customer, r.inv].some((f) => String(f || "").toLowerCase().includes(fq))) : list;
+  const ready = (v) => v.customer.trim() && v.inv.trim() && v.amount !== "" && !Number.isNaN(Number(v.amount));
+
+  const submit = () => {
+    if (!ready(form)) return;
+    actions.addPaymentTrack({ ...form, createdBy: userName });
+    setForm(EMPTY_PAYMENT);
+    setShowAdd(false);
+  };
+  const startEdit = (r) => {
+    setRemoving(null);
+    setEditing({ id: r.id, customer: r.customer || "", inv: r.inv || "", loadingDate: r.loadingDate || "", eta: r.eta || "", currency: r.currency || CURRENCIES[0], amount: r.amount ?? "", dueDate: r.dueDate || "", onHold: !!r.onHold });
+  };
+  const saveEdit = () => {
+    if (!ready(editing)) return;
+    const { id, ...fields } = editing;
+    actions.updatePaymentTrack(id, { ...fields, customer: fields.customer.trim(), inv: fields.inv.trim(), amount: Number(fields.amount) });
+    setEditing(null);
+  };
+
+  return (
+    <div>
+      <div className="overview-bar">
+        <FindBar value={find} onChange={setFind} placeholder="Find a payment by customer or INV…" total={list.length} shown={visible.length} />
+        <button className="btn btn-accent" onClick={() => setShowAdd((v) => !v)}><Plus size={14} /> Add payment</button>
+      </div>
+
+      <div className="card">
+        {showAdd && (
+          <div className="add-form">
+            <PaymentFields value={form} onChange={setForm} names={names} />
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <button className="btn btn-accent" disabled={!ready(form)} onClick={submit}>Save payment</button>
+              <button className="btn btn-ghost" onClick={() => { setShowAdd(false); setForm(EMPTY_PAYMENT); }}>Cancel</button>
+              <span className="muted" style={{ fontSize: 12 }}>Customer, INV and amount are needed; the rest can be filled in later.</span>
+            </div>
+          </div>
+        )}
+
+        {list.length === 0 && !showAdd ? (
+          <div className="empty">
+            <CreditCard size={30} />
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>No payments tracked yet</div>
+            <div style={{ fontSize: 12.5 }}>Click "Add payment" to record an invoice, its due date and whether the container is on hold.</div>
+          </div>
+        ) : visible.length === 0 && !showAdd ? (
+          <div className="empty"><CreditCard size={30} /><div style={{ fontWeight: 600 }}>No payment matches that search</div></div>
+        ) : list.length > 0 && (
+          <div className="table-scroll" style={{ maxHeight: "none" }}>
+            <table className="data-table pay-track-table" style={{ minWidth: 980 }}>
+              <thead>
+                <tr>
+                  <th style={{ minWidth: 180 }}>Customer</th><th>INV</th><th>Loading date</th><th>ETA</th><th>Currency</th>
+                  <th style={{ textAlign: "right" }}>Amount</th><th>Due date</th><th>Container on hold</th><th>Paid</th><th>Status</th><th />
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((r) => {
+                  const { state } = dueState(r, today);
+                  if (editing && editing.id === r.id) {
+                    return (
+                      <tr key={r.id} className="pay-edit-row">
+                        <td colSpan={11}>
+                          <PaymentFields value={editing} onChange={setEditing} names={names} />
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button className="btn btn-sm btn-accent" disabled={!ready(editing)} onClick={saveEdit}><Save size={12} /> Save</button>
+                            <button className="btn btn-sm" onClick={() => setEditing(null)}>Cancel</button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  }
+                  return (
+                    <React.Fragment key={r.id}>
+                      <tr className={`pay-row is-${state}`}>
+                        <td><span className="ro" style={{ fontWeight: 600 }}>{r.customer}</span></td>
+                        <td><span className="ro sm-mono">{r.inv}</span></td>
+                        <td><span className="ro">{fmtDate(r.loadingDate) || "—"}</span></td>
+                        <td><span className="ro">{fmtDate(r.eta) || "—"}</span></td>
+                        <td><span className="ro">{r.currency}</span></td>
+                        <td style={{ textAlign: "right" }}><span className="ro sm-mono">{formatMoney(r.amount, r.currency)}</span></td>
+                        <td><span className="ro">{fmtDate(r.dueDate) || "—"}</span></td>
+                        <td>
+                          <label className={`hold-tick ${r.onHold ? "on" : ""}`}>
+                            <input type="checkbox" aria-label="Container on hold" checked={!!r.onHold} onChange={(e) => actions.updatePaymentTrack(r.id, { onHold: e.target.checked })} /> {r.onHold ? "On hold" : "No"}
+                          </label>
+                        </td>
+                        <td>
+                          <label className={`paid-tick ${r.paid ? "on" : ""}`}>
+                            <input type="checkbox" aria-label="Paid" checked={!!r.paid} onChange={(e) => actions.updatePaymentTrack(r.id, { paid: e.target.checked })} /> {r.paid ? "Paid" : "Not yet"}
+                          </label>
+                        </td>
+                        <td><span className={`chip ${DUE_TONE[state]}`}>{dueLabel(r, today)}</span></td>
+                        <td style={{ whiteSpace: "nowrap" }}>
+                          <button className="btn-icon edit" title="Edit payment" onClick={() => startEdit(r)}><Pencil size={14} /></button>
+                          <button className="btn-icon" title="Delete payment" onClick={() => setRemoving(removing === r.id ? null : r.id)}><Trash2 size={14} /></button>
+                        </td>
+                      </tr>
+                      {removing === r.id && (
+                        <tr className="pay-confirm-row">
+                          <td colSpan={11}>
+                            <div className="confirm-strip">
+                              <span>Delete the payment <strong>{r.inv}</strong> of <strong>{r.customer}</strong>? This cannot be undone.</span>
+                              <button className="btn btn-sm btn-danger" onClick={() => { actions.deletePaymentTrack(r.id); setRemoving(null); }}><Trash2 size={12} /> Yes, delete</button>
+                              <button className="btn btn-sm" onClick={() => setRemoving(null)}>Cancel</button>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- Mai (Admin only): daily follow-up tasks ---------------- */
 
 const MAI_STATUSES = [
@@ -4315,6 +4490,9 @@ function Shell({ user, onLogout, store }) {
               <div className={`side-item ${topSection === "mai" ? "active" : ""}`} onClick={() => setTopSection("mai")}>
                 <ClipboardList size={14} /> Mai
               </div>
+              <div className={`side-item ${topSection === "payments" ? "active" : ""}`} onClick={() => setTopSection("payments")}>
+                <CreditCard size={14} /> Payment tracking
+              </div>
             </>
           )}
 
@@ -4507,6 +4685,23 @@ function Shell({ user, onLogout, store }) {
             </>
           )}
 
+          {topSection === "payments" && isAdmin && (
+            <>
+              <div className="page-header">
+                <div>
+                  <div className="page-title sm-display">Payment tracking</div>
+                  <div className="page-sub">Invoices to collect, with their due dates and containers on hold — Admin only</div>
+                </div>
+              </div>
+              <PaymentTrackingTab
+                rows={store.paymentTracks}
+                customerNames={uniqueNames(Object.values(store.customersBySale || {}).flat().map((c) => c.companyName))}
+                actions={store}
+                userName={user.name}
+              />
+            </>
+          )}
+
           {topSection === "accounts" && isAdmin && (
             <>
               <div className="page-header">
@@ -4547,7 +4742,7 @@ function Shell({ user, onLogout, store }) {
 
 const EMPTY_SLICES = {
   customersBySale: {}, feed: [], pfisBySale: {}, feedSale: [], feedBuyerPfi: [],
-  suppliers: [], pos: [], lanes: [], reorders: [], bookings: [], accounts: [], maiTasks: [], buyerJobs: [], warehouseEvents: [], customerMemos: [],
+  suppliers: [], pos: [], lanes: [], reorders: [], bookings: [], accounts: [], maiTasks: [], buyerJobs: [], warehouseEvents: [], customerMemos: [], paymentTracks: [],
 };
 
 export default function App() {
@@ -4574,6 +4769,24 @@ export default function App() {
   const [buyerJobs, setBuyerJobs] = slice("buyerJobs");
   const [warehouseEvents, setWarehouseEvents] = slice("warehouseEvents");
   const [customerMemos, setCustomerMemos] = slice("customerMemos");
+  const [paymentTracks, setPaymentTracks] = slice("paymentTracks");
+
+  /* Payment tracking (admin only): invoices to collect */
+  const addPaymentTrack = (data) => {
+    const now = new Date().toISOString();
+    const row = {
+      id: uid("ptrack"),
+      customer: (data.customer || "").trim(), inv: (data.inv || "").trim(),
+      loadingDate: data.loadingDate || "", eta: data.eta || "",
+      currency: data.currency || CURRENCIES[0], amount: data.amount === "" || data.amount === undefined ? "" : Number(data.amount),
+      dueDate: data.dueDate || "", onHold: !!data.onHold, paid: false,
+      createdBy: data.createdBy || "", createdAt: now, updatedAt: now,
+    };
+    setPaymentTracks((prev) => [row, ...(prev || [])]);
+    return row.id;
+  };
+  const updatePaymentTrack = (id, patch) => setPaymentTracks((prev) => (prev || []).map((r) => (r.id === id ? { ...r, ...patch, updatedAt: new Date().toISOString() } : r)));
+  const deletePaymentTrack = (id) => setPaymentTracks((prev) => (prev || []).filter((r) => r.id !== id));
 
   /* Mai (admin only): daily follow-up tasks */
   const addMaiTask = (data) => {
@@ -5354,6 +5567,7 @@ export default function App() {
     customersBySale, feed, pfisBySale, feedSale, feedBuyerPfi, suppliers, pos, lanes, reorders, bookings,
     addBooking, updateBooking, deleteBooking,
     accounts, addAccount, updateAccount, deleteAccount,
+    paymentTracks, addPaymentTrack, updatePaymentTrack, deletePaymentTrack,
     customerMemos, saveCustomerMemo, updateCustomer, deleteCustomer, updateSupplier, deleteSupplier,
     maiTasks, addMaiTask, updateMaiTask, deleteMaiTask,
     buyerJobs, addBuyerJob, updateBuyerJob, deleteBuyerJob, addBuyerJobNote,
