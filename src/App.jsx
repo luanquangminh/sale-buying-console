@@ -9,7 +9,7 @@ import { matchNames, uniqueNames } from "./suggest";
 import { orderTotals, vatOption, VAT_OPTIONS } from "./money";
 import { DUE_TONE, dueLabel, dueState } from "./payments";
 import { sortLanesByPod } from "./lanes";
-import { lineCover, poShortages } from "./allocation";
+import { lineCover, pfiLineCover, pfiShortages, poShortages } from "./allocation";
 import { placePanel } from "./popup";
 import { applyReceipts, matchPfiLine, stripDerived } from "./receipts";
 import { mergeOtherRole } from "./merge";
@@ -1422,6 +1422,7 @@ function ProductsTable({
   const canDelete = variant === "pfi-sale" || variant === "po";
   const totals = orderTotals(pfi.products);
   const shortages = variant === "po" ? poShortages(pfi, allPfiOptions) : [];
+  const lineShortages = variant === "po" ? [] : pfiShortages(pfi);
 
   const jumpTo = (productId) => {
     const el = rowRefs.current[productId];
@@ -1648,6 +1649,17 @@ function ProductsTable({
         </div>
       )}
 
+      {lineShortages.length > 0 && (
+        <div className="short-warning" role="alert">
+          <div className="short-warning-head"><AlertTriangle size={14} /> {lineShortages.length === 1 ? "1 line is" : `${lineShortages.length} lines are`} not fully covered by the cases ordered on the POs</div>
+          <ul>
+            {lineShortages.map((sh) => (
+              <li key={sh.lineId}>{sh.product}: needs {sh.need}, ordered {sh.allocated}, <strong>short {sh.short}</strong></li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className={`table-scroll zoom-${zoom}`}>
         <table className="data-table sticky-first">
           <thead>
@@ -1699,6 +1711,7 @@ function ProductsTable({
                 ? receipts
                 : hasAllocations ? allocations.map((a) => ({ orderStatus: allocStatus(a) })) : [];
               const rollLabel = rolledUp ? rollupStatusLabel(statusSource) : null;
+              const lineCoverNote = isPo ? null : pfiLineCover(p);
 
               return (
                 <React.Fragment key={p.id}>
@@ -1729,7 +1742,17 @@ function ProductsTable({
                         </div>
                       ) : (
                         hasReceipts
-                          ? <span className="ro po-no-cell">{receipts.length === 1 ? receiptPoLabel(receipts[0]) : `${receipts.length} POs`}</span>
+                          ? (
+                            <div>
+                              <span className="ro po-no-cell">{receipts.length === 1 ? receiptPoLabel(receipts[0]) : `${receipts.length} POs`}</span>
+                              {lineCoverNote && (
+                                <div className={`cover-note ${lineCoverNote.short > 0 ? "short" : "ok"}`} style={{ marginTop: 4 }} title={`This line needs ${lineCoverNote.need}. The POs order ${lineCoverNote.allocated} for it.`}>
+                                  <strong>{lineCoverNote.short > 0 ? `Short ${lineCoverNote.short}` : "Covered"}</strong>
+                                  <span>{lineCoverNote.allocated} of {lineCoverNote.need} ordered</span>
+                                </div>
+                              )}
+                            </div>
+                          )
                           : <span className="ro muted">—</span>
                       )}
                     </td>

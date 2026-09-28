@@ -55,3 +55,25 @@ export function poShortages(po, pfiOptions) {
   }
   return out;
 }
+
+/**
+ * Cover of a PFI line as the PFI screen sees it: the cases of every PO row pointing at it (its receipts)
+ * against its quantity. null while no PO row covers the line, or the line has no quantity.
+ */
+export function pfiLineCover(line) {
+  const rows = (line.receipts || []).filter((r) => live(r.orderStatus));
+  const need = num(line.quantity);
+  if (!rows.length || need <= 0) return null;
+  const allocated = tidy(rows.reduce((acc, r) => acc + num(r.quantity), 0));
+  return { need, allocated, short: tidy(Math.max(need - allocated, 0)), over: tidy(Math.max(allocated - need, 0)) };
+}
+
+/** The lines of a PFI that its POs leave short, in the order of the PFI. */
+export function pfiShortages(pfi) {
+  const out = [];
+  for (const line of pfi.products || []) {
+    const cover = pfiLineCover(line);
+    if (cover && cover.short > 0) out.push({ lineId: line.id, product: line.product, ...cover });
+  }
+  return out;
+}

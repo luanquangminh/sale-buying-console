@@ -1619,6 +1619,28 @@ test("PO: a PFI line that the cases ordered do not cover is flagged, with the ca
   await expect(warning).toContainText("short 20"); // saving does not hide it
   await close(page);
 
+  // The sale sees the same on the PFI, before anything has arrived; so does the buyer in Orders to update.
+  const pfiLine = (name: string) => page.locator(".detail-body tbody tr:not(.sub-row)", { hasText: name });
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Order Tracking").click();
+  await openDetail(page, pfiRow);
+  await expect(warning).toContainText("1 line is not fully covered by the cases ordered on the POs");
+  await expect(warning).toContainText(`${TEA}: needs 100, ordered 80, short 20`);
+  await expect(warning).not.toContainText(JAM);
+  await expect(lineOf(TEA).locator(".cover-note")).toHaveClass(/short/);
+  await expect(lineOf(TEA).locator(".cover-note")).toContainText("Short 20");
+  await expect(lineOf(TEA).locator(".cover-note")).toContainText("80 of 100 ordered");
+  await expect(lineOf(JAM).locator(".cover-note")).toHaveClass(/ok/);
+  await expect(lineOf(JAM).locator(".cover-note")).toContainText("40 of 40 ordered");
+  await close(page);
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await pill(page, "Orders to update").click();
+  await openDetail(page, page.locator(".fulfil-head", { hasText: "PFI 3293" }).first());
+  await expect(warning).toContainText(`${TEA}: needs 100, ordered 80, short 20`);
+  await expect(pfiLine(TEA).locator(".cover-note")).toContainText("Short 20");
+  await close(page);
+  await openPos();
+
   // Second PO tops the tea up: what the first PO gives is counted.
   await newPo("4531");
   await addRow(TEA, "30");
@@ -1643,7 +1665,12 @@ test("PO: a PFI line that the cases ordered do not cover is flagged, with the ca
   await signIn(page, A.sale.username, A.sale.password);
   await side(page, "Order Tracking").click();
   await openDetail(page, pfiRow);
+  await expect(warning).toHaveCount(0); // two POs, 80 + 20: covered
+  await expect(lineOf(TEA).locator(".cover-note")).toContainText("Covered");
+  await expect(lineOf(TEA).locator(".cover-note")).toContainText("100 of 100 ordered");
   await lineOf(TEA).locator('input[type="number"]').first().fill("120");
+  await expect(warning).toContainText(`${TEA}: needs 120, ordered 100, short 20`); // as soon as the quantity is typed
+  await expect(lineOf(TEA).locator(".cover-note")).toContainText("Short 20");
   await save(page);
   await close(page);
   await signIn(page, A.buyer.username, A.buyer.password);

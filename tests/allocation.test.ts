@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { allocatedCases, lineCover, poShortages } from "../src/allocation.js";
+import { allocatedCases, lineCover, pfiLineCover, pfiShortages, poShortages } from "../src/allocation.js";
 
 // A PFI as the PO screen knows it: its lines, each with the cases the saved POs already give it.
 const receipt = (poId: string, quantity: number | string, orderStatus = "ordered") => ({ poId, quantity, orderStatus });
@@ -92,5 +92,37 @@ describe("poShortages", () => {
       row(10, [ref({ pfiProductId: "L-deleted", allocatedQty: 10 })]),
     ]);
     expect(poShortages(draft, [pfi([tea(100)])])).toEqual([]);
+  });
+});
+
+describe("pfiLineCover / pfiShortages (the PFI side)", () => {
+  const line = (id: string, product: string, quantity: number | string, receipts: any[]) => ({ id, product, quantity, receipts });
+  it("adds up the PO rows covering the line", () => {
+    expect(pfiLineCover(line("a", "Tea", 100, [receipt("po-1", 80), receipt("po-2", 15)]))).toEqual({ need: 100, allocated: 95, short: 5, over: 0 });
+    expect(pfiLineCover(line("a", "Tea", 100, [receipt("po-1", 100)]))).toEqual({ need: 100, allocated: 100, short: 0, over: 0 });
+    expect(pfiLineCover(line("a", "Tea", 100, [receipt("po-1", "120")]))).toEqual({ need: 100, allocated: 120, short: 0, over: 20 });
+  });
+  it("leaves removed PO rows out", () => {
+    expect(pfiLineCover(line("a", "Tea", 100, [receipt("po-1", 80, "removed"), receipt("po-2", 30)]))).toMatchObject({ allocated: 30, short: 70 });
+  });
+  it("says nothing about a line no PO covers yet, or one without a quantity", () => {
+    expect(pfiLineCover(line("a", "Tea", 100, []))).toBe(null);
+    expect(pfiLineCover(line("a", "Tea", 100, [receipt("po-1", 80, "removed")]))).toBe(null);
+    expect(pfiLineCover(line("a", "Tea", "", [receipt("po-1", 80)]))).toBe(null);
+    expect(pfiLineCover({ id: "a", product: "Tea", quantity: 100 })).toBe(null);
+  });
+  it("lists the short lines of a PFI in its own order", () => {
+    const order = { products: [
+      line("a", "Tea", 100, [receipt("po-1", 80)]),
+      line("b", "Jam", 40, [receipt("po-1", 40)]),
+      line("c", "Rice", 30, []),
+      line("d", "Beans", 48, [receipt("po-1", 20), receipt("po-2", 10)]),
+    ] };
+    expect(pfiShortages(order)).toEqual([
+      { lineId: "a", product: "Tea", need: 100, allocated: 80, short: 20, over: 0 },
+      { lineId: "d", product: "Beans", need: 48, allocated: 30, short: 18, over: 0 },
+    ]);
+    expect(pfiShortages({ products: [] })).toEqual([]);
+    expect(pfiShortages({})).toEqual([]);
   });
 });
