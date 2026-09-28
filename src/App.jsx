@@ -271,6 +271,11 @@ const GlobalStyle = () => (
 
     .detail-panel { background:#FCFEFC; padding:18px 24px 22px; border-bottom:1px solid #E5E9E9; border-left:3px solid #2F7A52; }
     .detail-cols { display:grid; grid-template-columns: 1fr 1fr; gap:28px; }
+    .detail-cols.three { grid-template-columns: 1fr 1fr 1fr; gap:24px; }
+    .memo-box textarea { width:100%; min-height:190px; border:1px solid #E3D9B8; background:#FFFDF3; border-radius:3px; padding:10px 12px; font-size:13px; line-height:1.5; font-family:inherit; resize:vertical; }
+    .memo-box textarea:focus { outline:none; border-color:#C9B76B; }
+    .memo-state { font-weight:500; text-transform:none; letter-spacing:0; color:#9AA3A9; margin-left:6px; }
+    .memo-hint { font-size:11.5px; color:#7C8891; margin-top:6px; }
     .detail-heading { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#7C8891; margin-bottom:10px; }
 
     .ticket { position:relative; background:#fff; border:1px dashed #C7CDCE; border-left:3px solid #B7C0C4; border-radius:2px; padding:10px 12px; margin-bottom:8px; }
@@ -620,7 +625,7 @@ const GlobalStyle = () => (
       .sidebar { width:100%; flex-direction:row; flex-wrap:wrap; }
       .side-spacer { display:none; }
       .main { padding:18px; }
-      .detail-cols { grid-template-columns:1fr; }
+      .detail-cols, .detail-cols.three { grid-template-columns:1fr; }
       .form-grid { grid-template-columns:1fr; }
       .cust-table-head, .pfi-list-head, .supplier-head { display:none; }
       .cust-row, .pfi-list-row, .pfi-list-row.has-status, .supplier-row, .jobs-row { grid-template-columns:1fr; gap:4px; }
@@ -844,7 +849,58 @@ function ActivityPanel({ title, items, onItemClick, emptyText }) {
 
 /* ---------------- Customer tab (Sale) ---------------- */
 
-function CustomerDetail({ customer, pfis, onAddNote, onSendExisting, onDeleteNote, onOpenPfi }) {
+/* The rep's own notes on a customer. Saved a moment after typing stops, when the box is left, and when the customer is closed. */
+
+function PrivateMemo({ text, onSave }) {
+  const [draft, setDraft] = useState(text);
+  const [pending, setPending] = useState(false);
+  const timer = useRef(null);
+  const latest = useRef(text);
+  const saveRef = useRef(onSave);
+  saveRef.current = onSave;
+
+  React.useEffect(() => { if (!timer.current) { setDraft(text); latest.current = text; } }, [text]); // another session's edit, unless this one is mid-typing
+  const flush = () => {
+    if (!timer.current) return;
+    clearTimeout(timer.current);
+    timer.current = null;
+    saveRef.current(latest.current);
+    setPending(false);
+  };
+  const change = (value) => {
+    setDraft(value);
+    latest.current = value;
+    setPending(true);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(flush, 800);
+  };
+  React.useEffect(() => {
+    // Ahead of the store's own hide handler (capture runs first), so a note typed just before the tab closes goes out with that push.
+    document.addEventListener("visibilitychange", flush, true);
+    window.addEventListener("pagehide", flush, true);
+    return () => {
+      document.removeEventListener("visibilitychange", flush, true);
+      window.removeEventListener("pagehide", flush, true);
+      flush();
+    };
+  }, []);
+
+  return (
+    <div className="memo-box">
+      <div className="detail-heading">My notes <span className="memo-state">{pending ? "saving…" : draft.trim() ? "saved" : ""}</span></div>
+      <textarea
+        rows={9}
+        placeholder="Your own notes on this customer: prices agreed, who to call, what to chase…"
+        value={draft}
+        onChange={(e) => change(e.target.value)}
+        onBlur={flush}
+      />
+      <div className="memo-hint">Only you and Admin see these notes. Nothing here is sent to the Buyer.</div>
+    </div>
+  );
+}
+
+function CustomerDetail({ customer, pfis, memo, onSaveMemo, onAddNote, onSendExisting, onDeleteNote, onOpenPfi }) {
   const [text, setText] = useState("");
   const [notify, setNotify] = useState(true);
 
@@ -856,7 +912,7 @@ function CustomerDetail({ customer, pfis, onAddNote, onSendExisting, onDeleteNot
 
   return (
     <div className="detail-panel" onClick={(e) => e.stopPropagation()}>
-      <div className="detail-cols">
+      <div className="detail-cols three">
         <div>
           <div className="detail-heading">Info needed from Buyer</div>
           {customer.notes.length === 0 && <div className="muted" style={{ marginBottom: 10 }}>No items yet.</div>}
@@ -900,6 +956,8 @@ function CustomerDetail({ customer, pfis, onAddNote, onSendExisting, onDeleteNot
           </div>
         </div>
 
+        <PrivateMemo key={customer.id} text={memo} onSave={onSaveMemo} />
+
         <div>
           <div className="detail-heading">PFI for this customer</div>
           {pfis.length === 0 ? (
@@ -932,7 +990,7 @@ function CustomerDetail({ customer, pfis, onAddNote, onSendExisting, onDeleteNot
   );
 }
 
-function CustomerTab({ saleId, saleName, customers, pfisForSale, addCustomer, addNote, sendExisting, deleteNote, markSeen, onOpenPfi }) {
+function CustomerTab({ saleId, saleName, customers, pfisForSale, memos = [], saveMemo, addCustomer, addNote, sendExisting, deleteNote, markSeen, onOpenPfi }) {
   const [showAdd, setShowAdd] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [find, setFind] = useState("");
@@ -1030,6 +1088,8 @@ function CustomerTab({ saleId, saleName, customers, pfisForSale, addCustomer, ad
                     <CustomerDetail
                       customer={c}
                       pfis={pfisOfCustomer}
+                      memo={(memos.find((m) => m.customerId === c.id) || {}).text || ""}
+                      onSaveMemo={(text) => saveMemo(saleId, c.id, text)}
                       onAddNote={(content, notify) => addNote(saleId, c.id, content, notify, saleName)}
                       onSendExisting={(noteId) => sendExisting(saleId, c.id, noteId, saleName)}
                       onDeleteNote={(noteId) => deleteNote(saleId, c.id, noteId)}
@@ -4241,6 +4301,8 @@ function Shell({ user, onLogout, store }) {
                   saleName={isAdmin ? selectedRep.name : user.name}
                   customers={currentCustomers}
                   pfisForSale={currentPfis}
+                  memos={store.customerMemos}
+                  saveMemo={store.saveCustomerMemo}
                   addCustomer={store.addCustomer}
                   addNote={store.addNote}
                   sendExisting={store.sendExisting}
@@ -4366,7 +4428,7 @@ function Shell({ user, onLogout, store }) {
 
 const EMPTY_SLICES = {
   customersBySale: {}, feed: [], pfisBySale: {}, feedSale: [], feedBuyerPfi: [],
-  suppliers: [], pos: [], lanes: [], reorders: [], bookings: [], accounts: [], maiTasks: [], buyerJobs: [], warehouseEvents: [],
+  suppliers: [], pos: [], lanes: [], reorders: [], bookings: [], accounts: [], maiTasks: [], buyerJobs: [], warehouseEvents: [], customerMemos: [],
 };
 
 export default function App() {
@@ -4392,6 +4454,7 @@ export default function App() {
   const [maiTasks, setMaiTasks] = slice("maiTasks");
   const [buyerJobs, setBuyerJobs] = slice("buyerJobs");
   const [warehouseEvents, setWarehouseEvents] = slice("warehouseEvents");
+  const [customerMemos, setCustomerMemos] = slice("customerMemos");
 
   /* Mai (admin only): daily follow-up tasks */
   const addMaiTask = (data) => {
@@ -4478,6 +4541,17 @@ export default function App() {
   const pushSaleFeed = (saleId, pfiId, customerName, productName, message) => {
     setFeedSale((f) => [{ id: uid("sfeed"), saleId, pfiId, customerName, productName, message, createdAt: new Date().toISOString(), seenBySale: false }, ...f]);
   };
+
+  /* A rep's own notes on a customer: one record per customer, kept apart from the customer record so the buyer never receives or rewrites it. */
+  const saveCustomerMemo = (saleId, customerId, text) => setCustomerMemos((prev) => {
+    const list = prev || [];
+    const id = `memo-${customerId}`;
+    const existing = list.find((m) => m.id === id);
+    if (!text.trim()) return existing ? list.filter((m) => m.id !== id) : list;
+    const now = new Date().toISOString();
+    if (existing) return existing.text === text ? list : list.map((m) => (m.id === id ? { ...m, text, updatedAt: now } : m));
+    return [{ id, customerId, saleId, text, createdAt: now, updatedAt: now }, ...list];
+  });
 
   const addCustomer = (saleId, data) => {
     const newCustomer = {
@@ -5125,6 +5199,7 @@ export default function App() {
     customersBySale, feed, pfisBySale, feedSale, feedBuyerPfi, suppliers, pos, lanes, reorders, bookings,
     addBooking, updateBooking, deleteBooking,
     accounts, addAccount, updateAccount, deleteAccount,
+    customerMemos, saveCustomerMemo,
     maiTasks, addMaiTask, updateMaiTask, deleteMaiTask,
     buyerJobs, addBuyerJob, updateBuyerJob, deleteBuyerJob, addBuyerJobNote,
     warehouseEvents, addWarehouseEvent, updateWarehouseEvent, deleteWarehouseEvent,

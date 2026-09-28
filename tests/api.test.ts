@@ -175,6 +175,34 @@ describe("sprint 2 kinds", () => {
   });
 });
 
+describe("a rep's own notes on a customer", () => {
+  it("are kept for the rep and admin, and never reach or come from the buyer or the warehouse", async () => {
+    const { cookie: admin } = await login();
+    const rep = { id: "sale-1700000000020-rrrrrr", role: "sale", name: "Rep Notes", username: "repnotes", password: "pw-sale-test", createdAt: "2026-09-20T00:00:00.000Z" };
+    const buyer = { id: "buyer-1700000000020-ssssss", role: "buyer", name: "Buyer Notes", username: "buyernotes", password: "pw-buyer-test", createdAt: "2026-09-20T00:00:00.000Z" };
+    const wh = { id: "warehouse-1700000000020-tttttt", role: "warehouse", name: "WH Notes", username: "whnotes", password: "pw-wh-test", createdAt: "2026-09-20T00:00:00.000Z" };
+    await post(admin, "/sync", { changes: [rep, buyer, wh].map((a) => ({ kind: "accounts", id: a.id, createdAt: a.createdAt, data: a })) });
+
+    const { cookie: sale } = await login("repnotes", "pw-sale-test");
+    const memo = { id: "memo-cust-1700000000020-uuuuuu", customerId: "cust-1700000000020-uuuuuu", saleId: rep.id, text: "Agreed 2% off above 10 pallets.\nCall Linh, not the office.", createdAt: "2026-09-28T00:00:00.000Z", updatedAt: "2026-09-28T00:00:00.000Z" };
+    expect((await post(sale, "/sync", { changes: [{ kind: "customerMemos", id: memo.id, saleId: rep.id, createdAt: memo.createdAt, data: memo }] })).status).toBe(200);
+    expect((await (await call(sale, "/state")).json()).slices.customerMemos).toEqual([memo]);
+    expect((await (await call(admin, "/state")).json()).slices.customerMemos).toEqual([memo]);
+
+    for (const [user, pw] of [["buyernotes", "pw-buyer-test"], ["whnotes", "pw-wh-test"]]) {
+      const { cookie } = await login(user, pw);
+      expect((await (await call(cookie, "/state")).json()).slices.customerMemos).toEqual([]);
+      const write = await post(cookie, "/sync", { changes: [{ kind: "customerMemos", id: memo.id, data: { ...memo, text: "overwritten" } }] });
+      expect(write.status).toBe(403);
+    }
+    expect((await (await call(sale, "/state")).json()).slices.customerMemos[0].text).toBe(memo.text);
+
+    // emptied by the rep: the record goes
+    expect((await post(sale, "/sync", { changes: [{ kind: "customerMemos", id: memo.id, deleted: true }] })).status).toBe(200);
+    expect((await (await call(sale, "/state")).json()).slices.customerMemos).toEqual([]);
+  });
+});
+
 describe("role-aware PFI writes", () => {
   const F = "pfi-1700000000100-mmmmmm";
   const line = (extra: Record<string, unknown>) => ({ id: "L1", product: "Tea", quantity: 10, rate: 1, orderStatus: "not_ordered", receivedQuantity: "", ...extra });

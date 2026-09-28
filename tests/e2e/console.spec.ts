@@ -1125,3 +1125,50 @@ test("container rate: a lane and a rate can be edited, and nothing changes until
   await page.locator(".lane-detail").getByRole("button", { name: "Delete lane" }).click();
   await expect(saved).toHaveCount(0);
 });
+
+test("customer: the rep's own notes save by themselves, admin reads them, the buyer never gets them", async ({ page }) => {
+  const NOTE_A = "E2E private: agreed 2% off above 10 pallets.";
+  const NOTE_B = "E2E private: call Linh, not the office.";
+  await signIn(page, A.sale.username, A.sale.password);
+  const row = page.locator(".cust-row", { hasText: "Acme Foods Ltd" }).first();
+  await row.click();
+  const memo = page.locator(".memo-box textarea");
+  await expect(page.locator(".memo-box")).toContainText("Nothing here is sent to the Buyer");
+  await memo.fill(""); // whatever an earlier run left
+  await memo.fill(NOTE_A);
+  await expect(page.locator(".memo-state")).toHaveText("saving…");
+  await expect(page.locator(".memo-state")).toHaveText("saved"); // no button: it saves once typing stops
+  await page.waitForTimeout(1200);
+
+  await page.reload();
+  await row.click();
+  await expect(memo).toHaveValue(NOTE_A);
+  await memo.fill(`${NOTE_A}\n${NOTE_B}`);
+  await row.click(); // closing the customer right away still saves what was typed
+  await page.waitForTimeout(1200);
+  await row.click();
+  await expect(memo).toHaveValue(`${NOTE_A}\n${NOTE_B}`);
+  // the request box next to it is untouched: nothing was sent to the buyer
+  await expect(page.locator(".detail-panel .ticket", { hasText: "E2E private" })).toHaveCount(0);
+
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await expect(page.locator("body")).not.toContainText("E2E private");
+  const buyerState = await page.evaluate(async () => (await fetch("/api/state")).json());
+  expect(buyerState.slices.customerMemos).toEqual([]);
+  expect(JSON.stringify(buyerState.slices.customersBySale)).not.toContain("E2E private");
+
+  await signIn(page, A.admin.username, A.admin.password); // admin, in the rep's workspace
+  await side(page, A.sale.name).click();
+  const adminRow = page.locator(".cust-row", { hasText: "Acme Foods Ltd" }).first();
+  await adminRow.click();
+  await expect(page.locator(".memo-box textarea")).toHaveValue(`${NOTE_A}\n${NOTE_B}`);
+
+  await signIn(page, A.sale.username, A.sale.password); // emptied: the note is gone for good
+  await row.click();
+  await memo.fill("");
+  await memo.blur();
+  await page.waitForTimeout(1200);
+  await page.reload();
+  await row.click();
+  await expect(memo).toHaveValue("");
+});

@@ -16,6 +16,7 @@ export const KINDS = {
   maiTasks: { slice: "maiTasks", roles: ["admin"] },
   buyerJobs: { slice: "buyerJobs", roles: ["admin", "buyer"] },
   warehouseEvents: { slice: "warehouseEvents", roles: ["admin", "buyer", "warehouse"] },
+  customerMemos: { slice: "customerMemos", roles: ["admin", "sale"] }, // a rep's own notes on a customer: never sent to the buyer
 } as const;
 
 export type Kind = keyof typeof KINDS;
