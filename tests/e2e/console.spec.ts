@@ -740,7 +740,7 @@ test("container rate: forwarders typed before are offered when adding a rate", a
   await lane.locator(".mini-form-row input").nth(1).fill("3800");
   await lane.getByRole("button", { name: "Add rate" }).click();
   await expect(lane.locator("tbody tr")).toHaveCount(1);
-  await expect(lane.locator("tbody tr input").first()).toHaveValue("MSC");
+  await expect(lane.locator("tbody tr").first()).toContainText("MSC");
 
   await forwarder.fill("Brand New Lines"); // a name never seen is still accepted, and offered from then on
   await lane.locator(".mini-form-row input").nth(1).fill("4100");
@@ -1049,4 +1049,79 @@ test("warehouse: an entry is red until it is ticked Done, then green, for every 
   await page.getByRole("button", { name: "Delete entry" }).click();
   await page.getByRole("button", { name: "Yes, delete" }).click();
   await expect(entry).toHaveCount(0);
+});
+
+test("container rate: a lane and a rate can be edited, and nothing changes until Save", async ({ page }) => {
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await side(page, "Container Rate").click();
+  for (const pod of ["E2E Edit Port", "E2E Edited Port"]) {
+    const stale = page.locator(".lane-row", { hasText: pod });
+    while (await stale.count()) { await stale.first().click(); await page.locator(".lane-detail").getByRole("button", { name: "Delete lane" }).click(); }
+  }
+  await page.getByRole("button", { name: "Add lane" }).click();
+  const form = page.locator(".add-form").first();
+  await form.locator("input").nth(0).fill("E2E Edit Port");
+  await form.locator("input").nth(1).fill("1 Tset Way, Northampton"); // the typo the edit is for
+  await form.locator("input").nth(2).fill("30 days");
+  await page.getByRole("button", { name: "Save lane" }).click();
+  const lane = page.locator(".lane-detail").first();
+  await lane.locator(".mini-form-row input").nth(0).fill("Hapag-Lloyd");
+  await lane.locator(".mini-form-row input").nth(1).fill("4000");
+  await lane.getByRole("button", { name: "Add rate" }).click();
+  await lane.locator(".mini-form-row input").nth(0).fill("MSC");
+  await lane.locator(".mini-form-row input").nth(1).fill("4200");
+  await lane.getByRole("button", { name: "Add rate" }).click();
+  const rates = lane.locator("tbody tr");
+  await expect(rates).toHaveCount(2);
+  await expect(rates.locator("input")).toHaveCount(0); // rows are read until Edit is clicked
+
+  // Lane: edit, cancel keeps the old values, save applies the new ones.
+  const laneRow = page.locator(".lane-row.open");
+  await lane.getByRole("button", { name: "Edit lane" }).click();
+  const edit = lane.locator(".lane-edit");
+  await expect(edit.locator("input").nth(0)).toHaveValue("E2E Edit Port");
+  await edit.locator("input").nth(0).fill("Something else");
+  await edit.getByRole("button", { name: "Cancel" }).click();
+  await expect(laneRow).toContainText("E2E Edit Port");
+  await lane.getByRole("button", { name: "Edit lane" }).click();
+  await edit.locator("input").nth(0).fill("E2E Edited Port");
+  await edit.locator("input").nth(1).fill("1 Test Way, Northampton");
+  await edit.locator("select").selectOption("40ft Reefer");
+  await edit.locator("input").nth(2).fill("26 days");
+  await edit.getByRole("button", { name: "Save lane changes" }).click();
+  await expect(edit).toHaveCount(0);
+  await expect(laneRow).toContainText("E2E Edited Port");
+  await expect(laneRow).toContainText("1 Test Way, Northampton");
+  await expect(laneRow).toContainText("40ft Reefer");
+  await expect(laneRow).toContainText("26 days");
+  await expect(rates).toHaveCount(2); // the rates stay with the lane
+
+  // Rate: edit MSC down to the cheapest, with the forwarder picked from the suggestions.
+  const msc = rates.filter({ hasText: "MSC" });
+  await msc.getByTitle("Edit rate").click();
+  const editing = rates.filter({ has: page.locator('input[type="number"]') });
+  await expect(editing).toHaveCount(1);
+  await editing.locator('input[type="number"]').fill("3900");
+  await editing.getByRole("button", { name: "Cancel" }).click();
+  await expect(msc).toContainText("$4,200.00");
+  await msc.getByTitle("Edit rate").click();
+  await editing.locator("input").first().fill("mae"); // Maersk was entered on the Lagos lane
+  await page.locator(".suggest-panel .suggest-option", { hasText: /^Maersk$/ }).click();
+  await editing.locator("select").selectOption("GBP");
+  await editing.locator('input[type="number"]').fill("3100");
+  await editing.getByRole("button", { name: "Save" }).click();
+  await expect(rates.locator("input")).toHaveCount(0);
+  const edited = rates.filter({ hasText: "Maersk" });
+  await expect(edited).toContainText("£3,100.00");
+  await expect(edited).toContainText("Cheapest");
+  await expect(laneRow).toContainText("£3,100.00");
+  await page.waitForTimeout(1200);
+
+  await page.reload(); // saved for real
+  await side(page, "Container Rate").click();
+  const saved = page.locator(".lane-row", { hasText: "E2E Edited Port" });
+  await expect(saved).toContainText("£3,100.00");
+  await saved.click();
+  await page.locator(".lane-detail").getByRole("button", { name: "Delete lane" }).click();
+  await expect(saved).toHaveCount(0);
 });

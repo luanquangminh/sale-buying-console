@@ -204,7 +204,8 @@ await step("container rate: lane, quotes, edit, remove quote, delete lane", asyn
     await lane.locator(".mini-form-row input").nth(0).fill("Exp Shipping"); await lane.locator(".mini-form-row input").nth(1).fill("2200"); await lane.getByRole("button", { name: "Add rate" }).click();
   }
   expect((await laneRow.innerText()).includes("2,200.00"), `best quote shown, row: ${(await laneRow.innerText()).replace(/\n/g, " | ")}`);
-  await lane.locator('tbody tr input[type="number"]').last().fill("2100"); await settle();
+  await lane.locator('button[title="Edit rate"]').last().click();
+  await lane.locator('tbody tr input[type="number"]').fill("2100"); await lane.getByRole("button", { name: "Save", exact: true }).click(); await settle();
   expect((await laneRow.innerText()).includes("2,100.00"), "best quote updates on edit");
   await lane.locator('button[title="Remove rate"]').last().click(); await settle();
   expect((await realRows(lane).count()) === 1, "quote removed");

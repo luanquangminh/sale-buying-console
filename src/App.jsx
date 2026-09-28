@@ -2941,6 +2941,8 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
   const [form, setForm] = useState({ pod: "", loadingAddress: "", containerType: CONTAINER_TYPES[0], transitTime: "" });
   const [quoteDraft, setQuoteDraft] = useState({});
   const [find, setFind] = useState("");
+  const [editLane, setEditLane] = useState(null); // { id, pod, loadingAddress, containerType, transitTime }
+  const [editQuote, setEditQuote] = useState(null); // { laneId, id, company, currency, rate }
 
   const forwarderNames = React.useMemo(
     () => uniqueNames([...lanes.flatMap((l) => l.quotes.map((q) => q.company)), ...bookings.map((b) => b.forwarder)]),
@@ -2963,6 +2965,23 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
     setForm({ pod: "", loadingAddress: "", containerType: CONTAINER_TYPES[0], transitTime: "" });
     setShowAdd(false);
     setExpanded(id);
+  };
+
+  const saveLane = () => {
+    if (!editLane.pod.trim() || !editLane.loadingAddress.trim()) return;
+    actions.updateLane(editLane.id, {
+      pod: editLane.pod.trim(),
+      loadingAddress: editLane.loadingAddress.trim(),
+      containerType: editLane.containerType,
+      transitTime: editLane.transitTime.trim(),
+    });
+    setEditLane(null);
+  };
+
+  const saveQuote = () => {
+    if (!editQuote.company.trim() || editQuote.rate === "") return;
+    actions.updateQuote(editQuote.laneId, editQuote.id, { company: editQuote.company.trim(), currency: editQuote.currency, rate: editQuote.rate });
+    setEditQuote(null);
   };
 
   const draftFor = (laneId) => quoteDraft[laneId] || { company: "", rate: "", currency: "USD" };
@@ -3059,8 +3078,42 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
                     <div className="lane-detail" onClick={(e) => e.stopPropagation()}>
                       <div className="section-title" style={{ marginBottom: 8 }}>
                         <span>{canEdit ? "Forwarder rates" : "Rates"} — {lane.pod} · {lane.containerType}</span>
-                        {canEdit && <button className="btn btn-sm" onClick={() => actions.deleteLane(lane.id)}><Trash2 size={12} /> Delete lane</button>}
+                        {canEdit && (
+                          <span style={{ display: "inline-flex", gap: 6 }}>
+                            <button className="btn btn-sm" onClick={() => setEditLane({ id: lane.id, pod: lane.pod || "", loadingAddress: lane.loadingAddress || "", containerType: lane.containerType || CONTAINER_TYPES[0], transitTime: lane.transitTime || "" })}><Pencil size={12} /> Edit lane</button>
+                            <button className="btn btn-sm" onClick={() => actions.deleteLane(lane.id)}><Trash2 size={12} /> Delete lane</button>
+                          </span>
+                        )}
                       </div>
+
+                      {canEdit && editLane && editLane.id === lane.id && (
+                        <div className="add-form lane-edit" style={{ marginBottom: 12 }}>
+                          <div className="form-grid" style={{ gridTemplateColumns: "1fr 1.4fr 1fr 1fr" }}>
+                            <div>
+                              <label>POD</label>
+                              <input value={editLane.pod} onChange={(e) => setEditLane({ ...editLane, pod: e.target.value })} />
+                            </div>
+                            <div>
+                              <label>Loading address</label>
+                              <input value={editLane.loadingAddress} onChange={(e) => setEditLane({ ...editLane, loadingAddress: e.target.value })} />
+                            </div>
+                            <div>
+                              <label>Type of container</label>
+                              <select value={editLane.containerType} onChange={(e) => setEditLane({ ...editLane, containerType: e.target.value })}>
+                                {(CONTAINER_TYPES.includes(editLane.containerType) ? CONTAINER_TYPES : [editLane.containerType, ...CONTAINER_TYPES]).map((c) => <option key={c} value={c}>{c}</option>)}
+                              </select>
+                            </div>
+                            <div>
+                              <label>Transit time</label>
+                              <input value={editLane.transitTime} onChange={(e) => setEditLane({ ...editLane, transitTime: e.target.value })} />
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button className="btn btn-accent btn-sm" disabled={!editLane.pod.trim() || !editLane.loadingAddress.trim()} onClick={saveLane}><Save size={12} /> Save lane changes</button>
+                            <button className="btn btn-ghost btn-sm" onClick={() => setEditLane(null)}>Cancel</button>
+                          </div>
+                        </div>
+                      )}
 
                       <div className="table-scroll" style={{ maxHeight: "none" }}>
                         <table className="data-table" style={{ minWidth: canEdit ? 560 : 340 }}>
@@ -3079,28 +3132,45 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
                             {lane.quotes.length === 0 && (
                               <tr><td colSpan={6} className="ro muted" style={{ padding: 12 }}>No rates recorded for this lane yet.</td></tr>
                             )}
-                            {lane.quotes.map((q, i) => (
-                              <tr key={q.id} className={best && q.id === best.id ? "parent-row" : ""}>
-                                {canEdit
-                                  ? <td><SuggestInput names={forwarderNames} value={q.company} onChange={(v) => actions.updateQuote(lane.id, q.id, "company", v)} /></td>
-                                  : <td><span className="ro muted">Option {i + 1}</span></td>}
-                                <td>
-                                  {canEdit ? (
-                                    <select value={q.currency} onChange={(e) => actions.updateQuote(lane.id, q.id, "currency", e.target.value)}>
-                                      {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                                    </select>
-                                  ) : <span className="ro">{q.currency}</span>}
-                                </td>
-                                <td>
+                            {lane.quotes.map((q, i) => {
+                              const isEdit = canEdit && editQuote && editQuote.id === q.id;
+                              return (
+                                <tr key={q.id} className={best && q.id === best.id ? "parent-row" : ""}>
                                   {canEdit
-                                    ? <input type="number" value={q.rate} onChange={(e) => actions.updateQuote(lane.id, q.id, "rate", e.target.value)} />
-                                    : <span className="ro sm-mono">{formatMoney(q.rate, q.currency)}</span>}
-                                </td>
-                                <td>{best && q.id === best.id ? <span className="chip green">Cheapest</span> : <span className="ro muted">—</span>}</td>
-                                {canEdit && <td><span className="ro muted">{q.addedBy || "—"}</span></td>}
-                                {canEdit && <td><button className="btn-icon" title="Remove rate" onClick={() => actions.deleteQuote(lane.id, q.id)}><Trash2 size={13} /></button></td>}
-                              </tr>
-                            ))}
+                                    ? <td>{isEdit ? <SuggestInput names={forwarderNames} value={editQuote.company} onChange={(v) => setEditQuote((d) => ({ ...d, company: v }))} onEnter={saveQuote} /> : <span className="ro">{q.company}</span>}</td>
+                                    : <td><span className="ro muted">Option {i + 1}</span></td>}
+                                  <td>
+                                    {isEdit ? (
+                                      <select value={editQuote.currency} onChange={(e) => setEditQuote({ ...editQuote, currency: e.target.value })}>
+                                        {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                                      </select>
+                                    ) : <span className="ro">{q.currency}</span>}
+                                  </td>
+                                  <td>
+                                    {isEdit
+                                      ? <input type="number" value={editQuote.rate} onChange={(e) => setEditQuote({ ...editQuote, rate: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") saveQuote(); }} />
+                                      : <span className="ro sm-mono">{formatMoney(q.rate, q.currency)}</span>}
+                                  </td>
+                                  <td>{best && q.id === best.id ? <span className="chip green">Cheapest</span> : <span className="ro muted">—</span>}</td>
+                                  {canEdit && <td><span className="ro muted">{q.addedBy || "—"}</span></td>}
+                                  {canEdit && (
+                                    <td style={{ whiteSpace: "nowrap" }}>
+                                      {isEdit ? (
+                                        <>
+                                          <button className="btn btn-sm btn-accent" disabled={!editQuote.company.trim() || editQuote.rate === ""} onClick={saveQuote}><Save size={12} /> Save</button>{" "}
+                                          <button className="btn btn-sm" onClick={() => setEditQuote(null)}>Cancel</button>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <button className="btn-icon" title="Edit rate" onClick={() => setEditQuote({ laneId: lane.id, id: q.id, company: q.company || "", currency: q.currency || "USD", rate: q.rate ?? "" })}><Pencil size={13} /></button>
+                                          <button className="btn-icon" title="Remove rate" onClick={() => actions.deleteQuote(lane.id, q.id)}><Trash2 size={13} /></button>
+                                        </>
+                                      )}
+                                    </td>
+                                  )}
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -4392,9 +4462,10 @@ export default function App() {
   const addQuote = (laneId, quote) => {
     setLanes((prev) => prev.map((l) => (l.id === laneId ? { ...l, quotes: [...l.quotes, { id: uid("quote"), ...quote }] } : l)));
   };
-  const updateQuote = (laneId, quoteId, field, value) => {
+  const updateLane = (laneId, patch) => setLanes((prev) => prev.map((l) => (l.id === laneId ? { ...l, ...patch } : l)));
+  const updateQuote = (laneId, quoteId, patch) => {
     setLanes((prev) => prev.map((l) => (
-      l.id !== laneId ? l : { ...l, quotes: l.quotes.map((q) => (q.id === quoteId ? { ...q, [field]: value } : q)) }
+      l.id !== laneId ? l : { ...l, quotes: l.quotes.map((q) => (q.id === quoteId ? { ...q, ...patch } : q)) }
     )));
   };
   const deleteQuote = (laneId, quoteId) => {
@@ -5058,7 +5129,7 @@ export default function App() {
     buyerJobs, addBuyerJob, updateBuyerJob, deleteBuyerJob, addBuyerJobNote,
     warehouseEvents, addWarehouseEvent, updateWarehouseEvent, deleteWarehouseEvent,
     markReorderHandled, dismissReorder, savePfi, savePo,
-    addLane, deleteLane, addQuote, updateQuote, deleteQuote,
+    addLane, updateLane, deleteLane, addQuote, updateQuote, deleteQuote,
     addCustomer, addNote, sendExisting, deleteNote, markSeen, answerFeedItem, deleteFeedItem,
     addPfi, deletePfi, addProduct, addProductsBulk, deleteProduct, updateProductSaleField, updateProductBuyerField,
     toggleReorder, updateDelivery, addDocument, updateDocumentStatus,
