@@ -7,7 +7,7 @@ import { fmtDate, fmtMonth, parseDmy, parseMonth, todayIso } from "./dates";
 import { keepRemoved, pfiTrackingStatus, rollupStatusLabel, TRACKING_TONE } from "./status";
 import { matchNames, uniqueNames } from "./suggest";
 import { orderTotals, vatOption, VAT_OPTIONS } from "./money";
-import { DUE_TONE, dueLabel, dueState } from "./payments";
+import { DUE_TONE, dueLabel, dueState, groupByCustomer, PAY_STATUSES, PAY_STATUS_TONE, payStatus } from "./payments";
 import { sortLanesByPod } from "./lanes";
 import { lineCover, pfiLineCover, pfiShortages, poShortages } from "./allocation";
 import { placePanel } from "./popup";
@@ -259,14 +259,24 @@ const GlobalStyle = () => (
     .confirm-strip > span { flex:1; min-width:220px; line-height:1.5; }
     .form-grid.pay-track-grid { grid-template-columns:1.6fr 1fr 1fr 1fr; }
     .pay-track-grid .date-field { display:flex; }
-    .hold-tick, .paid-tick, .form-grid label.hold-tick { display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600; text-transform:none; letter-spacing:0; border-radius:3px; padding:5px 9px; margin:0; cursor:pointer; background:#EEF2EF; color:#5B6570; white-space:nowrap; }
+    .hold-tick, .form-grid label.hold-tick { display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600; text-transform:none; letter-spacing:0; border-radius:3px; padding:5px 9px; margin:0; cursor:pointer; background:#EEF2EF; color:#5B6570; white-space:nowrap; }
     .form-grid label.hold-tick { padding:8px 12px; font-size:12.5px; }
-    .hold-tick input, .paid-tick input, .data-table .hold-tick input, .data-table .paid-tick input, .form-grid .hold-tick input { width:auto; min-width:0; margin:0; padding:0; border:none; }
+    .hold-tick input, .data-table .hold-tick input, .form-grid .hold-tick input { width:auto; min-width:0; margin:0; padding:0; border:none; }
     .hold-tick.on, .form-grid label.hold-tick.on { background:#FCEBC9; color:#7A5410; }
-    .paid-tick.on { background:#D5EEDC; color:#1B5237; }
     .data-table tr.pay-row.is-overdue td { background:#FFF1EF; }
     .data-table tr.pay-row.is-overdue td:first-child { box-shadow:inset 3px 0 0 #C64B4B; }
     .data-table tr.pay-row.is-paid .ro { color:#7C8891; }
+    .pay-cust-head, .pay-cust-row { display:grid; grid-template-columns:1.5fr 1fr 1.3fr 1.2fr 28px; gap:10px; align-items:center; }
+    .pay-cust-head { padding:10px 18px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#7C8891; border-bottom:1px solid #E5E9E9; }
+    .pay-cust-row { padding:14px 18px; border-bottom:1px solid #EEF0EF; cursor:pointer; font-size:13.5px; border-left:3px solid transparent; }
+    .pay-cust-row:hover { background:#F7FBF8; }
+    .pay-cust.open > .pay-cust-row { background:#D7EADD; border-left-color:#2F7A52; border-bottom-color:#BFE3CB; }
+    .pay-cust-total { font-weight:700; font-size:14px; color:#1F5B3D; }
+    .pay-cust-flags { display:flex; gap:6px; flex-wrap:wrap; }
+    .pay-cust-detail { background:#FCFEFC; border-left:3px solid #2F7A52; border-bottom:1px solid #E5E9E9; padding:14px 18px 16px; }
+    .pay-cust-foot { text-align:right; font-size:12px; color:#5B6570; padding:10px 4px 0; }
+    .data-table select.pay-status { font-weight:600; min-width:140px; }
+    @media (max-width: 860px) { .pay-cust-head { display:none; } .pay-cust-row { grid-template-columns:1fr; gap:4px; } }
     .data-table tr.pay-edit-row td { background:#F7FBF8; padding:14px 16px; }
     .data-table tr.pay-confirm-row td { padding:0; }
     @media (max-width: 860px) { .form-grid.pay-track-grid { grid-template-columns:1fr 1fr; } }
@@ -3751,19 +3761,33 @@ function PaymentFields({ value, onChange, names }) {
 function PaymentTrackingTab({ rows, customerNames, actions, userName }) {
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState(EMPTY_PAYMENT);
-  const [editing, setEditing] = useState(null); // the row being edited, as a draft
+  const [editing, setEditing] = useState(null); // the invoice being edited, as a draft
   const [removing, setRemoving] = useState(null);
   const [find, setFind] = useState("");
+  const [openCustomers, setOpenCustomers] = useState(() => new Set()); // the customers whose invoices are shown
   const today = todayLocalIso();
   const list = rows || [];
   const names = React.useMemo(() => uniqueNames([...customerNames, ...list.map((r) => r.customer)]), [customerNames, list]);
   const fq = find.trim().toLowerCase();
   const visible = fq ? list.filter((r) => [r.customer, r.inv].some((f) => String(f || "").toLowerCase().includes(fq))) : list;
+  const groups = React.useMemo(() => groupByCustomer(visible, today), [visible, today]);
   const ready = (v) => v.customer.trim() && v.inv.trim() && v.amount !== "" && !Number.isNaN(Number(v.amount));
+  const keyOf = (customer) => String(customer || "").trim().replace(/\s+/g, " ").toLowerCase();
+  const openCustomer = (customer) => setOpenCustomers((prev) => new Set(prev).add(keyOf(customer)));
+  const toggleCustomer = (key) => setOpenCustomers((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+  const rank = (currency) => { const i = CURRENCIES.indexOf(currency); return i < 0 ? CURRENCIES.length : i; };
+  const sums = (byCurrency) => Object.entries(byCurrency) // always in the order of the currency list, so a total does not move about
+    .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
+    .map(([currency, amount]) => formatMoney(amount, currency)).join(" + ");
 
   const submit = () => {
     if (!ready(form)) return;
     actions.addPaymentTrack({ ...form, createdBy: userName });
+    openCustomer(form.customer); // the new invoice is shown straight away
     setForm(EMPTY_PAYMENT);
     setShowAdd(false);
   };
@@ -3775,6 +3799,7 @@ function PaymentTrackingTab({ rows, customerNames, actions, userName }) {
     if (!ready(editing)) return;
     const { id, ...fields } = editing;
     actions.updatePaymentTrack(id, { ...fields, customer: fields.customer.trim(), inv: fields.inv.trim(), amount: Number(fields.amount) });
+    openCustomer(fields.customer); // an invoice moved to another customer stays in sight
     setEditing(null);
   };
 
@@ -3792,7 +3817,7 @@ function PaymentTrackingTab({ rows, customerNames, actions, userName }) {
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <button className="btn btn-accent" disabled={!ready(form)} onClick={submit}>Save payment</button>
               <button className="btn btn-ghost" onClick={() => { setShowAdd(false); setForm(EMPTY_PAYMENT); }}>Cancel</button>
-              <span className="muted" style={{ fontSize: 12 }}>Customer, INV and amount are needed; the rest can be filled in later.</span>
+              <span className="muted" style={{ fontSize: 12 }}>Customer, INV and amount are needed; the rest can be filled in later. A new invoice starts as "Have not paid".</span>
             </div>
           </div>
         )}
@@ -3806,73 +3831,114 @@ function PaymentTrackingTab({ rows, customerNames, actions, userName }) {
         ) : visible.length === 0 && !showAdd ? (
           <div className="empty"><CreditCard size={30} /><div style={{ fontWeight: 600 }}>No payment matches that search</div></div>
         ) : list.length > 0 && (
-          <div className="table-scroll" style={{ maxHeight: "none" }}>
-            <table className="data-table pay-track-table" style={{ minWidth: 980 }}>
-              <thead>
-                <tr>
-                  <th style={{ minWidth: 180 }}>Customer</th><th>INV</th><th>Loading date</th><th>ETA</th><th>Currency</th>
-                  <th style={{ textAlign: "right" }}>Amount</th><th>Due date</th><th>Container on hold</th><th>Paid</th><th>Status</th><th />
-                </tr>
-              </thead>
-              <tbody>
-                {visible.map((r) => {
-                  const { state } = dueState(r, today);
-                  if (editing && editing.id === r.id) {
-                    return (
-                      <tr key={r.id} className="pay-edit-row">
-                        <td colSpan={11}>
-                          <PaymentFields value={editing} onChange={setEditing} names={names} />
-                          <div style={{ display: "flex", gap: 8 }}>
-                            <button className="btn btn-sm btn-accent" disabled={!ready(editing)} onClick={saveEdit}><Save size={12} /> Save</button>
-                            <button className="btn btn-sm" onClick={() => setEditing(null)}>Cancel</button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  }
-                  return (
-                    <React.Fragment key={r.id}>
-                      <tr className={`pay-row is-${state}`}>
-                        <td><span className="ro" style={{ fontWeight: 600 }}>{r.customer}</span></td>
-                        <td><span className="ro sm-mono">{r.inv}</span></td>
-                        <td><span className="ro">{fmtDate(r.loadingDate) || "—"}</span></td>
-                        <td><span className="ro">{fmtDate(r.eta) || "—"}</span></td>
-                        <td><span className="ro">{r.currency}</span></td>
-                        <td style={{ textAlign: "right" }}><span className="ro sm-mono">{formatMoney(r.amount, r.currency)}</span></td>
-                        <td><span className="ro">{fmtDate(r.dueDate) || "—"}</span></td>
-                        <td>
-                          <label className={`hold-tick ${r.onHold ? "on" : ""}`}>
-                            <input type="checkbox" aria-label="Container on hold" checked={!!r.onHold} onChange={(e) => actions.updatePaymentTrack(r.id, { onHold: e.target.checked })} /> {r.onHold ? "On hold" : "No"}
-                          </label>
-                        </td>
-                        <td>
-                          <label className={`paid-tick ${r.paid ? "on" : ""}`}>
-                            <input type="checkbox" aria-label="Paid" checked={!!r.paid} onChange={(e) => actions.updatePaymentTrack(r.id, { paid: e.target.checked })} /> {r.paid ? "Paid" : "Not yet"}
-                          </label>
-                        </td>
-                        <td><span className={`chip ${DUE_TONE[state]}`}>{dueLabel(r, today)}</span></td>
-                        <td style={{ whiteSpace: "nowrap" }}>
-                          <button className="btn-icon edit" title="Edit payment" onClick={() => startEdit(r)}><Pencil size={14} /></button>
-                          <button className="btn-icon" title="Delete payment" onClick={() => setRemoving(removing === r.id ? null : r.id)}><Trash2 size={14} /></button>
-                        </td>
-                      </tr>
-                      {removing === r.id && (
-                        <tr className="pay-confirm-row">
-                          <td colSpan={11}>
-                            <div className="confirm-strip">
-                              <span>Delete the payment <strong>{r.inv}</strong> of <strong>{r.customer}</strong>? This cannot be undone.</span>
-                              <button className="btn btn-sm btn-danger" onClick={() => { actions.deletePaymentTrack(r.id); setRemoving(null); }}><Trash2 size={12} /> Yes, delete</button>
-                              <button className="btn btn-sm" onClick={() => setRemoving(null)}>Cancel</button>
-                            </div>
-                          </td>
-                        </tr>
+          <>
+            <div className="pay-cust-head">
+              <div>Customer</div><div>Invoices</div><div>Outstanding balance</div><div /><div />
+            </div>
+            {groups.map((g) => {
+              const isOpen = Boolean(fq) || openCustomers.has(g.key); // a search shows what it found
+              return (
+                <div key={g.key} className={`pay-cust ${isOpen ? "open" : ""}`}>
+                  <div className="pay-cust-row" onClick={() => toggleCustomer(g.key)}>
+                    <div className="company-name">{g.customer}</div>
+                    <div className="muted">{g.invoices.length} invoice{g.invoices.length === 1 ? "" : "s"}{g.open < g.invoices.length ? ` · ${g.open} outstanding` : ""}</div>
+                    <div className="pay-cust-total">
+                      {g.open > 0
+                        ? <span className="sm-mono">{sums(g.outstanding)}</span>
+                        : <span className="chip green">Settled</span>}
+                    </div>
+                    <div className="pay-cust-flags">
+                      {g.overdue > 0 && <span className="chip red">{g.overdue} overdue</span>}
+                      {g.onHold > 0 && <span className="chip amber">{g.onHold} on hold</span>}
+                    </div>
+                    <ChevronRight size={16} className={`chev ${isOpen ? "open" : ""}`} />
+                  </div>
+
+                  {isOpen && (
+                    <div className="pay-cust-detail">
+                      <div className="table-scroll" style={{ maxHeight: "none" }}>
+                        <table className="data-table pay-track-table" style={{ minWidth: 900 }}>
+                          <thead>
+                            <tr>
+                              <th>INV</th><th>Loading date</th><th>ETA</th><th>Currency</th>
+                              <th style={{ textAlign: "right" }}>Amount</th><th>Due date</th><th>Container on hold</th><th style={{ minWidth: 150 }}>Status</th><th>Due</th><th />
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {g.invoices.map((r) => {
+                              const { state } = dueState(r, today);
+                              const status = payStatus(r);
+                              if (editing && editing.id === r.id) {
+                                return (
+                                  <tr key={r.id} className="pay-edit-row">
+                                    <td colSpan={10}>
+                                      <PaymentFields value={editing} onChange={setEditing} names={names} />
+                                      <div style={{ display: "flex", gap: 8 }}>
+                                        <button className="btn btn-sm btn-accent" disabled={!ready(editing)} onClick={saveEdit}><Save size={12} /> Save</button>
+                                        <button className="btn btn-sm" onClick={() => setEditing(null)}>Cancel</button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              }
+                              return (
+                                <React.Fragment key={r.id}>
+                                  <tr className={`pay-row is-${state}`}>
+                                    <td><span className="ro sm-mono" style={{ fontWeight: 600 }}>{r.inv}</span></td>
+                                    <td><span className="ro">{fmtDate(r.loadingDate) || "—"}</span></td>
+                                    <td><span className="ro">{fmtDate(r.eta) || "—"}</span></td>
+                                    <td><span className="ro">{r.currency}</span></td>
+                                    <td style={{ textAlign: "right" }}><span className="ro sm-mono">{formatMoney(r.amount, r.currency)}</span></td>
+                                    <td><span className="ro">{fmtDate(r.dueDate) || "—"}</span></td>
+                                    <td>
+                                      <label className={`hold-tick ${r.onHold ? "on" : ""}`}>
+                                        <input type="checkbox" aria-label="Container on hold" checked={!!r.onHold} onChange={(e) => actions.updatePaymentTrack(r.id, { onHold: e.target.checked })} /> {r.onHold ? "On hold" : "No"}
+                                      </label>
+                                    </td>
+                                    <td>
+                                      <select
+                                        aria-label="Status"
+                                        className={`pay-status tone-${PAY_STATUS_TONE[status]}`}
+                                        value={status}
+                                        onChange={(e) => actions.updatePaymentTrack(r.id, { status: e.target.value, paid: e.target.value === "received" })}
+                                      >
+                                        {PAY_STATUSES.map((st) => <option key={st.value} value={st.value}>{st.label}</option>)}
+                                      </select>
+                                    </td>
+                                    <td><span className={`chip ${DUE_TONE[state]}`}>{dueLabel(r, today)}</span></td>
+                                    <td style={{ whiteSpace: "nowrap" }}>
+                                      <button className="btn-icon edit" title="Edit payment" onClick={() => startEdit(r)}><Pencil size={14} /></button>
+                                      <button className="btn-icon" title="Delete payment" onClick={() => setRemoving(removing === r.id ? null : r.id)}><Trash2 size={14} /></button>
+                                    </td>
+                                  </tr>
+                                  {removing === r.id && (
+                                    <tr className="pay-confirm-row">
+                                      <td colSpan={10}>
+                                        <div className="confirm-strip">
+                                          <span>Delete the payment <strong>{r.inv}</strong> of <strong>{r.customer}</strong>? This cannot be undone.</span>
+                                          <button className="btn btn-sm btn-danger" onClick={() => { actions.deletePaymentTrack(r.id); setRemoving(null); }}><Trash2 size={12} /> Yes, delete</button>
+                                          <button className="btn btn-sm" onClick={() => setRemoving(null)}>Cancel</button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  )}
+                                </React.Fragment>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      {Object.keys(g.invoiced).length > 0 && (
+                        <div className="pay-cust-foot">
+                          Invoiced {sums(g.invoiced)} · outstanding <strong>{g.open > 0 ? sums(g.outstanding) : "nothing"}</strong>
+                        </div>
                       )}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </>
         )}
       </div>
     </div>
@@ -4925,7 +4991,7 @@ export default function App() {
       customer: (data.customer || "").trim(), inv: (data.inv || "").trim(),
       loadingDate: data.loadingDate || "", eta: data.eta || "",
       currency: data.currency || CURRENCIES[0], amount: data.amount === "" || data.amount === undefined ? "" : Number(data.amount),
-      dueDate: data.dueDate || "", onHold: !!data.onHold, paid: false,
+      dueDate: data.dueDate || "", onHold: !!data.onHold, status: "not_paid", paid: false,
       createdBy: data.createdBy || "", createdAt: now, updatedAt: now,
     };
     setPaymentTracks((prev) => [row, ...(prev || [])]);

@@ -1363,7 +1363,7 @@ test("suppliers: edit renames the supplier on its POs; delete waits until its PO
   await expect(supRow(NEW)).toHaveCount(0);
 });
 
-test("payment tracking: admin adds, ticks, edits and deletes payments; overdue rows stand out; other roles never see the tab", async ({ page }) => {
+test("payment tracking: invoices sit under their customer with the outstanding total; each invoice has its status", async ({ page }) => {
   const iso = (offsetDays: number) => { const d = new Date(); d.setDate(d.getDate() + offsetDays); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
   const dmy = (offsetDays: number) => { const [y, m, d] = iso(offsetDays).split("-"); return `${d}/${m}/${y}`; };
   const typeDate = async (field: ReturnType<Page["locator"]>, value: string) => { const box = field.locator('.date-field input[type="text"]'); await box.fill(value); await box.press("Enter"); };
@@ -1377,103 +1377,148 @@ test("payment tracking: admin adds, ticks, edits and deletes payments; overdue r
 
   await signIn(page, A.admin.username, A.admin.password);
   await side(page, "Payment tracking").click();
+  const find = page.locator(".overview-bar input");
   const row = (inv: string) => page.locator("tr.pay-row", { hasText: inv });
-  for (const inv of ["E2E-INV-1", "E2E-INV-2", "E2E-INV-2B"]) {
-    while (await row(inv).count()) {
-      await row(inv).first().getByTitle("Delete payment").click();
+  const customer = (name: string) => page.locator(".pay-cust", { has: page.locator(".pay-cust-row .company-name", { hasText: name }) });
+  const dropAll = async () => {
+    await find.fill("E2E-INV"); // a search opens what it finds
+    while (await page.locator("tr.pay-row").count()) {
+      await page.locator("tr.pay-row").first().getByTitle("Delete payment").click();
       await page.locator(".confirm-strip").getByRole("button", { name: "Yes, delete" }).click();
     }
-  }
-  const before = await page.locator("tr.pay-row").count();
+    await find.fill("");
+  };
+  await dropAll();
+  const customersBefore = await page.locator(".pay-cust").count();
 
-  // Add: every field of the request, the customer picked from the suggestions.
-  await page.getByRole("button", { name: "Add payment" }).click();
   const form = page.locator(".add-form").first();
   const field = (label: string) => form.locator(".form-grid > div", { has: page.locator("label", { hasText: new RegExp(`^${label}$`) }) });
+  const add = async (name: string, inv: string, currency: string, amount: string, due: number | null, hold = false, pick = false) => {
+    await page.getByRole("button", { name: "Add payment" }).click();
+    if (pick) { await field("Customer").locator("input").fill("acme"); await page.locator(".suggest-panel .suggest-option", { hasText: "Acme Foods Ltd" }).click(); }
+    else await field("Customer").locator("input").fill(name);
+    await field("INV").locator("input").fill(inv);
+    await field("Currency").locator("select").selectOption(currency);
+    await field("Amount").locator("input").fill(amount);
+    if (due !== null) await typeDate(field("Due date"), dmy(due));
+    if (hold) await field("Container on hold").locator('input[type="checkbox"]').check();
+    await form.getByRole("button", { name: "Save payment" }).click();
+    await expect(row(inv)).toHaveCount(1); // the customer opens on its new invoice
+  };
+  await page.getByRole("button", { name: "Add payment" }).click();
   await expect(form.locator(".form-grid > div > label:first-child")).toHaveText(["Customer", "INV", "Loading date", "ETA", "Currency", "Amount", "Due date", "Container on hold"]);
   await expect(form.getByRole("button", { name: "Save payment" })).toBeDisabled();
-  await field("Customer").locator("input").fill("acme");
-  await page.locator(".suggest-panel .suggest-option", { hasText: "Acme Foods Ltd" }).click();
-  await field("INV").locator("input").fill("E2E-INV-1");
-  await typeDate(field("Loading date"), dmy(-20));
-  await typeDate(field("ETA"), dmy(8));
-  await field("Currency").locator("select").selectOption("GBP");
-  await field("Amount").locator("input").fill("12500.5");
-  await typeDate(field("Due date"), dmy(-3)); // three days late
-  await field("Container on hold").locator('input[type="checkbox"]').check();
-  await form.getByRole("button", { name: "Save payment" }).click();
+  await form.getByRole("button", { name: "Cancel" }).click();
+  await add("Acme Foods Ltd", "E2E-INV-1", "GBP", "12500.5", -3, true, true); // three days late, container held
+  await add("  acme foods ltd ", "E2E-INV-2", "GBP", "800", 10); // typed differently: the same customer
+  await add("Acme Foods Ltd", "E2E-INV-3", "USD", "300", null);
+  await add("E2E Walk-in Trading", "E2E-INV-4", "EUR", "950.25", 0);
 
-  await page.getByRole("button", { name: "Add payment" }).click();
-  await field("Customer").locator("input").fill("E2E Walk-in Trading"); // not in the customer list: still accepted
-  await field("INV").locator("input").fill("E2E-INV-2");
-  await field("Amount").locator("input").fill("800");
-  await typeDate(field("Due date"), dmy(10));
-  await form.getByRole("button", { name: "Save payment" }).click();
-  await expect(page.locator("tr.pay-row")).toHaveCount(before + 2);
+  // One row per customer, A to Z, with what is still owed.
+  await expect(page.locator(".pay-cust-head > div")).toHaveText(["Customer", "Invoices", "Outstanding balance", "", ""]);
+  await expect(page.locator(".pay-cust")).toHaveCount(customersBefore + 2);
+  const names = (await page.locator(".pay-cust-row .company-name").allInnerTexts()).map((n) => n.trim());
+  expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })));
+  const acme = customer("Acme Foods Ltd");
+  const head = acme.locator(".pay-cust-row");
+  await expect(head).toContainText("3 invoices");
+  await expect(head.locator(".pay-cust-total")).toHaveText("$300.00 + £13,300.50");
+  await expect(head.locator(".pay-cust-flags")).toContainText("1 overdue");
+  await expect(head.locator(".pay-cust-flags")).toContainText("1 on hold");
+  await expect(customer("E2E Walk-in Trading").locator(".pay-cust-total")).toHaveText("€950.25");
 
-  // The table: one column per field, plus Paid and the status.
-  await expect(page.locator(".pay-track-table thead th")).toHaveText(["Customer", "INV", "Loading date", "ETA", "Currency", "Amount", "Due date", "Container on hold", "Paid", "Status", ""]);
-  const cells = row("E2E-INV-1").locator("td");
-  await expect(cells.nth(0)).toHaveText("Acme Foods Ltd");
-  await expect(cells.nth(2)).toHaveText(dmy(-20));
-  await expect(cells.nth(3)).toHaveText(dmy(8));
-  await expect(cells.nth(4)).toHaveText("GBP");
-  await expect(cells.nth(5)).toHaveText("£12,500.50");
-  await expect(cells.nth(6)).toHaveText(dmy(-3));
-  await expect(cells.nth(7).locator("input")).toBeChecked();
-  await expect(cells.nth(8).locator("input")).not.toBeChecked();
-  await expect(cells.nth(9)).toHaveText(/overdue 3 days/i);
+  // A click folds the customer away and brings its invoices back.
+  await expect(acme.locator("tr.pay-row")).toHaveCount(3);
+  await head.click();
+  await expect(acme.locator("tr.pay-row")).toHaveCount(0);
+  await head.click();
+  await expect(acme.locator("tr.pay-row")).toHaveCount(3);
+  await expect(acme.locator(".pay-track-table thead th")).toHaveText(["INV", "Loading date", "ETA", "Currency", "Amount", "Due date", "Container on hold", "Status", "Due", ""]);
+  await expect(acme.locator(".pay-cust-foot")).toContainText("Invoiced $300.00 + £13,300.50");
+
+  // Status per invoice: Have not paid to start with, then Received proof, then Received.
+  const status = (inv: string) => row(inv).locator("select.pay-status");
+  const due = (inv: string) => row(inv).locator("td").nth(8);
+  await expect(status("E2E-INV-1").locator("option")).toHaveText(["Have not paid", "Received proof", "Received"]);
+  for (const inv of ["E2E-INV-1", "E2E-INV-2", "E2E-INV-3", "E2E-INV-4"]) await expect(status(inv)).toHaveValue("not_paid");
+  await expect(row("E2E-INV-1").locator('input[type="checkbox"]')).toHaveCount(1); // only Container on hold is still a tick
+  await expect(due("E2E-INV-1")).toHaveText(/overdue 3 days/i);
   await expect(row("E2E-INV-1")).toHaveClass(/is-overdue/);
-  await expect(cells.nth(0)).toHaveCSS("background-color", "rgb(255, 241, 239)");
-  await expect(row("E2E-INV-2").locator("td").nth(9)).toHaveText(/due in 10 days/i);
-  await expect(row("E2E-INV-2")).not.toHaveClass(/is-overdue/);
-  await expect(row("E2E-INV-2").locator("td").nth(7).locator("input")).not.toBeChecked();
+  await expect(due("E2E-INV-2")).toHaveText(/due in 10 days/i);
+  await expect(due("E2E-INV-3")).toHaveText(/no due date/i);
+  await expect(due("E2E-INV-4")).toHaveText(/due today/i);
 
-  // Ticks work from the row: paid clears the overdue mark, the container comes off hold.
-  await cells.nth(8).locator("input").check();
-  await expect(cells.nth(9)).toHaveText(/^paid$/i);
+  await status("E2E-INV-1").selectOption("proof"); // a proof of payment is not the money: still owed, still late
+  await expect(due("E2E-INV-1")).toHaveText(/overdue 3 days/i);
+  await expect(head.locator(".pay-cust-total")).toHaveText("$300.00 + £13,300.50");
+  await expect(head.locator(".pay-cust-flags")).toContainText("1 overdue");
+
+  await status("E2E-INV-1").selectOption("received");
+  await expect(due("E2E-INV-1")).toHaveText(/settled/i);
   await expect(row("E2E-INV-1")).not.toHaveClass(/is-overdue/);
-  await cells.nth(7).locator("input").uncheck();
-  await expect(cells.nth(7)).toContainText("No");
-  await cells.nth(8).locator("input").uncheck();
-  await expect(cells.nth(9)).toHaveText(/overdue 3 days/i);
+  await expect(head.locator(".pay-cust-total")).toHaveText("$300.00 + £800.00");
+  await expect(head).toContainText("3 invoices · 2 outstanding");
+  await expect(head.locator(".pay-cust-flags .chip")).toHaveCount(0); // nothing late or held among what is still owed
+  await status("E2E-INV-2").selectOption("received");
+  await status("E2E-INV-3").selectOption("received");
+  await expect(head.locator(".pay-cust-total")).toHaveText(/settled/i);
+  await expect(acme.locator(".pay-cust-foot")).toContainText("outstanding nothing");
+  await status("E2E-INV-2").selectOption("not_paid"); // and back
+  await expect(head.locator(".pay-cust-total")).toHaveText("£800.00");
 
-  // Edit: Cancel keeps the row, Save changes it.
+  // Edit and the tick still work from the invoice row.
+  await row("E2E-INV-2").locator('input[aria-label="Container on hold"]').check();
+  await expect(head.locator(".pay-cust-flags")).toContainText("1 on hold");
   await row("E2E-INV-2").getByTitle("Edit payment").click();
   const edit = page.locator("tr.pay-edit-row");
   const editField = (label: string) => edit.locator(".form-grid > div", { has: page.locator("label", { hasText: new RegExp(`^${label}$`) }) });
-  await expect(editField("INV").locator("input")).toHaveValue("E2E-INV-2");
   await editField("Amount").locator("input").fill("1");
   await edit.getByRole("button", { name: "Cancel" }).click();
-  await expect(row("E2E-INV-2").locator("td").nth(5)).toHaveText("$800.00");
+  await expect(row("E2E-INV-2").locator("td").nth(4)).toHaveText("£800.00");
   await row("E2E-INV-2").getByTitle("Edit payment").click();
-  await editField("INV").locator("input").fill("E2E-INV-2B");
-  await editField("Amount").locator("input").fill("950.25");
-  await editField("Currency").locator("select").selectOption("EUR");
-  await typeDate(editField("Due date"), dmy(0));
+  await editField("Amount").locator("input").fill("900.75");
   await edit.getByRole("button", { name: "Save", exact: true }).click();
-  const edited = row("E2E-INV-2B").locator("td");
-  await expect(edited.nth(5)).toHaveText("€950.25");
-  await expect(edited.nth(9)).toHaveText(/due today/i);
-
-  // Find, reload, delete.
-  await page.locator(".overview-bar input").fill("walk-in");
-  await expect(page.locator("tr.pay-row")).toHaveCount(1);
-  await page.locator(".overview-bar input").fill("");
+  await expect(head.locator(".pay-cust-total")).toHaveText("£900.75");
   await page.waitForTimeout(1200);
-  await page.reload();
+
+  // A record saved before the status existed, ticked Paid, reads as Received.
+  const pushed = await page.evaluate(async ([dueDate]) => {
+    const now = new Date().toISOString();
+    const data = { id: "ptrack-e2e-legacy", customer: "E2E Walk-in Trading", inv: "E2E-INV-OLD", loadingDate: "", eta: "", currency: "EUR", amount: 120, dueDate, onHold: false, paid: true, createdBy: "e2e", createdAt: now, updatedAt: now };
+    return (await fetch("/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes: [{ kind: "paymentTracks", id: data.id, createdAt: now, data }] }) })).status;
+  }, [iso(-30)]);
+  expect(pushed).toBe(200);
+
+  await page.reload(); // everything was saved; the list opens folded
   await side(page, "Payment tracking").click();
-  await expect(row("E2E-INV-1").locator("td").nth(9)).toHaveText(/overdue 3 days/i);
-  await expect(row("E2E-INV-2B").locator("td").nth(5)).toHaveText("€950.25");
-  for (const inv of ["E2E-INV-1", "E2E-INV-2B"]) {
-    await row(inv).getByTitle("Delete payment").click();
-    await page.locator(".confirm-strip").getByRole("button", { name: "Cancel" }).click();
-    await expect(row(inv)).toHaveCount(1);
-    await row(inv).getByTitle("Delete payment").click();
-    await page.locator(".confirm-strip").getByRole("button", { name: "Yes, delete" }).click();
-    await expect(row(inv)).toHaveCount(0);
-  }
-  await expect(page.locator("tr.pay-row")).toHaveCount(before);
+  await expect(page.locator(".pay-cust-row").first()).toBeVisible();
+  await expect(page.locator("tr.pay-row")).toHaveCount(0);
+  await expect(customer("Acme Foods Ltd").locator(".pay-cust-total")).toHaveText("£900.75");
+  const walkin = customer("E2E Walk-in Trading");
+  await expect(walkin.locator(".pay-cust-row")).toContainText("2 invoices · 1 outstanding");
+  await expect(walkin.locator(".pay-cust-total")).toHaveText("€950.25");
+  await walkin.locator(".pay-cust-row").click();
+  await expect(status("E2E-INV-OLD")).toHaveValue("received");
+  await expect(due("E2E-INV-OLD")).toHaveText(/settled/i);
+  await customer("Acme Foods Ltd").locator(".pay-cust-row").click();
+  await expect(status("E2E-INV-1")).toHaveValue("received");
+  await expect(status("E2E-INV-2")).toHaveValue("not_paid");
+
+  // Find by INV or customer: only what matches, opened.
+  await find.fill("e2e-inv-3");
+  await expect(page.locator(".pay-cust")).toHaveCount(1);
+  await expect(page.locator("tr.pay-row")).toHaveCount(1);
+  await expect(row("E2E-INV-3")).toHaveCount(1);
+  await find.fill("walk-in");
+  await expect(page.locator(".pay-cust")).toHaveCount(1);
+  await expect(page.locator("tr.pay-row")).toHaveCount(2);
+  await find.fill("");
+
+  await row("E2E-INV-4").getByTitle("Delete payment").click();
+  await page.locator(".confirm-strip").getByRole("button", { name: "Cancel" }).click();
+  await expect(row("E2E-INV-4")).toHaveCount(1);
+  await dropAll();
+  await expect(page.locator(".pay-cust")).toHaveCount(customersBefore);
 });
 
 test("container rate: lanes are listed A to Z by POD, also after a new lane, a rename and a reload", async ({ page }) => {
