@@ -1172,3 +1172,186 @@ test("customer: the rep's own notes save by themselves, admin reads them, the bu
   await row.click();
   await expect(memo).toHaveValue("");
 });
+
+test("customers: edit renames the customer on its PFIs and requests; delete waits until its PFIs are gone", async ({ page }) => {
+  const OLD = "E2E Rename Ltd"; const NEW = "E2E Renamed Ltd"; const ASK = "E2E: price list for the renamed customer?";
+  const custRow = (name: string) => page.locator(".cust-row", { hasText: name });
+  const pfiRow = page.locator(".pfi-list-row", { hasText: "PFI 3292" });
+  const removePfi = async () => {
+    await side(page, "Order Tracking").click();
+    if (await pfiRow.count()) {
+      await openDetail(page, pfiRow);
+      await page.getByRole("button", { name: "Delete PFI" }).click();
+      await page.getByRole("button", { name: "Yes, delete" }).click();
+      await expect(pfiRow).toHaveCount(0);
+    }
+    await side(page, "Customer").click();
+  };
+
+  await signIn(page, A.sale.username, A.sale.password);
+  await removePfi(); // leftovers of an aborted run
+  for (const name of [OLD, NEW]) {
+    while (await custRow(name).count()) {
+      await custRow(name).first().getByTitle("Delete customer").click();
+      await page.locator(".confirm-strip").getByRole("button", { name: "Yes, delete" }).click();
+    }
+  }
+
+  await page.getByRole("button", { name: "Add customer" }).click();
+  const add = page.locator(".add-form").first();
+  await add.locator("input").nth(0).fill(OLD);
+  await add.locator("input").nth(1).fill("Rename x FMCG");
+  await add.locator("input").nth(2).fill("Tea");
+  await page.getByRole("button", { name: "Save customer" }).click();
+  const detail = page.locator(".detail-panel");
+  await detail.locator("textarea").first().fill(ASK);
+  await page.getByRole("button", { name: "Add info" }).click(); // Notify Buyer now is ticked by default
+  await expect(detail).toContainText(/awaiting buyer/i);
+
+  await side(page, "Order Tracking").click();
+  await page.getByRole("button", { name: "Add PFI" }).click();
+  const pfiForm = page.locator(".add-form").first();
+  await pfiForm.locator("input").nth(0).fill("3292");
+  await pfiForm.locator("select").first().selectOption({ label: OLD });
+  await page.getByRole("button", { name: "Create PFI" }).click();
+  await page.locator(".detail-body").waitFor();
+  await close(page);
+  await expect(pfiRow).toContainText(OLD);
+
+  // Edit: Cancel changes nothing, Save renames everywhere.
+  await side(page, "Customer").click();
+  await custRow(OLD).getByTitle("Edit customer").click();
+  const edit = page.locator(".row-edit");
+  await expect(edit.locator("input").nth(0)).toHaveValue(OLD);
+  await expect(edit).toContainText("also shows on this customer's 1 PFI");
+  await edit.locator("input").nth(0).fill("Never saved Ltd");
+  await edit.getByRole("button", { name: "Cancel" }).click();
+  await expect(custRow(OLD)).toHaveCount(1);
+  await custRow(OLD).getByTitle("Edit customer").click();
+  await edit.locator("input").nth(0).fill(NEW);
+  await edit.locator("input").nth(1).fill("Renamed x FMCG");
+  await edit.locator("input").nth(2).fill("Tea, jam");
+  await edit.getByRole("button", { name: "Save customer" }).click();
+  await expect(custRow(NEW)).toContainText("Renamed x FMCG");
+  await expect(custRow(NEW)).toContainText("Tea, jam");
+  await expect(custRow(NEW)).toContainText("1 PFI");
+  await expect(custRow(OLD)).toHaveCount(0);
+  await side(page, "Order Tracking").click();
+  await expect(pfiRow).toContainText(NEW);
+  await openDetail(page, pfiRow);
+  await expect(page.locator(".modal-title")).toContainText(NEW);
+  await close(page);
+  await page.waitForTimeout(1200);
+
+  await signIn(page, A.buyer.username, A.buyer.password); // the buyer sees the new name on the request and on the order
+  await expect(page.locator(".feed-item", { hasText: ASK }).first()).toContainText(NEW);
+  await pill(page, "Orders to update").click();
+  await expect(page.locator(".fulfil-head", { hasText: "PFI 3292" }).first()).toContainText(NEW);
+
+  // Delete: refused while the PFI exists, with the reason; allowed once it is gone.
+  await signIn(page, A.sale.username, A.sale.password);
+  await custRow(NEW).getByTitle("Delete customer").click();
+  const strip = page.locator(".confirm-strip");
+  await expect(strip).toContainText("has 1 PFI, so it cannot be deleted");
+  await expect(strip.getByRole("button", { name: "Yes, delete" })).toHaveCount(0);
+  await strip.getByRole("button", { name: "OK" }).click();
+  await expect(custRow(NEW)).toHaveCount(1);
+  await removePfi();
+  await custRow(NEW).getByTitle("Delete customer").click();
+  await expect(strip).toContainText(`Delete ${NEW}?`);
+  await strip.getByRole("button", { name: "Cancel" }).click();
+  await expect(custRow(NEW)).toHaveCount(1);
+  await custRow(NEW).getByTitle("Delete customer").click();
+  await strip.getByRole("button", { name: "Yes, delete" }).click();
+  await expect(custRow(NEW)).toHaveCount(0);
+  await expect(custRow("Acme Foods Ltd")).toHaveCount(1); // nobody else was touched
+  await page.waitForTimeout(1200);
+  await page.reload();
+  await expect(page.locator(".cust-row").first()).toBeVisible();
+  await expect(custRow(NEW)).toHaveCount(0);
+
+  await signIn(page, A.buyer.username, A.buyer.password); // its request left the buyer's inbox with it
+  await expect(page.locator(".feed-item").first()).toBeVisible();
+  await expect(page.locator(".feed-item", { hasText: ASK })).toHaveCount(0);
+});
+
+test("suppliers: edit renames the supplier on its POs; delete waits until its POs are gone", async ({ page }) => {
+  const OLD = "E2E Supplier Co"; const NEW = "E2E Supplier Renamed";
+  const supRow = (name: string) => page.locator(".supplier-row", { hasText: name });
+  const poRow = page.locator(".pfi-list-row", { hasText: "PO 4520" });
+  const removePo = async () => {
+    await pill(page, /^PO$/).click();
+    if (await poRow.count()) {
+      await openDetail(page, poRow);
+      await page.getByRole("button", { name: "Delete PO" }).click();
+      await page.getByRole("button", { name: "Yes, delete" }).click();
+      await expect(poRow).toHaveCount(0);
+    }
+    await pill(page, /^Suppliers$/).click();
+  };
+
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await pill(page, "PO Tracking").click();
+  await removePo();
+  for (const name of [OLD, NEW]) {
+    while (await supRow(name).count()) {
+      await supRow(name).first().getByTitle("Delete supplier").click();
+      await page.locator(".confirm-strip").getByRole("button", { name: "Yes, delete" }).click();
+    }
+  }
+  const others = await page.locator(".supplier-row").count();
+
+  await page.getByRole("button", { name: "Add supplier" }).click();
+  const add = page.locator(".add-form").first();
+  await add.locator("input").nth(0).fill(OLD);
+  await add.locator("input").nth(1).fill("first note");
+  await page.getByRole("button", { name: "Save supplier" }).click();
+  await expect(supRow(OLD)).toContainText("first note");
+
+  await pill(page, /^PO$/).click();
+  await page.getByRole("button", { name: "Add PO" }).click();
+  const poForm = page.locator(".add-form").first();
+  await poForm.locator("input").nth(0).fill("4520");
+  await poForm.locator("select").first().selectOption({ label: OLD });
+  await page.getByRole("button", { name: "Create PO" }).click();
+  await page.locator(".detail-body").waitFor();
+  await close(page);
+  await expect(poRow).toContainText(OLD);
+
+  await pill(page, /^Suppliers$/).click();
+  await supRow(OLD).getByTitle("Edit supplier").click();
+  const edit = page.locator(".row-edit");
+  await expect(edit.locator("input").nth(0)).toHaveValue(OLD);
+  await edit.locator("input").nth(0).fill("Never saved Co");
+  await edit.getByRole("button", { name: "Cancel" }).click();
+  await expect(supRow(OLD)).toHaveCount(1);
+  await supRow(OLD).getByTitle("Edit supplier").click();
+  await edit.locator("input").nth(0).fill(NEW);
+  await edit.locator("input").nth(1).fill("pays in 30 days");
+  await edit.getByRole("button", { name: "Save supplier" }).click();
+  await expect(supRow(NEW)).toContainText("pays in 30 days");
+  await expect(supRow(OLD)).toHaveCount(0);
+  await pill(page, /^PO$/).click();
+  await expect(poRow).toContainText(NEW);
+  await openDetail(page, poRow);
+  await expect(page.locator(".modal-title")).toContainText(NEW);
+  await close(page);
+
+  await pill(page, /^Suppliers$/).click();
+  await supRow(NEW).getByTitle("Delete supplier").click();
+  const strip = page.locator(".confirm-strip");
+  await expect(strip).toContainText("has 1 PO, so it cannot be deleted");
+  await expect(strip.getByRole("button", { name: "Yes, delete" })).toHaveCount(0);
+  await strip.getByRole("button", { name: "OK" }).click();
+  await removePo();
+  await supRow(NEW).getByTitle("Delete supplier").click();
+  await strip.getByRole("button", { name: "Yes, delete" }).click();
+  await expect(supRow(NEW)).toHaveCount(0);
+  await expect(page.locator(".supplier-row")).toHaveCount(others);
+  await page.waitForTimeout(1200);
+  await page.reload();
+  await pill(page, "PO Tracking").click();
+  await pill(page, /^Suppliers$/).click();
+  await expect(page.locator(".supplier-row")).toHaveCount(others);
+  await expect(supRow(NEW)).toHaveCount(0);
+});

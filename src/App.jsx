@@ -244,6 +244,13 @@ const GlobalStyle = () => (
     .btn-accent { background:#2F7A52; color:#fff; border-color:#2F7A52; }
     .btn-accent:hover { background:#24603F; }
     .btn-ghost { border-color:transparent; background:transparent; }
+    .btn-danger { background:#C64B4B; border-color:#C64B4B; color:#fff; }
+    .btn-danger:hover { background:#B23B3B; border-color:#B23B3B; }
+    .row-actions { display:inline-flex; align-items:center; justify-content:flex-end; gap:2px; }
+    .btn-icon.edit:hover { color:#1F5B3D; background:#DFF0E5; }
+    .confirm-strip { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:11px 18px; background:#FFF4F2; border-bottom:1px solid #F2CFCA; border-left:3px solid #C64B4B; font-size:12.5px; color:#5A2A2A; }
+    .confirm-strip.blocked { background:#FFF9EC; border-bottom-color:#EEDDB0; border-left-color:#C9A227; color:#5C4A12; }
+    .confirm-strip > span { flex:1; min-width:220px; line-height:1.5; }
     .btn-sm { padding:5px 10px; font-size:11.5px; }
     .btn-icon { border:none; background:transparent; cursor:pointer; color:#9AA3A9; padding:4px; display:inline-flex; align-items:center; border-radius:3px; }
     .btn-icon:hover { color:#B23B3B; background:#FBE4E1; }
@@ -254,8 +261,8 @@ const GlobalStyle = () => (
     .form-grid input, .form-grid select, .form-grid textarea { width:100%; border:1px solid #D8E6DC; border-radius:3px; padding:8px 10px; font-size:13px; font-family:inherit; }
     .form-grid label { font-size:11px; font-weight:600; color:#5B6570; margin-bottom:5px; display:block; text-transform:uppercase; letter-spacing:.04em; }
 
-    .cust-table-head { display:grid; grid-template-columns: 1.4fr 1fr 1.3fr 1fr 0.8fr 28px; gap:10px; padding:10px 18px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#7C8891; border-bottom:1px solid #E5E9E9; }
-    .cust-row { display:grid; grid-template-columns: 1.4fr 1fr 1.3fr 1fr 0.8fr 28px; gap:10px; padding:14px 18px; align-items:center; border-bottom:1px solid #EEF0EF; cursor:pointer; font-size:13.5px; border-left:3px solid transparent; }
+    .cust-table-head { display:grid; grid-template-columns: 1.4fr 1fr 1.3fr 1fr 0.8fr 84px; gap:10px; padding:10px 18px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#7C8891; border-bottom:1px solid #E5E9E9; }
+    .cust-row { display:grid; grid-template-columns: 1.4fr 1fr 1.3fr 1fr 0.8fr 84px; gap:10px; padding:14px 18px; align-items:center; border-bottom:1px solid #EEF0EF; cursor:pointer; font-size:13.5px; border-left:3px solid transparent; }
     .cust-row:hover { background:#F7FBF8; }
     .cust-row.open { background:#D7EADD; border-left-color:#2F7A52; border-bottom-color:#BFE3CB; }
     .company-name { font-weight:600; }
@@ -576,8 +583,8 @@ const GlobalStyle = () => (
     .activity-text { flex:1; }
     .activity-empty { padding:16px; text-align:center; color:#9AA3A9; font-size:12.5px; }
 
-    .supplier-row { display:grid; grid-template-columns: 1.4fr 1.6fr 0.8fr; gap:10px; padding:14px 18px; align-items:center; border-bottom:1px solid #EEF0EF; font-size:13.5px; }
-    .supplier-head { display:grid; grid-template-columns: 1.4fr 1.6fr 0.8fr; gap:10px; padding:10px 18px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#7C8891; border-bottom:1px solid #E5E9E9; }
+    .supplier-row { display:grid; grid-template-columns: 1.4fr 1.6fr 0.8fr 60px; gap:10px; padding:14px 18px; align-items:center; border-bottom:1px solid #EEF0EF; font-size:13.5px; }
+    .supplier-head { display:grid; grid-template-columns: 1.4fr 1.6fr 0.8fr 60px; gap:10px; padding:10px 18px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#7C8891; border-bottom:1px solid #E5E9E9; }
 
     .assign-bar { background:#EAF6EE; border:1px solid #BFE3CB; border-radius:5px; padding:12px 16px; margin-bottom:14px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
     .assign-bar strong { color:#1F5B3D; }
@@ -990,9 +997,11 @@ function CustomerDetail({ customer, pfis, memo, onSaveMemo, onAddNote, onSendExi
   );
 }
 
-function CustomerTab({ saleId, saleName, customers, pfisForSale, memos = [], saveMemo, addCustomer, addNote, sendExisting, deleteNote, markSeen, onOpenPfi }) {
+function CustomerTab({ saleId, saleName, customers, pfisForSale, memos = [], saveMemo, addCustomer, updateCustomer, deleteCustomer, addNote, sendExisting, deleteNote, markSeen, onOpenPfi }) {
   const [showAdd, setShowAdd] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
+  const [editing, setEditing] = useState(null); // { id, companyName, groupChatName, productsUsual }
+  const [removing, setRemoving] = useState(null); // customer id awaiting the confirmation
   const [find, setFind] = useState("");
   const [form, setForm] = useState({ companyName: "", groupChatName: "", productsUsual: "" });
 
@@ -1011,6 +1020,21 @@ function CustomerTab({ saleId, saleName, customers, pfisForSale, memos = [], sav
     setForm({ companyName: "", groupChatName: "", productsUsual: "" });
     setShowAdd(false);
     setExpandedId(newId);
+  };
+
+  const saveEdit = () => {
+    if (!editing.companyName.trim()) return;
+    updateCustomer(saleId, editing.id, {
+      companyName: editing.companyName.trim(),
+      groupChatName: editing.groupChatName.trim(),
+      productsUsual: editing.productsUsual.trim(),
+    });
+    setEditing(null);
+  };
+
+  const confirmRemove = (customerId) => {
+    if (deleteCustomer(saleId, customerId) && expandedId === customerId) setExpandedId(null);
+    setRemoving(null);
   };
 
   const toggleExpand = (customerId) => {
@@ -1076,14 +1100,56 @@ function CustomerTab({ saleId, saleName, customers, pfisForSale, memos = [], sav
               const pfisOfCustomer = pfisForSale.filter((p) => p.customerId === c.id);
               return (
                 <React.Fragment key={c.id}>
-                  <div className={`cust-row ${expandedId === c.id ? "open" : ""}`} onClick={() => toggleExpand(c.id)}>
-                    <div className="company-name">{c.companyName}</div>
-                    <div className="muted">{c.groupChatName || "—"}</div>
-                    <div className="muted">{c.productsUsual || "—"}</div>
-                    <div><NoteSummary notes={c.notes} /></div>
-                    <div className="muted">{pfisOfCustomer.length > 0 ? `${pfisOfCustomer.length} PFI` : "—"}</div>
-                    <ChevronRight size={16} className={`chev ${expandedId === c.id ? "open" : ""}`} />
-                  </div>
+                  {editing && editing.id === c.id ? (
+                    <div className="add-form row-edit">
+                      <div className="form-grid">
+                        <div>
+                          <label>Company name</label>
+                          <input autoFocus value={editing.companyName} onChange={(e) => setEditing({ ...editing, companyName: e.target.value })} />
+                        </div>
+                        <div>
+                          <label>Group chat name</label>
+                          <input value={editing.groupChatName} onChange={(e) => setEditing({ ...editing, groupChatName: e.target.value })} />
+                        </div>
+                        <div>
+                          <label>Products usually ordered</label>
+                          <input value={editing.productsUsual} onChange={(e) => setEditing({ ...editing, productsUsual: e.target.value })} />
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <button className="btn btn-accent" disabled={!editing.companyName.trim()} onClick={saveEdit}><Save size={14} /> Save customer</button>
+                        <button className="btn btn-ghost" onClick={() => setEditing(null)}>Cancel</button>
+                        {pfisOfCustomer.length > 0 && <span className="muted" style={{ fontSize: 12 }}>A new company name also shows on this customer's {pfisOfCustomer.length} PFI{pfisOfCustomer.length === 1 ? "" : "s"}.</span>}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className={`cust-row ${expandedId === c.id ? "open" : ""}`} onClick={() => toggleExpand(c.id)}>
+                      <div className="company-name">{c.companyName}</div>
+                      <div className="muted">{c.groupChatName || "—"}</div>
+                      <div className="muted">{c.productsUsual || "—"}</div>
+                      <div><NoteSummary notes={c.notes} /></div>
+                      <div className="muted">{pfisOfCustomer.length > 0 ? `${pfisOfCustomer.length} PFI` : "—"}</div>
+                      <div className="row-actions" onClick={(e) => e.stopPropagation()}>
+                        <button className="btn-icon edit" title="Edit customer" onClick={() => { setRemoving(null); setEditing({ id: c.id, companyName: c.companyName || "", groupChatName: c.groupChatName || "", productsUsual: c.productsUsual || "" }); }}><Pencil size={14} /></button>
+                        <button className="btn-icon" title="Delete customer" onClick={() => setRemoving(removing === c.id ? null : c.id)}><Trash2 size={14} /></button>
+                        <ChevronRight size={16} className={`chev ${expandedId === c.id ? "open" : ""}`} onClick={() => toggleExpand(c.id)} />
+                      </div>
+                    </div>
+                  )}
+                  {removing === c.id && (
+                    pfisOfCustomer.length > 0 ? (
+                      <div className="confirm-strip blocked">
+                        <span><strong>{c.companyName}</strong> has {pfisOfCustomer.length} PFI{pfisOfCustomer.length === 1 ? "" : "s"}, so it cannot be deleted. Delete {pfisOfCustomer.length === 1 ? "that PFI" : "those PFIs"} in Order Tracking first.</span>
+                        <button className="btn btn-sm" onClick={() => setRemoving(null)}>OK</button>
+                      </div>
+                    ) : (
+                      <div className="confirm-strip">
+                        <span>Delete <strong>{c.companyName}</strong>? Its requests to the Buyer and your notes on it are deleted too. This cannot be undone.</span>
+                        <button className="btn btn-sm btn-danger" onClick={() => confirmRemove(c.id)}><Trash2 size={12} /> Yes, delete</button>
+                        <button className="btn btn-sm" onClick={() => setRemoving(null)}>Cancel</button>
+                      </div>
+                    )
+                  )}
                   {expandedId === c.id && (
                     <CustomerDetail
                       customer={c}
@@ -2642,9 +2708,17 @@ function BuyerFulfillment({ pfisBySale, feedBuyerPfi, actions, pos, reorders }) 
 
 /* ---------------- Buyer: PO Tracking (with suppliers) ---------------- */
 
-function SupplierArea({ suppliers, pos, addSupplier }) {
+function SupplierArea({ suppliers, pos, addSupplier, updateSupplier, deleteSupplier }) {
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ name: "", note: "" });
+  const [editing, setEditing] = useState(null); // { id, name, note }
+  const [removing, setRemoving] = useState(null); // supplier id awaiting the confirmation
+
+  const saveEdit = () => {
+    if (!editing.name.trim()) return;
+    updateSupplier(editing.id, { name: editing.name.trim(), note: editing.note.trim() });
+    setEditing(null);
+  };
 
   const submit = () => {
     if (!form.name.trim()) return;
@@ -2685,14 +2759,57 @@ function SupplierArea({ suppliers, pos, addSupplier }) {
           </div>
         ) : (
           <>
-            <div className="supplier-head"><div>Name</div><div>Note</div><div>POs</div></div>
-            {suppliers.map((s) => (
-              <div key={s.id} className="supplier-row">
-                <div className="company-name">{s.name}</div>
-                <div className="muted">{s.note || "—"}</div>
-                <div className="muted">{pos.filter((p) => p.supplierId === s.id).length}</div>
-              </div>
-            ))}
+            <div className="supplier-head"><div>Name</div><div>Note</div><div>POs</div><div /></div>
+            {suppliers.map((s) => {
+              const poCount = pos.filter((p) => p.supplierId === s.id).length;
+              return (
+                <React.Fragment key={s.id}>
+                  {editing && editing.id === s.id ? (
+                    <div className="add-form row-edit">
+                      <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
+                        <div>
+                          <label>Supplier name</label>
+                          <input autoFocus value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
+                        </div>
+                        <div>
+                          <label>Note</label>
+                          <input value={editing.note} onChange={(e) => setEditing({ ...editing, note: e.target.value })} />
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <button className="btn btn-accent" disabled={!editing.name.trim()} onClick={saveEdit}><Save size={14} /> Save supplier</button>
+                        <button className="btn btn-ghost" onClick={() => setEditing(null)}>Cancel</button>
+                        {poCount > 0 && <span className="muted" style={{ fontSize: 12 }}>A new name also shows on this supplier's {poCount} PO{poCount === 1 ? "" : "s"}.</span>}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="supplier-row">
+                      <div className="company-name">{s.name}</div>
+                      <div className="muted">{s.note || "—"}</div>
+                      <div className="muted">{poCount}</div>
+                      <div className="row-actions">
+                        <button className="btn-icon edit" title="Edit supplier" onClick={() => { setRemoving(null); setEditing({ id: s.id, name: s.name || "", note: s.note || "" }); }}><Pencil size={14} /></button>
+                        <button className="btn-icon" title="Delete supplier" onClick={() => setRemoving(removing === s.id ? null : s.id)}><Trash2 size={14} /></button>
+                      </div>
+                    </div>
+                  )}
+                  {removing === s.id && (
+                    poCount > 0 ? (
+                      <div className="confirm-strip blocked">
+                        <span><strong>{s.name}</strong> has {poCount} PO{poCount === 1 ? "" : "s"}, so it cannot be deleted. Delete {poCount === 1 ? "that PO" : "those POs"} in the PO tab first.</span>
+                        <button className="btn btn-sm" onClick={() => setRemoving(null)}>OK</button>
+                      </div>
+                    ) : (
+                      <div className="confirm-strip">
+                        <span>Delete <strong>{s.name}</strong>? This cannot be undone.</span>
+                        <button className="btn btn-sm btn-danger" onClick={() => { deleteSupplier(s.id); setRemoving(null); }}><Trash2 size={12} /> Yes, delete</button>
+                        <button className="btn btn-sm" onClick={() => setRemoving(null)}>Cancel</button>
+                      </div>
+                    )
+                  )}
+                </React.Fragment>
+              );
+            })}
           </>
         )}
       </div>
@@ -2981,7 +3098,7 @@ function PoTrackingArea({ suppliers, pos, actions, allPfiOptions }) {
         <div className={`pill ${subTab === "suppliers" ? "active" : ""}`} onClick={() => setSubTab("suppliers")}>Suppliers</div>
         <div className={`pill ${subTab === "po" ? "active" : ""}`} onClick={() => setSubTab("po")}>PO</div>
       </div>
-      {subTab === "suppliers" && <SupplierArea suppliers={suppliers} pos={pos} addSupplier={actions.addSupplier} />}
+      {subTab === "suppliers" && <SupplierArea suppliers={suppliers} pos={pos} addSupplier={actions.addSupplier} updateSupplier={actions.updateSupplier} deleteSupplier={actions.deleteSupplier} />}
       {subTab === "po" && <PoList suppliers={suppliers} pos={pos} expandedPoId={expandedPoId} setExpandedPoId={setExpandedPoId} actions={actions} allPfiOptions={allPfiOptions} />}
     </div>
   );
@@ -4304,6 +4421,8 @@ function Shell({ user, onLogout, store }) {
                   memos={store.customerMemos}
                   saveMemo={store.saveCustomerMemo}
                   addCustomer={store.addCustomer}
+                  updateCustomer={store.updateCustomer}
+                  deleteCustomer={store.deleteCustomer}
                   addNote={store.addNote}
                   sendExisting={store.sendExisting}
                   deleteNote={store.deleteNote}
@@ -4564,6 +4683,28 @@ export default function App() {
     };
     setCustomersBySale((prev) => ({ ...prev, [saleId]: [newCustomer, ...(prev[saleId] || [])] }));
     return newCustomer.id;
+  };
+
+  /* A new company name travels to where it is copied: the customer's PFIs and its requests in the buyer's inbox. */
+  const updateCustomer = (saleId, customerId, patch) => {
+    setCustomersBySale((prev) => ({ ...prev, [saleId]: (prev[saleId] || []).map((c) => (c.id === customerId ? { ...c, ...patch } : c)) }));
+    const name = patch.companyName;
+    if (!name) return;
+    if ((pfisBySale[saleId] || []).some((p) => p.customerId === customerId && p.customerName !== name)) {
+      setPfisAs("sale")((prev) => ({ ...prev, [saleId]: (prev[saleId] || []).map((p) => (p.customerId === customerId ? { ...p, customerName: name } : p)) }));
+    }
+    if (feed.some((f) => f.customerId === customerId && f.companyName !== name)) {
+      setFeed((prev) => prev.map((f) => (f.customerId === customerId ? { ...f, companyName: name } : f)));
+    }
+  };
+
+  /* A customer with PFIs stays: the PFIs are deleted first. Returns whether the customer was deleted. */
+  const deleteCustomer = (saleId, customerId) => {
+    if ((pfisBySale[saleId] || []).some((p) => p.customerId === customerId)) return false;
+    setCustomersBySale((prev) => ({ ...prev, [saleId]: (prev[saleId] || []).filter((c) => c.id !== customerId) }));
+    if (feed.some((f) => f.customerId === customerId)) setFeed((prev) => prev.filter((f) => f.customerId !== customerId));
+    if ((customerMemos || []).some((m) => m.customerId === customerId)) setCustomerMemos((prev) => (prev || []).filter((m) => m.customerId !== customerId));
+    return true;
   };
 
   const addNote = (saleId, customerId, content, notifyNow, saleName) => {
@@ -5010,6 +5151,20 @@ export default function App() {
     return supplier.id;
   };
 
+  const updateSupplier = (supplierId, patch) => {
+    setSuppliers((prev) => prev.map((s) => (s.id === supplierId ? { ...s, ...patch } : s)));
+    if (patch.name && pos.some((po) => po.supplierId === supplierId && po.supplierName !== patch.name)) {
+      commitPos(pos.map((po) => (po.supplierId === supplierId ? { ...po, supplierName: patch.name } : po)));
+    }
+  };
+
+  /* A supplier with POs stays: the POs are deleted first. Returns whether the supplier was deleted. */
+  const deleteSupplier = (supplierId) => {
+    if (pos.some((po) => po.supplierId === supplierId)) return false;
+    setSuppliers((prev) => prev.filter((s) => s.id !== supplierId));
+    return true;
+  };
+
   const addPo = (data) => {
     const newPo = {
       id: uid("po"), poNo: data.poNo, supplierId: data.supplierId, supplierName: data.supplierName,
@@ -5199,7 +5354,7 @@ export default function App() {
     customersBySale, feed, pfisBySale, feedSale, feedBuyerPfi, suppliers, pos, lanes, reorders, bookings,
     addBooking, updateBooking, deleteBooking,
     accounts, addAccount, updateAccount, deleteAccount,
-    customerMemos, saveCustomerMemo,
+    customerMemos, saveCustomerMemo, updateCustomer, deleteCustomer, updateSupplier, deleteSupplier,
     maiTasks, addMaiTask, updateMaiTask, deleteMaiTask,
     buyerJobs, addBuyerJob, updateBuyerJob, deleteBuyerJob, addBuyerJobNote,
     warehouseEvents, addWarehouseEvent, updateWarehouseEvent, deleteWarehouseEvent,
