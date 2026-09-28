@@ -8,6 +8,7 @@ import { keepRemoved, pfiTrackingStatus, rollupStatusLabel, TRACKING_TONE } from
 import { matchNames, uniqueNames } from "./suggest";
 import { orderTotals, vatOption, VAT_OPTIONS } from "./money";
 import { DUE_TONE, dueLabel, dueState } from "./payments";
+import { sortLanesByPod } from "./lanes";
 import { applyReceipts, matchPfiLine, stripDerived } from "./receipts";
 import { mergeOtherRole } from "./merge";
 import { addMonths, inMonth, monthGrid, monthLabel, startOfMonth, todayLocalIso } from "./calendar";
@@ -3140,10 +3141,11 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
     [lanes, bookings],
   );
 
+  const sortedLanes = React.useMemo(() => sortLanesByPod(lanes), [lanes]);
   const fq = find.trim().toLowerCase();
   const visibleLanes = fq
-    ? lanes.filter((l) => [l.pod, l.loadingAddress, l.containerType].some((f) => String(f || "").toLowerCase().includes(fq)))
-    : lanes;
+    ? sortedLanes.filter((l) => [l.pod, l.loadingAddress, l.containerType].some((f) => String(f || "").toLowerCase().includes(fq)))
+    : sortedLanes;
 
   const submitLane = () => {
     if (!form.pod.trim() || !form.loadingAddress.trim()) return;

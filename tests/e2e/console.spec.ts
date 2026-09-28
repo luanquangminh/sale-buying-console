@@ -1468,3 +1468,56 @@ test("payment tracking: admin adds, ticks, edits and deletes payments; overdue r
   }
   await expect(page.locator("tr.pay-row")).toHaveCount(before);
 });
+
+test("container rate: lanes are listed A to Z by POD, also after a new lane, a rename and a reload", async ({ page }) => {
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await side(page, "Container Rate").click();
+  const PODS = ["E2E Sort Zeta", "e2e sort alpha", "E2E Sort Mid", "E2E Sort Omega"];
+  const clean = async () => {
+    for (const pod of PODS) {
+      const stale = page.locator(".lane-row", { hasText: pod });
+      while (await stale.count()) { await stale.first().click(); await page.locator(".lane-detail").getByRole("button", { name: "Delete lane" }).click(); }
+    }
+  };
+  await clean();
+  const addLane = async (pod: string) => {
+    await page.getByRole("button", { name: "Add lane" }).click();
+    const form = page.locator(".add-form").first();
+    await form.locator("input").nth(0).fill(pod);
+    await form.locator("input").nth(1).fill("1 Sort Way, Northampton");
+    await page.getByRole("button", { name: "Save lane" }).click();
+    await expect(page.locator(".lane-row.open .company-name")).toHaveText(pod); // the new lane opens wherever it lands
+  };
+  const listed = () => page.locator(".lane-row .company-name").allInnerTexts();
+  const mine = async () => (await listed()).filter((p) => /e2e sort/i.test(p));
+  const inOrder = (names: string[]) => [...names].sort((a, b) => a.trim().localeCompare(b.trim(), undefined, { sensitivity: "base", numeric: true }));
+
+  for (const pod of PODS.slice(0, 3)) await addLane(pod); // entered Zeta, alpha, Mid
+  expect(await mine()).toEqual(["e2e sort alpha", "E2E Sort Mid", "E2E Sort Zeta"]);
+  const all = await listed();
+  expect(all).toEqual(inOrder(all)); // the whole list, the older lanes included
+  expect(all.indexOf("Lagos, Apapa")).toBeGreaterThan(all.indexOf("E2E Sort Zeta"));
+
+  // Renaming a lane moves it to its new place.
+  await expect(page.locator(".lane-row.open .company-name")).toHaveText("E2E Sort Mid"); // still open from being added last
+  await page.locator(".lane-detail").getByRole("button", { name: "Edit lane" }).click();
+  await page.locator(".lane-edit input").nth(0).fill("E2E Sort Omega");
+  await page.locator(".lane-edit").getByRole("button", { name: "Save lane changes" }).click();
+  expect(await mine()).toEqual(["e2e sort alpha", "E2E Sort Omega", "E2E Sort Zeta"]);
+  await expect(page.locator(".lane-row.open .company-name")).toHaveText("E2E Sort Omega"); // and stays open
+
+  // The search keeps the order; so does a reload.
+  await page.locator(".overview-bar input").fill("e2e sort");
+  expect(await listed()).toEqual(["e2e sort alpha", "E2E Sort Omega", "E2E Sort Zeta"]);
+  await page.locator(".overview-bar input").fill("");
+  await page.waitForTimeout(1200);
+  await page.reload();
+  await side(page, "Container Rate").click();
+  await expect(page.locator(".lane-row").first()).toBeVisible();
+  expect(await mine()).toEqual(["e2e sort alpha", "E2E Sort Omega", "E2E Sort Zeta"]);
+  const after = await listed();
+  expect(after).toEqual(inOrder(after));
+
+  await clean();
+  expect(await mine()).toEqual([]);
+});
