@@ -635,3 +635,49 @@ test("no-limit PDF path: the tab builds the prompt per document, and #agent open
   await expect(page.locator(".agent-pdf pre")).toContainText("PO 4500");
   await expect(page.locator(".agent-pdf pre")).toContainText("add_po_lines");
 });
+
+test("PO: FOB is an incoterm on a new PO, and UK Local Transport hides the sub-type", async ({ page }) => {
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await pill(page, "PO Tracking").click();
+  await pill(page, /^PO$/).click();
+  const row = page.locator(".pfi-list-row", { hasText: "PO 4510" });
+  if (await row.count()) {
+    await openDetail(page, row);
+  } else {
+    await page.getByRole("button", { name: "Add PO" }).click();
+    const form = page.locator(".add-form").first();
+    await form.locator("input").nth(0).fill("4510");
+    const incoterm = form.locator("select").nth(2);
+    await expect(incoterm.locator("option")).toHaveText(["Ex-Work", "Delivered", "FOB"]);
+    await incoterm.selectOption("fob");
+    await page.getByRole("button", { name: "Create PO" }).click();
+    await page.locator(".detail-body").waitFor();
+  }
+  await expect(page.locator(".modal-sub")).toContainText("FOB");
+
+  const delivery = page.locator(".detail-body .section-card", { hasText: "Delivery from supplier" });
+  const vehicle = delivery.locator(".mini-field", { hasText: "Vehicle" }).locator("select");
+  const subType = delivery.locator(".mini-field", { hasText: "Sub-type" });
+  await vehicle.selectOption("container");
+  await subType.locator("select").selectOption("40ft Reefer");
+  await vehicle.selectOption("uk_local");
+  await expect(subType).toHaveCount(0);
+  await save(page);
+  await close(page);
+  await expect(row).toContainText("FOB");
+
+  await openDetail(page, row); // still hidden after a reload of the record, and back again with a container
+  await expect(vehicle).toHaveValue("uk_local");
+  await expect(subType).toHaveCount(0);
+  await vehicle.selectOption("container");
+  await expect(subType.locator("select")).toHaveValue("20ft Dry");
+  await vehicle.selectOption("uk_local");
+  await expect(subType).toHaveCount(0);
+  await close(page);
+
+  // The PFI form keeps its two incoterms.
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Order Tracking").click();
+  await page.getByRole("button", { name: "Add PFI" }).click();
+  await expect(page.locator(".add-form").first().locator("select").nth(2).locator("option")).toHaveText(["Ex-Work", "Delivered"]);
+});

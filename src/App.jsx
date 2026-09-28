@@ -1681,16 +1681,24 @@ function PoDeliverySection({ delivery, onChange }) {
         </div>
         <div className="mini-field">
           <label>Vehicle</label>
-          <select value={delivery.vehicleType} onChange={(e) => onChange({ vehicleType: e.target.value })}>
+          <select
+            value={delivery.vehicleType}
+            onChange={(e) => onChange({
+              vehicleType: e.target.value,
+              subType: e.target.value === "uk_local" ? "" : (delivery.subType || PO_SUBTYPES[0]),
+            })}
+          >
             {PO_VEHICLE_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
           </select>
         </div>
-        <div className="mini-field">
-          <label>Sub-type</label>
-          <select value={delivery.subType} onChange={(e) => onChange({ subType: e.target.value })}>
-            {PO_SUBTYPES.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-        </div>
+        {delivery.vehicleType !== "uk_local" && (
+          <div className="mini-field">
+            <label>Sub-type</label>
+            <select value={delivery.subType} onChange={(e) => onChange({ subType: e.target.value })}>
+              {PO_SUBTYPES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+        )}
         <div className="mini-field"><label>Loading date</label><DateField value={delivery.loadingDate} onChange={(v) => onChange({ loadingDate: v })} /></div>
         <div className="mini-field"><label>Loading time</label><input type="time" value={delivery.loadingTime} onChange={(e) => onChange({ loadingTime: e.target.value })} /></div>
         <div className="mini-field"><label>ETD</label><DateField value={delivery.etd} onChange={(v) => onChange({ etd: v })} /></div>
