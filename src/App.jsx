@@ -3,7 +3,7 @@ import * as XLSX from "xlsx";
 import { api } from "./api";
 import { useSyncStore } from "./syncStore";
 import { extractPdfForImport, imageToDataUrl } from "./pdfExtract";
-import { fmtDate, parseDmy, todayIso } from "./dates";
+import { fmtDate, fmtMonth, parseDmy, parseMonth, todayIso } from "./dates";
 import { keepRemoved, pfiTrackingStatus, rollupStatusLabel, TRACKING_TONE } from "./status";
 import { matchNames, uniqueNames } from "./suggest";
 import { orderTotals, vatOption, VAT_OPTIONS } from "./money";
@@ -530,6 +530,7 @@ const GlobalStyle = () => (
     .date-pick-btn:hover { color:#2F7A52; }
     .date-field .date-picker, .data-table .date-field .date-picker, .mini-field .date-field .date-picker, .booking-grid .date-field .date-picker, .form-grid .date-field .date-picker { position:absolute; inset:0; width:100%; min-width:0; height:100%; margin:0; padding:0; border:none; opacity:0; cursor:pointer; }
     .data-table .date-field input[type="text"] { width:auto; min-width:86px; }
+    .date-field.month-field input[type="text"], .data-table .date-field.month-field input[type="text"] { min-width:70px; width:78px; flex:none; }
 
     .toggle-pair { display:flex; gap:6px; }
     .toggle-btn { border:1px solid #D8E6DC; background:#fff; border-radius:3px; padding:6px 12px; font-size:11.5px; font-weight:700; cursor:pointer; text-transform:uppercase; letter-spacing:.03em; }
@@ -655,6 +656,51 @@ function DateField({ value, onChange, style, className, placeholder = "dd/mm/yyy
         <CalendarDays size={13} />
         <input type="date" className="date-picker" tabIndex={-1} aria-label="Pick a date" value={value || ""} onChange={(e) => { setInvalid(false); onChange(e.target.value); }} />
       </span>
+    </span>
+  );
+}
+
+/* Best-before of received goods: typed mm/yyyy, stored yyyy-mm. A full date saved before the change shows without its day. */
+
+const HAS_MONTH_PICKER = (() => {
+  try {
+    const probe = document.createElement("input");
+    probe.setAttribute("type", "month");
+    return probe.type === "month";
+  } catch { return false; }
+})();
+
+function MonthField({ value, onChange, style, className, placeholder = "mm/yyyy" }) {
+  const stored = value ? String(value).slice(0, 7) : "";
+  const [text, setText] = useState(fmtMonth(value));
+  const [invalid, setInvalid] = useState(false);
+  React.useEffect(() => { setText(fmtMonth(value)); setInvalid(false); }, [value]);
+  const commit = () => {
+    const ym = parseMonth(text);
+    if (ym === null) { setInvalid(true); setText(fmtMonth(value)); return; } // same rule as dates: the stored value comes back, flagged
+    setInvalid(false);
+    if (ym !== stored) onChange(ym);
+    setText(fmtMonth(ym));
+  };
+  return (
+    <span className={`date-field month-field ${invalid ? "invalid" : ""} ${className || ""}`} style={style}>
+      <input
+        type="text"
+        inputMode="numeric"
+        placeholder={placeholder}
+        title={invalid ? "That was not a month — use mm/yyyy (the previous value was kept)" : undefined}
+        aria-invalid={invalid || undefined}
+        value={text}
+        onChange={(e) => { setText(e.target.value); if (invalid) setInvalid(false); }}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } }}
+      />
+      {HAS_MONTH_PICKER && (
+        <span className="date-pick-btn" title="Pick a month">
+          <CalendarDays size={13} />
+          <input type="month" className="date-picker" tabIndex={-1} aria-label="Pick a month" value={stored} onChange={(e) => { setInvalid(false); onChange(e.target.value); }} />
+        </span>
+      )}
     </span>
   );
 }
@@ -1548,8 +1594,8 @@ function ProductsTable({
                       {rolledUp
                         ? <span className="ro muted">{isPo ? "per PFI below" : "per PO below"}</span>
                         : canEditBuyer
-                          ? <DateField value={p.bbdReceived} onChange={(v) => onBuyerField(p.id, "bbdReceived", v)} />
-                          : <span className="ro">{fmtDate(p.bbdReceived) || "—"}</span>}
+                          ? <MonthField value={p.bbdReceived} onChange={(v) => onBuyerField(p.id, "bbdReceived", v)} />
+                          : <span className="ro">{fmtMonth(p.bbdReceived) || "—"}</span>}
                     </td>
                     <td>
                       {totalReceived === null ? <span className="ro muted">—</span>
@@ -1602,7 +1648,7 @@ function ProductsTable({
                         <td>{canEditBuyer ? <DateField value={r.estimatedDeliveryDate || ""} onChange={(v) => onReceiptField(r, "estimatedDeliveryDate", v)} /> : <span className="ro">{fmtDate(r.estimatedDeliveryDate) || "—"}</span>}</td>
                         <td>{canEditBuyer ? <input type="number" value={r.receivedQuantity ?? ""} onChange={(e) => onReceiptField(r, "receivedQuantity", e.target.value)} /> : <span className="ro">{r.receivedQuantity || "—"}</span>}</td>
                         <td>{canEditBuyer ? <DateField value={r.receivedDate || ""} onChange={(v) => onReceiptField(r, "receivedDate", v)} /> : <span className="ro">{fmtDate(r.receivedDate) || "—"}</span>}</td>
-                        <td>{canEditBuyer ? <DateField value={r.bbdReceived || ""} onChange={(v) => onReceiptField(r, "bbdReceived", v)} /> : <span className="ro">{fmtDate(r.bbdReceived) || "—"}</span>}</td>
+                        <td>{canEditBuyer ? <MonthField value={r.bbdReceived || ""} onChange={(v) => onReceiptField(r, "bbdReceived", v)} /> : <span className="ro">{fmtMonth(r.bbdReceived) || "—"}</span>}</td>
                         <td>
                           {rdiff === null ? <span className="ro muted">—</span>
                             : rdiff < 0 ? <span className="ro tone-red">Short {Math.abs(rdiff)}</span>
@@ -1667,7 +1713,7 @@ function ProductsTable({
                         <td><DateField value={a.estimatedDeliveryDate || ""} onChange={(v) => onAllocationField(p.id, a.pfiId, "estimatedDeliveryDate", v)} /></td>
                         <td><input type="number" placeholder="received" value={a.receivedQty ?? ""} onChange={(e) => onAllocationField(p.id, a.pfiId, "receivedQty", e.target.value)} /></td>
                         <td><DateField value={a.receivedDate || ""} onChange={(v) => onAllocationField(p.id, a.pfiId, "receivedDate", v)} /></td>
-                        <td><DateField value={a.bbdReceived || ""} onChange={(v) => onAllocationField(p.id, a.pfiId, "bbdReceived", v)} /></td>
+                        <td><MonthField value={a.bbdReceived || ""} onChange={(v) => onAllocationField(p.id, a.pfiId, "bbdReceived", v)} /></td>
                         <td>
                           {adiff === null ? <span className="ro muted">—</span>
                             : adiff < 0 ? <span className="ro tone-red">Short {Math.abs(adiff)}</span>
@@ -2060,8 +2106,8 @@ function exportPfiWorkbook(pfi) {
   pfi.products.forEach((p) => {
     const receipts = p.receipts || [];
     const bbds = receipts.length
-      ? Array.from(new Set(receipts.map((r) => fmtDate(r.bbdReceived)).filter(Boolean))).join(", ")
-      : fmtDate(p.bbdReceived);
+      ? Array.from(new Set(receipts.map((r) => fmtMonth(r.bbdReceived)).filter(Boolean))).join(", ")
+      : fmtMonth(p.bbdReceived);
     rows.push([p.ean || "", p.caseBarcode || "", p.product, Number(p.quantity || 0), bbds]);
   });
 
@@ -4525,7 +4571,7 @@ export default function App() {
     });
     if (sourcePfi && sourceProduct) {
       const label = FIELD_LABEL[field] || field;
-      const displayVal = field === "orderStatus" ? ORDER_STATUS_LABEL[value] : value;
+      const displayVal = field === "orderStatus" ? ORDER_STATUS_LABEL[value] : field === "bbdReceived" ? fmtMonth(value) : value;
       const productName = sourceProduct.product || "(product)";
       pushSaleFeed(saleId, pfiId, sourcePfi.customerName, productName, `Buyer updated ${label} for "${productName}": ${displayVal || "—"}`);
       if (SYNCED_FIELDS.includes(field)) {
@@ -4671,7 +4717,7 @@ export default function App() {
           if (String(bref.allocatedQty ?? "") !== String(ref.allocatedQty ?? "")) bits.push(`${ref.allocatedQty || 0} cases allocated`);
           if ((bref.estimatedDeliveryDate || "") !== (ref.estimatedDeliveryDate || "")) bits.push(`est. delivery ${fmtDate(ref.estimatedDeliveryDate) || "—"}`);
           if ((bref.receivedDate || "") !== (ref.receivedDate || "")) bits.push(`received on ${fmtDate(ref.receivedDate) || "—"}`);
-          if ((bref.bbdReceived || "") !== (ref.bbdReceived || "")) bits.push(`BBD ${fmtDate(ref.bbdReceived) || "—"}`);
+          if ((bref.bbdReceived || "") !== (ref.bbdReceived || "")) bits.push(`BBD ${fmtMonth(ref.bbdReceived) || "—"}`);
           if ((bref.pfiProductId || "") !== (ref.pfiProductId || "")) bits.push("attached to a PFI line");
         }
         if (!bits.length) return;
@@ -4877,7 +4923,7 @@ export default function App() {
 
     if (sourcePo && sourceProduct && (SYNCED_FIELDS.includes(field) || field === "orderStatus")) {
       const label = field === "orderStatus" ? "Order status" : FIELD_LABEL[field] || field;
-      const shown = field === "orderStatus" ? ORDER_STATUS_LABEL[value] : value;
+      const shown = field === "orderStatus" ? ORDER_STATUS_LABEL[value] : field === "bbdReceived" ? fmtMonth(value) : value;
       notifyLinkedSales(sourcePo, sourceProduct.product, sourceProduct.linkedPfiRefs,
         `${poLabel(sourcePo)} — ${label} for "${sourceProduct.product}": ${shown || "—"}`);
     }
@@ -4926,7 +4972,7 @@ export default function App() {
           : field === "allocatedQty" ? "Allocated cases"
             : field === "orderStatus" ? "Order status"
               : FIELD_LABEL[field] || field;
-        const shown = field === "orderStatus" ? ORDER_STATUS_LABEL[value] : value;
+        const shown = field === "orderStatus" ? ORDER_STATUS_LABEL[value] : field === "bbdReceived" ? fmtMonth(value) : value;
         pushSaleFeed(ref.saleId, pfiId, pfi ? pfi.customerName : "", sourceProduct.product,
           `${poLabel(sourcePo)} — ${label} for "${sourceProduct.product}": ${shown || "—"}`);
       }

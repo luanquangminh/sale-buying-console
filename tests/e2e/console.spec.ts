@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { fileURLToPath } from "node:url";
+import * as XLSX from "xlsx";
 import { A } from "./accounts";
 
 /*
@@ -918,4 +919,89 @@ test("totals include VAT: subtotal, VAT and total on the order, payment status a
   await expect(pfiRow).toContainText(/paid/i);
 
   await removePfi();
+});
+
+test("BBD received is a month: typed mm/yyyy, shown mm/yyyy everywhere, older full dates lose their day", async ({ page }) => {
+  const KEEP = "E2E Keep Tea 100g"; // lines of PFI 3290, created by the Removed scenario
+  const DROP = "E2E Drop Jam 200g";
+  const headerIndex = async (header: RegExp) => (await page.locator(".detail-body thead").first().locator("th").allInnerTexts()).findIndex((h) => header.test(h));
+
+  // Buyer, Orders to update: the line's own box.
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await pill(page, "Orders to update").click();
+  await openDetail(page, page.locator(".fulfil-head", { hasText: "PFI 3290" }).first());
+  const keepLine = page.locator(".detail-body tbody tr:not(.sub-row)", { hasText: KEEP });
+  const bbdCell = keepLine.locator("td").nth(await headerIndex(/bbd received/i));
+  const box = bbdCell.locator('.month-field input[type="text"]');
+  await expect(box).toHaveAttribute("placeholder", "mm/yyyy");
+  await expect(bbdCell.locator('input[type="date"]')).toHaveCount(0);
+  await box.fill("03/2027"); await box.press("Enter");
+  await expect(box).toHaveValue("03/2027");
+  await expect(bbdCell.locator('input[type="month"]')).toHaveValue("2027-03"); // stored as yyyy-mm
+  await box.fill("15/04/2027"); await box.press("Enter"); // a full date typed out of habit keeps its month
+  await expect(box).toHaveValue("04/2027");
+  await box.fill("13/2027"); await box.press("Enter"); // not a month: flagged, previous value kept
+  await expect(bbdCell.locator(".month-field")).toHaveClass(/invalid/);
+  await expect(box).toHaveValue("04/2027");
+  await box.fill("0427"); await box.press("Enter");
+  await expect(box).toHaveValue("04/2027");
+  await save(page);
+  await close(page);
+
+  // Buyer, PO Tracking: the box of a PO row.
+  await pill(page, "PO Tracking").click();
+  await pill(page, /^PO$/).click();
+  await openDetail(page, page.locator(".pfi-list-row", { hasText: "PO 4510" }));
+  const alloc = page.locator(".detail-body tr.sub-row", { hasText: "PFI 3290" }).first();
+  const allocBox = alloc.locator('.month-field input[type="text"]');
+  await allocBox.fill("5/27"); await allocBox.press("Enter");
+  await expect(allocBox).toHaveValue("05/2027");
+  await save(page);
+  await close(page);
+
+  // Sale, Order Tracking: read-only cells and the packing list.
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Order Tracking").click();
+  const pfiRow = page.locator(".pfi-list-row", { hasText: "PFI 3290" });
+  await openDetail(page, pfiRow);
+  const col = await headerIndex(/bbd received/i);
+  await expect(page.locator(".detail-body tbody tr:not(.sub-row)").filter({ has: page.locator(`input[value="${KEEP}"]`) }).locator("td").nth(col)).toHaveText("04/2027");
+  await expect(page.locator(".detail-body tr.sub-row", { hasText: "PO 4510" }).first().locator("td").nth(col)).toHaveText("05/2027");
+  const sheetRows = async () => {
+    const download = page.waitForEvent("download");
+    await page.getByRole("button", { name: "Export packing list" }).click();
+    const wb = XLSX.read(await (await import("node:fs/promises")).readFile((await (await download).path())!));
+    return XLSX.utils.sheet_to_json<string[]>(wb.Sheets[wb.SheetNames[0]], { header: 1 });
+  };
+  let rows = await sheetRows();
+  expect(rows.find((r) => r[2] === KEEP)![4]).toBe("04/2027");
+  expect(rows.find((r) => r[2] === DROP)![4]).toBe("05/2027");
+  await close(page);
+
+  // A record saved before the change holds a full date: it shows without the day and is not rewritten by looking at it.
+  const state = await page.evaluate(async () => (await fetch("/api/state")).json());
+  const saleId = Object.keys(state.slices.pfisBySale).find((k) => state.slices.pfisBySale[k].some((p: any) => p.pfiNo === "3290"))!;
+  const record = state.slices.pfisBySale[saleId].find((p: any) => p.pfiNo === "3290");
+  const old = { ...record, products: record.products.map((p: any) => (p.product === KEEP ? { ...p, bbdReceived: "2027-06-15" } : p)) };
+  delete old.receipts; delete old.unmatchedReceipts;
+  await signIn(page, A.buyer.username, A.buyer.password); // BBD received is a buyer's field
+  const pushed = await page.evaluate(async ([rec, sid]) => {
+    const res = await fetch("/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes: [{ kind: "pfis", id: rec.id, saleId: sid, createdAt: rec.createdAt, data: rec }] }) });
+    return res.status;
+  }, [old, saleId] as const);
+  expect(pushed).toBe(200);
+  await page.reload();
+  await pill(page, "Orders to update").click();
+  await openDetail(page, page.locator(".fulfil-head", { hasText: "PFI 3290" }).first());
+  await expect(box).toHaveValue("06/2027");
+  await box.click(); await box.press("Tab");
+  await expect(page.locator(".save-bar")).toContainText(/all changes saved/i);
+  await close(page);
+
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Order Tracking").click();
+  await openDetail(page, pfiRow);
+  rows = await sheetRows();
+  expect(rows.find((r) => r[2] === KEEP)![4]).toBe("06/2027");
+  await close(page);
 });
