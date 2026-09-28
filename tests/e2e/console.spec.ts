@@ -1982,12 +1982,22 @@ test("after a PO is sent: a quantity changed by Sale turns the row yellow, a rem
   await asSale();
   await openDetail(page, pfiRow);
   await lineOf(TEA).locator('input[type="number"]').first().fill("120");
+  await expect(lineOf(TEA)).toHaveClass(/row-changed/); // the sale sees it as soon as the quantity is typed
+  await expect(lineOf(TEA).locator("td").first()).toHaveCSS("background-color", YELLOW);
+  await expect(lineOf(TEA).locator(".change-note")).toContainText("was 110");
+  await expect(lineOf(TEA).getByRole("button", { name: "Seen" })).toHaveCount(0); // only the buyer can settle it
+  await expect(lineOf(JAM)).not.toHaveClass(/row-changed/);
   await lineOf(RICE).getByTitle("Remove product line").click();
   await expect(lineRows).toHaveCount(2);
-  await expect(page.locator(".detail-body tr.row-changed, .detail-body tr.row-gone")).toHaveCount(0); // these marks are for the buyer
   await save(page);
   await close(page);
   await page.waitForTimeout(1200);
+  await openDetail(page, pfiRow); // and on the sale's own screen the removed line is named where it was
+  await expect(lineOf(TEA)).toHaveClass(/row-changed/);
+  await expect(page.locator(".detail-body tr.ghost-row .gone-note")).toContainText(`${RICE} has been removed`);
+  await expect(page.locator(".detail-body tr.ghost-row .gone-note")).toHaveCSS("color", "rgb(178, 59, 59)");
+  await expect(page.locator(".save-bar")).toContainText(/all changes saved/i);
+  await close(page);
 
   // Orders to update: the list points at the order, the order shows where.
   await signIn(page, A.buyer.username, A.buyer.password);
@@ -2036,6 +2046,9 @@ test("after a PO is sent: a quantity changed by Sale turns the row yellow, a rem
 
   // Seen from the order itself works too.
   await asSale();
+  await openDetail(page, pfiRow); // settled by the buyer: the sale's screen is plain again
+  await expect(page.locator(".detail-body tr.row-changed, .detail-body tr.ghost-row")).toHaveCount(0);
+  await close(page);
   await setQty(JAM, "45");
   await signIn(page, A.buyer.username, A.buyer.password);
   await pill(page, "Orders to update").click();

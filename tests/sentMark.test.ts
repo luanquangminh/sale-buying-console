@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acknowledged, changeSinceSent, lineChange, removedSinceSent, stampSent } from "../src/sentMark.js";
+import { acknowledged, changeSinceSent, lineChange, removedSinceSent, stampSent, stampSentAsOf } from "../src/sentMark.js";
 
 const NOW = "2026-09-28T10:00:00.000Z";
 const LINES = [
@@ -121,5 +121,51 @@ describe("the PFI side", () => {
       { lineId: "L-rice", product: "Rice 1kg", index: 2, pos: ["2480"] },
     ]);
     expect(removedSinceSent({ products: [] })).toEqual([]);
+  });
+});
+
+describe("stampSentAsOf (POs sent before links remembered anything)", () => {
+  const THEN = "2026-09-28T16:45:00.000Z";
+  const then = [{ id: "L-tea", product: "Yogi Tea Classic Chai", ean: "4012824406711", quantity: 100 }, { id: "L-jam", product: "Bonne Maman Jam", ean: "3045320001570", quantity: 40 }];
+  it("takes the line as it stood then, so a change made since shows", () => {
+    const now = [{ ...then[0], quantity: 120 }, then[1]];
+    const out = stampSentAsOf(po("sent", [ref()]), linesOf(now), linesOf(then), THEN);
+    expect(refsOf(out)[0].sent).toEqual({ lineId: "L-tea", qty: 100, product: "Yogi Tea Classic Chai", index: 0, at: THEN });
+    expect(changeSinceSent(refsOf(out)[0], now)).toEqual({ kind: "changed", product: "Yogi Tea Classic Chai", from: 100, to: 120 });
+  });
+  it("shows nothing for a line that has not changed", () => {
+    const out = stampSentAsOf(po("sent", [ref()]), linesOf(then), linesOf(then), THEN);
+    expect(changeSinceSent(refsOf(out)[0], then)).toBe(null);
+  });
+  it("remembers a line removed since then, so the removal shows", () => {
+    const now = [then[1]];
+    const out = stampSentAsOf(po("sent", [ref()]), linesOf(now), linesOf(then), THEN);
+    expect(refsOf(out)[0].sent).toMatchObject({ lineId: "L-tea", qty: 100, index: 0 });
+    expect(changeSinceSent(refsOf(out)[0], now)).toEqual({ kind: "removed", product: "Yogi Tea Classic Chai" });
+    const auto = stampSentAsOf(po("sent", [ref({ pfiProductId: undefined })]), linesOf(now), linesOf(then), THEN); // matched by EAN then
+    expect(changeSinceSent(refsOf(auto)[0], now)).toEqual({ kind: "removed", product: "Yogi Tea Classic Chai" });
+  });
+  it("starts a line added since then from what it is now", () => {
+    const now = [...then, { id: "L-rice", product: "Rice 1kg", ean: "", quantity: 30 }];
+    const out = stampSentAsOf(po("sent", [ref({ pfiProductId: "L-rice" })]), linesOf(now), linesOf(then), THEN);
+    expect(refsOf(out)[0].sent).toEqual({ lineId: "L-rice", qty: 30, product: "Rice 1kg", index: 2, at: THEN });
+    expect(stampSentAsOf(po("sent", [ref()]), linesOf(then), linesOf([]), THEN).products[0].linkedPfiRefs[0].sent).toMatchObject({ qty: 100 }); // the whole PFI is newer
+  });
+  it("leaves alone what already remembers, rows marked Removed, rows with no line, and POs not sent", () => {
+    const kept = { lineId: "L-tea", qty: 90, product: "Yogi Tea Classic Chai", index: 0, at: NOW };
+    const already = po("sent", [ref({ sent: kept })]);
+    expect(stampSentAsOf(already, linesOf(then), linesOf(then), THEN)).toBe(already);
+    const removed = po("sent", [ref({ orderStatus: "removed" })]);
+    expect(stampSentAsOf(removed, linesOf(then), linesOf(then), THEN)).toBe(removed);
+    const noLine = po("sent", [ref({ pfiProductId: "" })]);
+    expect(stampSentAsOf(noLine, linesOf(then), linesOf(then), THEN)).toBe(noLine);
+    const notSent = po("not_sent", [ref()]);
+    expect(stampSentAsOf(notSent, linesOf(then), linesOf(then), THEN)).toBe(notSent);
+  });
+  it("changes nothing else on the PO", () => {
+    const before = po("sent", [ref(), ref({ pfiId: "pfi-2", pfiProductId: "" })]);
+    const out = stampSentAsOf(before, linesOf(then), linesOf(then), THEN);
+    const strip = (p: any) => ({ ...p, products: p.products.map((l: any) => ({ ...l, linkedPfiRefs: l.linkedPfiRefs.map(({ sent, ...r }: any) => r) })) });
+    expect(strip(out)).toEqual(strip(before));
   });
 });

@@ -41,6 +41,33 @@ export function stampSent(po, linesOf, now) {
   return touched ? { ...po, products } : po;
 }
 
+/**
+ * For POs that were sent before links remembered anything. The PFI lines as they stood at an earlier moment
+ * (`linesThen`, from a copy of the data) become the reference, so that what Sale changed since then shows.
+ * Links that already remember, rows marked Removed and POs not sent are left alone. Same object back when nothing changes.
+ */
+export function stampSentAsOf(po, linesNow, linesThen, at) {
+  if (po.sentStatus !== "sent") return po;
+  let touched = false;
+  const products = (po.products || []).map((p) => {
+    let rowTouched = false;
+    const refs = (p.linkedPfiRefs || []).map((ref) => {
+      if (ref.sent || !live(ref.orderStatus || p.orderStatus)) return ref;
+      const now = linesNow(ref) || [];
+      const then = linesThen(ref) || [];
+      const lineId = matchPfiLine(now, ref, p) || matchPfiLine(then, ref, p); // still there, or there then and removed since
+      if (!lineId) return ref;
+      const from = then.some((l) => l.id === lineId) ? then : now; // a line added since then starts from what it is now
+      rowTouched = true;
+      return { ...ref, sent: snapshot(from, lineId, at) };
+    });
+    if (!rowTouched) return p;
+    touched = true;
+    return { ...p, linkedPfiRefs: refs };
+  });
+  return touched ? { ...po, products } : po;
+}
+
 /** What the sale did to the PFI line since the PO was sent: null, { kind: "changed", product, from, to } or { kind: "removed", product }. */
 export function changeSinceSent(ref, lines) {
   const s = ref && ref.sent;

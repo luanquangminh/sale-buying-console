@@ -1452,13 +1452,14 @@ function ProductsTable({
   const totals = orderTotals(pfi.products);
   const shortages = variant === "po" ? poShortages(pfi, allPfiOptions) : [];
   const lineShortages = variant === "po" ? [] : pfiShortages(pfi);
-  // What Sale changed after a PO covering the line was sent: shown to the buyer, who has to act on it.
-  const showSentMarks = variant === "pfi-buyer";
+  // What Sale changed after a PO covering the line was sent: shown on the PFI to both sides; only the buyer can settle it.
+  const showSentMarks = variant !== "po";
+  const canSettleMarks = variant === "pfi-buyer";
   const goneLines = showSentMarks ? removedSinceSent(pfi) : [];
   const goneRow = (g) => (
     <tr key={`gone-${g.lineId}`} className="row-gone ghost-row">
       <td colSpan={15}>
-        <div className="gone-note">{g.product} has been removed <span>by Sale after PO {g.pos.join(", PO ")} was sent</span></div>
+        <div className="gone-note">{g.product} has been removed <span>after PO {g.pos.join(", PO ")} was sent</span></div>
       </td>
     </tr>
   );
@@ -1775,12 +1776,12 @@ function ProductsTable({
                       {canEditSale ? <input type="number" value={p.quantity} onChange={(e) => onSaleField(p.id, "quantity", e.target.value)} /> : <span className="ro">{p.quantity}</span>}
                       {changed && (
                         <div className="change-note">
-                          <span title={`Changed by Sale after PO ${changed.pos.join(", PO ")} was sent`}>was {changed.from}</span>
-                          <button
+                          <span title={`Changed after PO ${changed.pos.join(", PO ")} was sent`}>was {changed.from}</span>
+                          {canSettleMarks && <button
                             className="btn btn-sm"
                             title="You have dealt with the change: stop highlighting this line"
                             onClick={() => (p.receipts || []).filter((r) => r.sent && Number(r.sent.qty) !== changed.to).forEach((r) => onReceiptField(r, "sent", { ...r.sent, qty: changed.to, product: p.product || r.sent.product, at: new Date().toISOString() }))}
-                          >Seen</button>
+                          >Seen</button>}
                         </div>
                       )}
                     </td>
