@@ -43,7 +43,7 @@ ChatGPT or Claude Code, with a key test against the server. The key is the user'
 
 | Path | What |
 |------|------|
-| `src/App.jsx` | the UI, one file, plus small modules: dates, status, receipts (PO ↔ PFI), merge (role-aware saves), push queue, calendar |
+| `src/App.jsx` | the UI, one file, plus small modules: dates, status, receipts (PO ↔ PFI), merge (role-aware saves), push queue, calendar, money (VAT and totals), payments (due dates), suggest (names typed before) |
 | `worker/` | Hono API: auth, snapshot, sync, files, AI proxy, MCP |
 | `migrations/` | D1 schema and the first admin |
 | `tests/` | Vitest (Workers runtime); `tests/e2e/` Playwright |
