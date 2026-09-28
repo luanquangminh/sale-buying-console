@@ -9,8 +9,30 @@ import { A } from "./accounts";
  */
 test.describe.configure({ mode: "serial" });
 
+// Pushes on their way to the server, per page: a test is over only when they have all landed.
+const inFlight = new WeakMap<Page, Set<unknown>>();
+const watchPushes = (page: Page) => {
+  const open = new Set<unknown>();
+  inFlight.set(page, open);
+  page.on("request", (r) => { if (r.url().includes("/api/sync") && r.method() === "POST") open.add(r); });
+  page.on("requestfinished", (r) => open.delete(r));
+  page.on("requestfailed", (r) => open.delete(r));
+};
+/** Wait until nothing has been on its way for a moment (the store debounces by 300 ms), however slow the server is. */
+const settled = async (page: Page, quiet = 900, limit = 30_000) => {
+  const open = inFlight.get(page);
+  const end = Date.now() + limit;
+  let calmSince = Date.now();
+  while (Date.now() < end) {
+    if (open && open.size) calmSince = Date.now();
+    else if (Date.now() - calmSince >= quiet) return;
+    await page.waitForTimeout(100);
+  }
+};
+
 // Every /api/sync response is logged so a failed or slow push shows up in the report.
 test.beforeEach(async ({ page }) => {
+  watchPushes(page);
   page.on("response", async (r) => {
     if (!r.url().includes("/api/sync")) return;
     let body = ""; try { body = (await r.text()).slice(0, 160); } catch { /* aborted */ }
@@ -19,8 +41,8 @@ test.beforeEach(async ({ page }) => {
   page.on("requestfailed", (r) => { if (r.url().includes("/api/")) console.log(`[requestfailed] ${r.url()} ${r.failure()?.errorText}`); });
   page.on("console", (m) => { if (m.type() === "error") console.log(`[console] ${m.text().slice(0, 200)}`); });
 });
-// The store debounces pushes by 300 ms; give the last one time to leave before the page closes.
-test.afterEach(async ({ page }) => { await page.waitForTimeout(1500); });
+// The store debounces pushes by 300 ms; the page closes only once the last one has landed, so a slow server loses nothing.
+test.afterEach(async ({ page }) => { await settled(page, 1200); });
 
 const FIX = (f: string) => fileURLToPath(new URL(`../fixtures/${f}`, import.meta.url));
 const NOTE = "E2E: please confirm 40ft reefer rate to Lagos for Acme";
@@ -221,6 +243,9 @@ test("admin: rep workspace, bookings with second-tab sync, accounts", async ({ p
   await expect(page.locator(".cust-row").first()).toContainText("Acme Foods Ltd");
 
   await side(page, "Delivery Booking").click();
+  const stale = page.locator(".booking-row", { hasText: "E2E Booking Ltd" }); // left by a run whose last push never landed
+  while (await stale.count()) { await stale.first().click(); await page.locator(".lane-detail").getByRole("button", { name: "Delete" }).click(); }
+  await settled(page);
   await page.getByRole("button", { name: "Add booking" }).click();
   const grid = page.locator(".booking-grid").first();
   await grid.locator("input").nth(0).fill("E2E Booking Ltd");
@@ -238,6 +263,9 @@ test("admin: rep workspace, bookings with second-tab sync, accounts", async ({ p
   await other.close();
   await page.locator(".lane-detail").getByRole("button", { name: "Delete" }).click();
   await expect(page.locator(".booking-row", { hasText: "E2E Booking Ltd" })).toHaveCount(0);
+  await settled(page);
+  const kept = await page.evaluate(async () => (await (await fetch("/api/state")).json()).slices.bookings.filter((b: any) => b.customerName === "E2E Booking Ltd").length);
+  expect(kept).toBe(0); // gone on the server too, not only on the screen
 
   await side(page, "Accounts").click();
   const rows = page.locator(".account-row");
