@@ -5,6 +5,7 @@ import { useSyncStore } from "./syncStore";
 import { extractPdfForImport, imageToDataUrl } from "./pdfExtract";
 import { fmtDate, parseDmy, todayIso } from "./dates";
 import { keepRemoved, pfiTrackingStatus, rollupStatusLabel, TRACKING_TONE } from "./status";
+import { matchNames, uniqueNames } from "./suggest";
 import { applyReceipts, matchPfiLine, stripDerived } from "./receipts";
 import { mergeOtherRole } from "./merge";
 import { addMonths, inMonth, monthGrid, monthLabel, startOfMonth, todayLocalIso } from "./calendar";
@@ -587,6 +588,9 @@ const GlobalStyle = () => (
     .pfi-picker-option:hover { background:#F1F8F3; }
     .pfi-picker-option input { width:auto; min-width:0; }
     .picker-backdrop { position:fixed; top:0; right:0; bottom:0; left:0; z-index:60; }
+    .suggest-panel { background:#fff; border:1px solid #D8E6DC; border-radius:4px; box-shadow:0 12px 28px rgba(20,60,40,0.16); max-height:210px; overflow-y:auto; }
+    .suggest-option { display:block; width:100%; text-align:left; border:none; background:none; font-family:inherit; font-size:12.5px; padding:7px 10px; cursor:pointer; color:#16281E; }
+    .suggest-option:hover { background:#F1F8F3; }
 
     .delivery-block { border-top:1px solid #EEF0EF; padding-top:11px; margin-top:12px; }
     .delivery-block-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#7C8891; margin-bottom:7px; }
@@ -1041,6 +1045,65 @@ function BuyerFeed({ feed, answerFeedItem, deleteFeedItem }) {
 }
 
 /* ---------------- PFI picker (search by number, scrollable list) ---------------- */
+
+/* Text box that offers the names typed before: click one to fill it in, or keep typing a new one. */
+
+function SuggestInput({ value, onChange, names, style, placeholder, onEnter }) {
+  const [anchor, setAnchor] = useState(null);
+  const inputRef = useRef(null);
+  const panelRef = useRef(null);
+  const options = matchNames(names, value);
+
+  const open = () => {
+    if (!inputRef.current) return;
+    const r = inputRef.current.getBoundingClientRect();
+    setAnchor({ top: r.bottom + 2, left: r.left, width: Math.max(r.width, 190) });
+  };
+  const close = () => setAnchor(null);
+
+  React.useEffect(() => {
+    if (!anchor) return undefined;
+    const onMove = (e) => { if (!panelRef.current || !panelRef.current.contains(e.target)) close(); };
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove);
+    return () => {
+      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onMove);
+    };
+  }, [anchor]);
+
+  return (
+    <>
+      <input
+        ref={inputRef}
+        value={value}
+        style={style}
+        placeholder={placeholder}
+        autoComplete="off"
+        onFocus={open}
+        onClick={open}
+        onBlur={close}
+        onChange={(e) => { onChange(e.target.value); if (!anchor) open(); }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") close();
+          if (e.key === "Enter" && onEnter) { close(); onEnter(); }
+        }}
+      />
+      {anchor && options.length > 0 && (
+        <div
+          ref={panelRef}
+          className="suggest-panel"
+          style={{ position: "fixed", top: anchor.top, left: anchor.left, width: anchor.width, zIndex: 61 }}
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          {options.map((n) => (
+            <button type="button" key={n} className="suggest-option" onMouseDown={(e) => { e.preventDefault(); onChange(n); close(); }}>{n}</button>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
 
 function PfiLinkPicker({ options, selected, onToggle }) {
   const [open, setOpen] = useState(false);
@@ -2802,12 +2865,17 @@ function bestQuote(lane) {
   return priced.reduce((a, b) => (Number(b.rate) < Number(a.rate) ? b : a));
 }
 
-function ContainerRateTab({ lanes, actions, userName, canEdit }) {
+function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) {
   const [showAdd, setShowAdd] = useState(false);
   const [expanded, setExpanded] = useState(null);
   const [form, setForm] = useState({ pod: "", loadingAddress: "", containerType: CONTAINER_TYPES[0], transitTime: "" });
   const [quoteDraft, setQuoteDraft] = useState({});
   const [find, setFind] = useState("");
+
+  const forwarderNames = React.useMemo(
+    () => uniqueNames([...lanes.flatMap((l) => l.quotes.map((q) => q.company)), ...bookings.map((b) => b.forwarder)]),
+    [lanes, bookings],
+  );
 
   const fq = find.trim().toLowerCase();
   const visibleLanes = fq
@@ -2944,7 +3012,7 @@ function ContainerRateTab({ lanes, actions, userName, canEdit }) {
                             {lane.quotes.map((q, i) => (
                               <tr key={q.id} className={best && q.id === best.id ? "parent-row" : ""}>
                                 {canEdit
-                                  ? <td><input value={q.company} onChange={(e) => actions.updateQuote(lane.id, q.id, "company", e.target.value)} /></td>
+                                  ? <td><SuggestInput names={forwarderNames} value={q.company} onChange={(v) => actions.updateQuote(lane.id, q.id, "company", v)} /></td>
                                   : <td><span className="ro muted">Option {i + 1}</span></td>}
                                 <td>
                                   {canEdit ? (
@@ -2968,7 +3036,7 @@ function ContainerRateTab({ lanes, actions, userName, canEdit }) {
                       </div>
 
                       {canEdit && <div className="mini-form-row">
-                        <div className="mini-field"><label>Forwarder</label><input value={d.company} onChange={(e) => setDraft(lane.id, { company: e.target.value })} style={{ width: 190 }} /></div>
+                        <div className="mini-field"><label>Forwarder</label><SuggestInput names={forwarderNames} value={d.company} onChange={(v) => setDraft(lane.id, { company: v })} style={{ width: 190 }} placeholder="Type or pick a forwarder" /></div>
                         <div className="mini-field">
                           <label>Currency</label>
                           <select value={d.currency} onChange={(e) => setDraft(lane.id, { currency: e.target.value })}>
@@ -4058,7 +4126,7 @@ function Shell({ user, onLogout, store }) {
                   <div className="page-sub">Freight rates by lane — open a lane to see every forwarder quote</div>
                 </div>
               </div>
-              <ContainerRateTab lanes={store.lanes} actions={store} userName={user.name} canEdit={isAdmin || isBuyer} />
+              <ContainerRateTab lanes={store.lanes} bookings={store.bookings} actions={store} userName={user.name} canEdit={isAdmin || isBuyer} />
             </>
           )}
 

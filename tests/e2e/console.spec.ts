@@ -707,6 +707,52 @@ test("warehouse: the note box takes the full width and holds a long note", async
   await expect(page.locator(".cal-event", { hasText: TITLE })).toHaveCount(0);
 });
 
+test("container rate: forwarders typed before are offered when adding a rate", async ({ page }) => {
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await side(page, "Container Rate").click();
+  const POD = "E2E Suggest Port";
+  const stale = page.locator(".lane-row", { hasText: POD });
+  while (await stale.count()) {
+    await stale.first().click();
+    await page.locator(".lane-detail").getByRole("button", { name: "Delete lane" }).click();
+  }
+  await page.getByRole("button", { name: "Add lane" }).click();
+  const form = page.locator(".add-form").first();
+  await form.locator("input").nth(0).fill(POD);
+  await form.locator("input").nth(1).fill("1 Test Way, Northampton");
+  await page.getByRole("button", { name: "Save lane" }).click();
+
+  const lane = page.locator(".lane-detail").first();
+  const forwarder = lane.locator(".mini-form-row input").nth(0);
+  const options = page.locator(".suggest-panel .suggest-option");
+  await forwarder.click();
+  await expect(options.filter({ hasText: /^Maersk$/ })).toHaveCount(1); // entered on the Lagos lane by the buyer test
+  await expect(options.filter({ hasText: /^MSC$/ })).toHaveCount(1);
+  const names = await options.allInnerTexts();
+  expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })));
+
+  await forwarder.fill("ms"); // typing narrows the list
+  await expect(options).toHaveText(["MSC"]);
+  await options.first().click();
+  await expect(forwarder).toHaveValue("MSC");
+  await expect(page.locator(".suggest-panel")).toHaveCount(0);
+  await lane.locator(".mini-form-row input").nth(1).fill("3800");
+  await lane.getByRole("button", { name: "Add rate" }).click();
+  await expect(lane.locator("tbody tr")).toHaveCount(1);
+  await expect(lane.locator("tbody tr input").first()).toHaveValue("MSC");
+
+  await forwarder.fill("Brand New Lines"); // a name never seen is still accepted, and offered from then on
+  await lane.locator(".mini-form-row input").nth(1).fill("4100");
+  await lane.getByRole("button", { name: "Add rate" }).click();
+  await expect(lane.locator("tbody tr")).toHaveCount(2);
+  await forwarder.fill("brand");
+  await expect(options).toHaveText(["Brand New Lines"]);
+  await forwarder.fill("");
+
+  await lane.getByRole("button", { name: "Delete lane" }).click();
+  await expect(page.locator(".lane-row", { hasText: POD })).toHaveCount(0);
+});
+
 test("order status Removed: offered on every screen, kept on a PO-wide change, ignored for Complete Ordering", async ({ page }) => {
   const KEEP = "E2E Keep Tea 100g";
   const DROP = "E2E Drop Jam 200g";
