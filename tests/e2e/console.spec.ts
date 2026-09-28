@@ -1005,3 +1005,48 @@ test("BBD received is a month: typed mm/yyyy, shown mm/yyyy everywhere, older fu
   expect(rows.find((r) => r[2] === KEEP)![4]).toBe("06/2027");
   await close(page);
 });
+
+test("warehouse: an entry is red until it is ticked Done, then green, for every role that sees the calendar", async ({ page }) => {
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await side(page, "Warehouse's Space").click();
+  const TITLE = "E2E: done tick";
+  const entry = page.locator(".cal-event", { hasText: TITLE });
+  while (await entry.count()) { await entry.first().click(); await page.getByRole("button", { name: "Delete entry" }).click(); await page.getByRole("button", { name: "Yes, delete" }).click(); }
+  const day = (n: number) => page.locator(".cal-day:not(.out)", { has: page.locator(".cal-date", { hasText: new RegExp(`^${n}$`) }) });
+  await day(20).hover();
+  await day(20).locator(".cal-add").click();
+  const tick = page.locator(".modal-panel .done-tick input");
+  await expect(tick).not.toBeChecked(); // a new entry starts as not done
+  await page.locator(".modal-panel input").first().fill(TITLE);
+  await page.getByRole("button", { name: "Save entry" }).click();
+
+  const RED = "rgb(251, 225, 222)"; const GREEN = "rgb(213, 238, 220)";
+  await expect(entry).toHaveClass(/is-todo/);
+  await expect(entry).toHaveCSS("background-color", RED);
+  await expect(entry).toHaveAttribute("title", /^Not done/);
+
+  await entry.click();
+  await tick.check();
+  await page.getByRole("button", { name: "Save entry" }).click();
+  await expect(entry).toHaveClass(/is-done/);
+  await expect(entry).toHaveCSS("background-color", GREEN);
+  await expect(entry).toHaveClass(/type-delivery/); // the type dot stays
+  await page.waitForTimeout(1200);
+
+  await signIn(page, A.warehouse.username, A.warehouse.password); // the warehouse login sees the same colour and can untick
+  await expect(entry).toHaveCSS("background-color", GREEN);
+  await entry.click();
+  await expect(tick).toBeChecked();
+  await tick.uncheck();
+  await page.getByRole("button", { name: "Save entry" }).click();
+  await expect(entry).toHaveCSS("background-color", RED);
+  await page.waitForTimeout(1200);
+
+  await signIn(page, A.admin.username, A.admin.password);
+  await side(page, "Warehouse's Space").click();
+  await expect(entry).toHaveCSS("background-color", RED);
+  await entry.click();
+  await page.getByRole("button", { name: "Delete entry" }).click();
+  await page.getByRole("button", { name: "Yes, delete" }).click();
+  await expect(entry).toHaveCount(0);
+});

@@ -140,7 +140,7 @@ describe("MCP tools for the extension tabs", () => {
     expect(jobs[0].notes[0]).toMatchObject({ by: "Buyer Team", status: "pending", text: "Asked Maersk" });
     expect(toolResult(await rpc("tools/call", { name: "add_warehouse_event", arguments: { date: "25/09/2026", title: "Siam PO 2424", type: "collection", refNo: "2424" } }, key))).toMatchObject({ ok: true, date: "2026-09-25" });
     const events = toolResult(await rpc("tools/call", { name: "list_warehouse_events", arguments: { month: "2026-09" } }, key));
-    expect(events).toEqual([{ date: "2026-09-25", title: "Siam PO 2424", type: "collection", refNo: "2424", note: "", by: "Buyer Team" }]);
+    expect(events).toEqual([{ date: "2026-09-25", title: "Siam PO 2424", type: "collection", refNo: "2424", note: "", done: false, by: "Buyer Team" }]);
     const bad = await rpc("tools/call", { name: "add_warehouse_event", arguments: { date: "31/02/2026", title: "x" } }, key);
     expect(bad.json.result.isError).toBe(true);
   });

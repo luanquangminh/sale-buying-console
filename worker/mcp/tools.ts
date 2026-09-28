@@ -182,7 +182,7 @@ export function buildServer(env: Bindings, user: User): McpServer {
   server.tool("list_warehouse_events", "Warehouse's Space calendar entries (admin + buyer).", { month: z.string().optional().describe("yyyy-mm; default all") }, async ({ month }) => {
     const no = denied("warehouseEvents", "Calendar entries"); if (no) return no;
     const rows = await rowsOfKind(db, "warehouseEvents");
-    return text(rows.filter((r) => !month || String(r.data.date || "").startsWith(month)).sort((a, b) => String(a.data.date).localeCompare(String(b.data.date))).map((r) => ({ date: r.data.date, title: r.data.title, type: r.data.type, refNo: r.data.refNo, note: r.data.note, by: r.data.createdBy })));
+    return text(rows.filter((r) => !month || String(r.data.date || "").startsWith(month)).sort((a, b) => String(a.data.date).localeCompare(String(b.data.date))).map((r) => ({ date: r.data.date, title: r.data.title, type: r.data.type, refNo: r.data.refNo, note: r.data.note, done: !!r.data.done, by: r.data.createdBy })));
   });
 
   server.tool("add_warehouse_event", "Add a delivery / collection entry to the Warehouse's Space calendar (admin + buyer). Date accepts dd/mm/yyyy or ISO.", {
@@ -190,7 +190,7 @@ export function buildServer(env: Bindings, user: User): McpServer {
   }, async ({ date, title, type, refNo, note }) => {
     const no = denied("warehouseEvents", "Calendar entries"); if (no) return no;
     const iso = parseDmy(date); if (!iso) return fail("date must be dd/mm/yyyy or yyyy-mm-dd");
-    const data = { id: uid("wh"), date: iso, title: title.trim(), type, refNo: refNo || "", note: note || "", createdBy: user.name, createdAt: nowIso() };
+    const data = { id: uid("wh"), date: iso, title: title.trim(), type, refNo: refNo || "", note: note || "", done: false, createdBy: user.name, createdAt: nowIso() };
     await commit(db, [upsert("warehouseEvents", data.id, data)], user);
     return text({ ok: true, date: iso, title: data.title, type });
   });

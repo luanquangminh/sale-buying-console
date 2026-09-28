@@ -478,6 +478,16 @@ const GlobalStyle = () => (
     .cal-event { display:flex; align-items:center; gap:5px; width:100%; text-align:left; border:none; background:#F1F6F2; border-radius:3px; padding:3px 6px; font-size:11.5px; cursor:pointer; font-family:inherit; color:#16281E; min-width:0; }
     .cal-event span.cal-text { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
     .cal-event:hover { background:#D7EADD; }
+    .cal-event.is-todo { background:#FBE1DE; color:#7E2424; }
+    .cal-event.is-todo:hover { background:#F6CBC6; }
+    .cal-event.is-done { background:#D5EEDC; color:#1B5237; }
+    .cal-event.is-done:hover { background:#BFE3CB; }
+    .cal-swatch { display:inline-block; width:12px; height:9px; border-radius:2px; margin-right:4px; vertical-align:middle; }
+    .cal-swatch.todo { background:#F2B8B1; }
+    .cal-swatch.done { background:#A9DBB9; }
+    .done-tick { display:inline-flex; align-items:center; gap:7px; font-size:12.5px; font-weight:600; text-transform:none; letter-spacing:0; color:#7E2424; background:#FBE1DE; border-radius:3px; padding:7px 10px; cursor:pointer; }
+    .done-tick.on { color:#1B5237; background:#D5EEDC; }
+    .done-tick input { width:auto; min-width:0; margin:0; }
     .cal-dot { width:7px; height:7px; border-radius:50%; flex:none; background:#7C8891; }
     .cal-event.type-delivery .cal-dot { background:#2B5A8A; }
     .cal-event.type-collection .cal-dot { background:#A47521; }
@@ -3553,7 +3563,7 @@ const MAX_VISIBLE_EVENTS = 4;
 
 function WarehouseTab({ events, actions, userName }) {
   const [cursor, setCursor] = useState(() => startOfMonth(todayLocalIso()));
-  const [editing, setEditing] = useState(null); // { id?, date, title, type, refNo, note }
+  const [editing, setEditing] = useState(null); // { id?, date, title, type, refNo, note, done }
   const [showAll, setShowAll] = useState(null); // ISO date whose cell shows every entry
   const today = todayLocalIso();
   const list = events || [];
@@ -3563,8 +3573,8 @@ function WarehouseTab({ events, actions, userName }) {
   const grid = monthGrid(cursor);
   const countThisMonth = list.filter((e) => inMonth(e.date || "", cursor)).length;
 
-  const openNew = (date) => setEditing({ date, title: "", type: "delivery", refNo: "", note: "" });
-  const openEdit = (e) => setEditing({ id: e.id, date: e.date, title: e.title, type: e.type || "delivery", refNo: e.refNo || "", note: e.note || "" });
+  const openNew = (date) => setEditing({ date, title: "", type: "delivery", refNo: "", note: "", done: false });
+  const openEdit = (e) => setEditing({ id: e.id, date: e.date, title: e.title, type: e.type || "delivery", refNo: e.refNo || "", note: e.note || "", done: !!e.done });
   const saveEntry = () => {
     if (!editing || !editing.title.trim() || !editing.date) return;
     const { id, ...fields } = editing;
@@ -3587,6 +3597,8 @@ function WarehouseTab({ events, actions, userName }) {
             <span><span className="cal-dot" style={{ display: "inline-block", background: "#2B5A8A", marginRight: 4 }} />Delivery</span>
             <span><span className="cal-dot" style={{ display: "inline-block", background: "#A47521", marginRight: 4 }} />Collection</span>
             <span><span className="cal-dot" style={{ display: "inline-block", marginRight: 4 }} />Other</span>
+            <span><span className="cal-swatch todo" />Not done</span>
+            <span><span className="cal-swatch done" />Done</span>
           </span>
           <button className="btn btn-accent btn-sm" style={{ marginLeft: 8 }} onClick={() => openNew(today)}><Plus size={12} /> New entry</button>
         </div>
@@ -3606,7 +3618,7 @@ function WarehouseTab({ events, actions, userName }) {
                   <button className="cal-add" title={`Add an entry on ${fmtDate(iso)}`} onClick={() => openNew(iso)}>+</button>
                 </div>
                 {shown.map((e) => (
-                  <button key={e.id} className={`cal-event type-${e.type || "other"}`} title={`${WH_TYPE_LABEL[e.type] || "Other"}${e.refNo ? ` · ${e.refNo}` : ""}${e.note ? `\n${e.note}` : ""}`} onClick={() => openEdit(e)}>
+                  <button key={e.id} className={`cal-event type-${e.type || "other"} ${e.done ? "is-done" : "is-todo"}`} title={`${e.done ? "Done" : "Not done"} · ${WH_TYPE_LABEL[e.type] || "Other"}${e.refNo ? ` · ${e.refNo}` : ""}${e.note ? `\n${e.note}` : ""}`} onClick={() => openEdit(e)}>
                     <span className="cal-dot" /><span className="cal-text">{e.title}</span>
                   </button>
                 ))}
@@ -3641,6 +3653,12 @@ function WarehouseTab({ events, actions, userName }) {
               </select>
             </div>
             <div className="mini-field"><label>PO / PFI no.</label><input placeholder="2424" value={editing.refNo} onChange={(e) => setEditing({ ...editing, refNo: e.target.value })} /></div>
+            <div className="mini-field">
+              <label>Status</label>
+              <label className={`done-tick ${editing.done ? "on" : ""}`}>
+                <input type="checkbox" checked={editing.done} onChange={(e) => setEditing({ ...editing, done: e.target.checked })} /> Done
+              </label>
+            </div>
             <div className="mini-field" style={{ gridColumn: "1 / -1" }}><label>Note</label><textarea className="wh-note" rows={7} placeholder="Pallets, time window, driver…" value={editing.note} onChange={(e) => setEditing({ ...editing, note: e.target.value })} /></div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -4332,7 +4350,7 @@ export default function App() {
 
   /* Warehouse's Space (admin + buyer + warehouse): delivery / collection calendar */
   const addWarehouseEvent = (data) => {
-    const ev = { id: uid("wh"), date: data.date, title: (data.title || "").trim(), type: data.type || "delivery", refNo: data.refNo || "", note: data.note || "", createdBy: data.createdBy || "", createdAt: new Date().toISOString() };
+    const ev = { id: uid("wh"), date: data.date, title: (data.title || "").trim(), type: data.type || "delivery", refNo: data.refNo || "", note: data.note || "", done: !!data.done, createdBy: data.createdBy || "", createdAt: new Date().toISOString() };
     setWarehouseEvents((prev) => [...(prev || []), ev]);
     return ev.id;
   };
