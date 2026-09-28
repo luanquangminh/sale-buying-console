@@ -11,6 +11,7 @@ import { DUE_TONE, dueLabel, dueState } from "./payments";
 import { sortLanesByPod } from "./lanes";
 import { lineCover, pfiLineCover, pfiShortages, poShortages } from "./allocation";
 import { placePanel } from "./popup";
+import { acknowledged, changeSinceSent, lineChange, removedSinceSent, stampSent } from "./sentMark";
 import { applyReceipts, matchPfiLine, stripDerived } from "./receipts";
 import { mergeOtherRole } from "./merge";
 import { addMonths, inMonth, monthGrid, monthLabel, startOfMonth, todayLocalIso } from "./calendar";
@@ -376,6 +377,14 @@ const GlobalStyle = () => (
     .data-table.sticky-first tr.parent-row td:first-child { background:#F2F8F4; }
     .data-table.sticky-first tr.sub-row td:first-child { background:#FBFDFB; }
     .data-table tr.row-hit td { background:#FBF0DA !important; }
+    .data-table tr.row-changed td, .data-table.sticky-first tr.row-changed td:first-child { background:#FFF6D6 !important; }
+    .data-table tr.row-changed td:first-child { box-shadow:inset 3px 0 0 #D9A400; }
+    .data-table tr.row-gone td, .data-table.sticky-first tr.row-gone td:first-child { background:#FFF1EF !important; }
+    .data-table tr.row-gone td:first-child { box-shadow:inset 3px 0 0 #C64B4B; }
+    .change-note { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:5px; font-size:11px; line-height:1.4; color:#6B5200; font-weight:600; }
+    .change-note .btn { font-size:10.5px; padding:2px 8px; }
+    .gone-note { color:#B23B3B; font-weight:700; font-size:12px; line-height:1.45; }
+    .gone-note span { font-weight:500; color:#8A4A4A; }
 
     .table-toolbar { display:flex; align-items:center; gap:14px; margin-bottom:8px; flex-wrap:wrap; }
     .search-wrap { position:relative; flex:1; min-width:220px; max-width:360px; }
@@ -1423,6 +1432,16 @@ function ProductsTable({
   const totals = orderTotals(pfi.products);
   const shortages = variant === "po" ? poShortages(pfi, allPfiOptions) : [];
   const lineShortages = variant === "po" ? [] : pfiShortages(pfi);
+  // What Sale changed after a PO covering the line was sent: shown to the buyer, who has to act on it.
+  const showSentMarks = variant === "pfi-buyer";
+  const goneLines = showSentMarks ? removedSinceSent(pfi) : [];
+  const goneRow = (g) => (
+    <tr key={`gone-${g.lineId}`} className="row-gone ghost-row">
+      <td colSpan={15}>
+        <div className="gone-note">{g.product} has been removed <span>by Sale after PO {g.pos.join(", PO ")} was sent</span></div>
+      </td>
+    </tr>
+  );
 
   const jumpTo = (productId) => {
     const el = rowRefs.current[productId];
@@ -1685,7 +1704,8 @@ function ProductsTable({
             {pfi.products.length === 0 && (
               <tr><td colSpan={colCount} className="ro muted" style={{ padding: 16 }}>No product lines yet.</td></tr>
             )}
-            {pfi.products.map((p) => {
+            {pfi.products.length === 0 && goneLines.map((g) => goneRow(g))}
+            {pfi.products.map((p, lineIndex) => {
               const receipts = isPo ? [] : (p.receipts || []);
               const allocations = isPo ? (p.linkedPfiRefs || []) : [];
               const hasReceipts = receipts.length > 0;
@@ -1712,12 +1732,15 @@ function ProductsTable({
                 : hasAllocations ? allocations.map((a) => ({ orderStatus: allocStatus(a) })) : [];
               const rollLabel = rolledUp ? rollupStatusLabel(statusSource) : null;
               const lineCoverNote = isPo ? null : pfiLineCover(p);
+              const changed = showSentMarks ? lineChange(p) : null;
+              const goneHere = goneLines.filter((g) => Math.min(g.index, pfi.products.length - 1) === lineIndex);
 
               return (
                 <React.Fragment key={p.id}>
+                  {goneHere.filter((g) => g.index <= lineIndex).map((g) => goneRow(g))}
                   <tr
                     ref={(el) => { rowRefs.current[p.id] = el; }}
-                    className={`${rolledUp ? "parent-row" : ""} ${hit === p.id ? "row-hit" : ""}`}
+                    className={`${rolledUp ? "parent-row" : ""} ${hit === p.id ? "row-hit" : ""} ${changed ? "row-changed" : ""}`}
                   >
                     <td>{canEditSale ? <input value={p.product} onChange={(e) => onSaleField(p.id, "product", e.target.value)} /> : <span className="ro">{p.product}</span>}</td>
                     <td><DescriptionCell p={p} editable={canEditSale} onField={onSaleField} /></td>
@@ -1728,7 +1751,19 @@ function ProductsTable({
                         </select>
                       ) : <span className="ro">{vatOption(p.vat)}</span>}
                     </td>
-                    <td>{canEditSale ? <input type="number" value={p.quantity} onChange={(e) => onSaleField(p.id, "quantity", e.target.value)} /> : <span className="ro">{p.quantity}</span>}</td>
+                    <td>
+                      {canEditSale ? <input type="number" value={p.quantity} onChange={(e) => onSaleField(p.id, "quantity", e.target.value)} /> : <span className="ro">{p.quantity}</span>}
+                      {changed && (
+                        <div className="change-note">
+                          <span title={`Changed by Sale after PO ${changed.pos.join(", PO ")} was sent`}>was {changed.from}</span>
+                          <button
+                            className="btn btn-sm"
+                            title="You have dealt with the change: stop highlighting this line"
+                            onClick={() => (p.receipts || []).filter((r) => r.sent && Number(r.sent.qty) !== changed.to).forEach((r) => onReceiptField(r, "sent", { ...r.sent, qty: changed.to, product: p.product || r.sent.product, at: new Date().toISOString() }))}
+                          >Seen</button>
+                        </div>
+                      )}
+                    </td>
                     <td>{canEditSale ? <input type="number" value={p.rate} onChange={(e) => onSaleField(p.id, "rate", e.target.value)} /> : <span className="ro">{p.rate}</span>}</td>
                     <td><span className="ro sm-mono">{formatMoney(p.amount, pfi.currency)}</span></td>
 
@@ -1881,13 +1916,23 @@ function ProductsTable({
                     const opt = optionFor(a.pfiId);
                     const st = allocStatus(a);
                     const adiff = got === null || alloc === null || st === "removed" ? null : got - alloc;
+                    const change = opt ? changeSinceSent({ ...a, orderStatus: st }, opt.lines || []) : null;
                     const coveredLine = opt ? matchPfiLine(opt.lines || [], a, p) : null;
                     const cover = coveredLine && st !== "removed" ? lineCover(opt, coveredLine, pfi) : null;
                     return (
-                      <tr key={`${p.id}-${a.pfiId}`} className={`sub-row ${hit === p.id ? "row-hit" : ""}`}>
+                      <tr key={`${p.id}-${a.pfiId}`} className={`sub-row ${hit === p.id ? "row-hit" : ""} ${change ? (change.kind === "removed" ? "row-gone" : "row-changed") : ""}`}>
                         <td className="ro"><span className="sub-arrow">↳</span> <strong>{opt ? opt.shortLabel : "PFI"}</strong></td>
                         <td>
                           <div className="ro muted" style={{ fontSize: 11 }}>{opt ? opt.customerName : ""}</div>
+                          {change && change.kind === "removed" && (
+                            <div className="gone-note">{change.product} has been removed <span>from {opt.shortLabel} after this PO was sent</span></div>
+                          )}
+                          {change && change.kind === "changed" && (
+                            <div className="change-note">
+                              <span>Sale changed the quantity after this PO was sent: {change.from} → {change.to}</span>
+                              <button className="btn btn-sm" title="You have dealt with the change: stop highlighting this row" onClick={() => onAllocationField(p.id, a.pfiId, "sent", acknowledged(a.sent, opt.lines || [], new Date().toISOString()))}>Seen</button>
+                            </div>
+                          )}
                           {opt && (
                             <select
                               className="line-pick"
@@ -1937,6 +1982,7 @@ function ProductsTable({
                       </tr>
                     );
                   })}
+                  {goneHere.filter((g) => g.index > lineIndex).map((g) => goneRow(g))}
                 </React.Fragment>
               );
             })}
@@ -5321,6 +5367,10 @@ export default function App() {
         }),
       })),
     };
+    return commitSavedPo(stampSent(draft, linesOf, new Date().toISOString()));
+  };
+
+  const commitSavedPo = (draft) => {
     const before = pos.find((p) => p.id === draft.id);
     const nextPos = pos.map((p) => (p.id === draft.id ? draft : p));
     commitPos(nextPos);

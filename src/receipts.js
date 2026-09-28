@@ -33,6 +33,7 @@ export function buildReceipt(po, pr, ref) {
     estimatedDeliveryDate: ref.estimatedDeliveryDate || pr.estimatedDeliveryDate || "",
     receivedDate: ref.receivedDate || pr.receivedDate || "",
     bbdReceived: ref.bbdReceived || pr.bbdReceived || "",
+    sent: ref.sent || null, // the PFI line as it stood when the PO was sent (see sentMark.js)
   };
 }
 
