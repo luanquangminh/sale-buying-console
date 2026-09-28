@@ -73,10 +73,12 @@ describe("MCP endpoint", () => {
     expect(got.lines).toHaveLength(2);
     expect(got.lines[0]).toMatchObject({ product: "Yogi Tea Organic Bags Classic Chai 37.4g", ean: "4012824406711", quantity: 20, rate: 9.02, amount: 180.4 });
     expect(got.lines[1].vat).toBe("20.0% S");
+    expect(got).toMatchObject({ subtotal: 612.4, vat: 86.4, total: 698.8 }); // 180.40 at 0% + 432.00 at 20%
 
     // the sale rep sees it through their own key; the UI snapshot has the feed item
     const mine = toolResult(await rpc("tools/call", { name: "list_pfis", arguments: {} }, "rep1:pw-sale-test"));
     expect(mine.map((p: any) => p.pfiNo)).toContain("3300");
+    expect(mine.find((p: any) => p.pfiNo === "3300")).toMatchObject({ subtotal: 612.4, vat: 86.4, total: 698.8 });
     const state = await (await SELF.fetch("http://console.test/api/state", { headers: { cookie } })).json() as any;
     expect(state.slices.feedBuyerPfi.some((f: any) => /via Claude/.test(f.message))).toBe(true);
     expect(state.version).toBeGreaterThan(0);

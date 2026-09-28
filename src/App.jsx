@@ -6,6 +6,7 @@ import { extractPdfForImport, imageToDataUrl } from "./pdfExtract";
 import { fmtDate, parseDmy, todayIso } from "./dates";
 import { keepRemoved, pfiTrackingStatus, rollupStatusLabel, TRACKING_TONE } from "./status";
 import { matchNames, uniqueNames } from "./suggest";
+import { orderTotals, vatOption, VAT_OPTIONS } from "./money";
 import { applyReceipts, matchPfiLine, stripDerived } from "./receipts";
 import { mergeOtherRole } from "./merge";
 import { addMonths, inMonth, monthGrid, monthLabel, startOfMonth, todayLocalIso } from "./calendar";
@@ -82,7 +83,6 @@ const SHIPMENT_SUBTYPES = {
   air_freight: ["General Cargo", "Temperature Control"],
 };
 const LOADING_METHODS = ["Palletized", "Handload"];
-const VAT_OPTIONS = ["0.0% Z", "5.0%", "20.0% S"];
 const VEHICLE_TYPES = [
   { value: "container", label: "Container" },
   { value: "truck", label: "Truck" },
@@ -135,8 +135,9 @@ function computeAmount(qty, rate) {
   const r = parseFloat(rate) || 0;
   return +(q * r).toFixed(2);
 }
+/* What is owed for the order: the lines plus their VAT. */
 function productTotal(products) {
-  return products.reduce((acc, p) => acc + (Number(p.amount) || 0), 0);
+  return orderTotals(products).total;
 }
 function paymentTotal(payments) {
   return payments.reduce((acc, p) => acc + (Number(p.amount) || 0), 0);
@@ -536,6 +537,10 @@ const GlobalStyle = () => (
     .toggle-btn.notsent-on { background:#FBE4E1; color:#B23B3B; border-color:#F3C6C1; }
 
     .pay-summary { display:flex; gap:22px; flex-wrap:wrap; margin-bottom:12px; }
+    .totals-strip { display:flex; justify-content:flex-end; gap:26px; flex-wrap:wrap; padding:10px 4px 2px; }
+    .totals-strip > div { display:flex; flex-direction:column; align-items:flex-end; }
+    .totals-value { font-size:13.5px; font-weight:600; font-family:'IBM Plex Mono', monospace; }
+    .totals-grand .totals-value { font-size:15px; font-weight:700; color:#1F5B3D; }
     .pay-stat-label { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:#7C8891; margin-bottom:3px; }
     .pay-stat-value { font-size:15px; font-weight:700; font-family:'IBM Plex Mono', monospace; }
 
@@ -1208,6 +1213,7 @@ function ProductsTable({
   const canEditBuyer = variant === "pfi-buyer" || variant === "po";
   const isPo = variant === "po";
   const canDelete = variant === "pfi-sale" || variant === "po";
+  const totals = orderTotals(pfi.products);
 
   const jumpTo = (productId) => {
     const el = rowRefs.current[productId];
@@ -1261,7 +1267,7 @@ function ProductsTable({
           ean: String(r.EAN ?? r.ean ?? ""),
           caseBarcode: String(r["Case Barcode"] ?? r["Case barcode"] ?? r.caseBarcode ?? ""),
           caseSize: String(r.Pack ?? r["Case Size"] ?? r.caseSize ?? ""),
-          vat: String(r.VAT ?? r.vat ?? VAT_OPTIONS[0]),
+          vat: vatOption(r.VAT ?? r.vat),
           quantity: r.Quantity ?? r.QTY ?? r.quantity ?? "",
           rate: r.Rate ?? r.rate ?? "",
         })).filter((r) => r.product);
@@ -1332,7 +1338,7 @@ function ProductsTable({
         caseBarcode: String(l.caseBarcode || "").trim(),
         caseSize: String(l.pack || "").trim(),
         bbd: String(l.bbd || "").trim(),
-        vat: String(l.vat || VAT_OPTIONS[0]).trim(),
+        vat: vatOption(l.vat),
         quantity: l.quantity ?? "",
         rate: l.rate ?? "",
       })).filter((l) => l.product);
@@ -1482,10 +1488,10 @@ function ProductsTable({
                     <td><DescriptionCell p={p} editable={canEditSale} onField={onSaleField} /></td>
                     <td>
                       {canEditSale ? (
-                        <select value={p.vat || VAT_OPTIONS[0]} onChange={(e) => onSaleField(p.id, "vat", e.target.value)}>
+                        <select value={vatOption(p.vat)} onChange={(e) => onSaleField(p.id, "vat", e.target.value)}>
                           {VAT_OPTIONS.map((v) => <option key={v} value={v}>{v}</option>)}
                         </select>
-                      ) : <span className="ro">{p.vat || VAT_OPTIONS[0]}</span>}
+                      ) : <span className="ro">{vatOption(p.vat)}</span>}
                     </td>
                     <td>{canEditSale ? <input type="number" value={p.quantity} onChange={(e) => onSaleField(p.id, "quantity", e.target.value)} /> : <span className="ro">{p.quantity}</span>}</td>
                     <td>{canEditSale ? <input type="number" value={p.rate} onChange={(e) => onSaleField(p.id, "rate", e.target.value)} /> : <span className="ro">{p.rate}</span>}</td>
@@ -1680,6 +1686,12 @@ function ProductsTable({
             })}
           </tbody>
         </table>
+      </div>
+
+      <div className="totals-strip">
+        <div><span className="pay-stat-label">Subtotal</span><span className="totals-value">{formatMoney(totals.net, pfi.currency)}</span></div>
+        <div><span className="pay-stat-label">VAT</span><span className="totals-value">{formatMoney(totals.vat, pfi.currency)}</span></div>
+        <div className="totals-grand"><span className="pay-stat-label">Total</span><span className="totals-value">{formatMoney(totals.total, pfi.currency)}</span></div>
       </div>
 
       {!isPo && (pfi.unmatchedReceipts || []).length > 0 && (
@@ -1954,9 +1966,9 @@ function DocumentsSection({ documents, canAdd, canEditStatus, onAdd, onStatusCha
 function PaymentSection({ pfi, canEdit, onAddPayment }) {
   const [date, setDate] = useState("");
   const [amount, setAmount] = useState("");
-  const total = productTotal(pfi.products);
+  const { net, vat, total } = orderTotals(pfi.products);
   const paid = paymentTotal(pfi.payments);
-  const remaining = Math.max(total - paid, 0);
+  const remaining = Math.max(+(total - paid).toFixed(2), 0);
   const status = paymentStatus(total, paid);
 
   const submit = () => {
@@ -1974,7 +1986,9 @@ function PaymentSection({ pfi, canEdit, onAddPayment }) {
         <span className={`chip ${status}`}>{paymentStatusLabel(status)}</span>
       </div>
       <div className="pay-summary">
-        <div><div className="pay-stat-label">Order total</div><div className="pay-stat-value">{formatMoney(total, pfi.currency)}</div></div>
+        <div><div className="pay-stat-label">Subtotal</div><div className="pay-stat-value">{formatMoney(net, pfi.currency)}</div></div>
+        <div><div className="pay-stat-label">VAT</div><div className="pay-stat-value">{formatMoney(vat, pfi.currency)}</div></div>
+        <div><div className="pay-stat-label">Order total (incl. VAT)</div><div className="pay-stat-value">{formatMoney(total, pfi.currency)}</div></div>
         <div><div className="pay-stat-label">Paid</div><div className="pay-stat-value">{formatMoney(paid, pfi.currency)}</div></div>
         <div><div className="pay-stat-label">Remaining</div><div className="pay-stat-value">{formatMoney(remaining, pfi.currency)}</div></div>
       </div>

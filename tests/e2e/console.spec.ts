@@ -851,3 +851,71 @@ test("order status Removed: offered on every screen, kept on a PO-wide change, i
   await side(page, "Order Tracking").click();
   await expect(pfiRow.locator(".chip").last()).toHaveText(/^pending$/i);
 });
+
+test("totals include VAT: subtotal, VAT and total on the order, payment status against the total", async ({ page }) => {
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Order Tracking").click();
+  const pfiRow = page.locator(".pfi-list-row", { hasText: "PFI 3291" });
+  const removePfi = async () => {
+    await openDetail(page, pfiRow);
+    await page.getByRole("button", { name: "Delete PFI" }).click();
+    await page.getByRole("button", { name: "Yes, delete" }).click();
+    await expect(pfiRow).toHaveCount(0);
+  };
+  if (await pfiRow.count()) await removePfi(); // left by an aborted run
+
+  await page.getByRole("button", { name: "Add PFI" }).click();
+  await page.locator(".add-form").first().locator("input").nth(0).fill("3291");
+  await page.getByRole("button", { name: "Create PFI" }).click();
+  await page.locator(".detail-body").waitFor();
+  const products = page.locator(".detail-body .section-card").first();
+  const rowForm = products.locator(".mini-form-row").first();
+  for (const [name, qty, rate, vat] of [["E2E Tea 100g", "10", "10", "20.0% S"], ["E2E Jam 200g", "5", "10", "5.0%"], ["E2E Rice 1kg", "3", "10", "0.0% Z"]]) {
+    await rowForm.locator("input").nth(0).fill(name);
+    await rowForm.locator("select").first().selectOption(vat);
+    await rowForm.locator("input").nth(4).fill(qty);
+    await rowForm.locator("input").nth(5).fill(rate);
+    await rowForm.getByRole("button", { name: "Add row" }).click();
+  }
+  // 100 at 20% + 50 at 5% + 30 at 0% = 180 net, 22.50 VAT, 202.50 owed
+  const strip = products.locator(".totals-strip");
+  await expect(strip).toContainText("Subtotal$180.00");
+  await expect(strip).toContainText("VAT$22.50");
+  await expect(strip).toContainText("Total$202.50");
+  const pay = page.locator(".section-card:has(.pay-summary)");
+  await expect(pay.locator(".pay-summary")).toContainText("Subtotal$180.00");
+  await expect(pay.locator(".pay-summary")).toContainText("VAT$22.50");
+  await expect(pay.locator(".pay-summary")).toContainText("Order total (incl. VAT)$202.50");
+  await expect(pay.locator(".pay-summary")).toContainText("Remaining$202.50");
+
+  // Paying the net amount no longer settles the order.
+  const payDate = pay.locator('.date-field input[type="text"]');
+  await payDate.fill("21/09/2026"); await payDate.press("Enter");
+  await pay.locator('input[type="number"]').fill("180");
+  await pay.getByRole("button", { name: "Record payment" }).click();
+  await expect(pay.locator(".section-title .chip")).toHaveText(/partial/i);
+  await expect(pay.locator(".pay-summary")).toContainText("Remaining$22.50");
+  await save(page);
+  await close(page);
+  await expect(pfiRow).toContainText("$202.50");
+  await expect(pfiRow).toContainText(/partial/i);
+
+  await openDetail(page, pfiRow);
+  await payDate.fill("22/09/2026"); await payDate.press("Enter");
+  await pay.locator('input[type="number"]').fill("22.5");
+  await pay.getByRole("button", { name: "Record payment" }).click();
+  await expect(pay.locator(".section-title .chip")).toHaveText(/^paid$/i);
+  await expect(pay.locator(".pay-summary")).toContainText("Remaining$0.00");
+
+  // Changing a line's VAT moves the total at once.
+  const tea = page.locator(".detail-body tbody tr:not(.sub-row)").filter({ has: page.locator('input[value="E2E Tea 100g"]') });
+  await tea.locator("select").filter({ has: page.locator('option[value="5.0%"]') }).selectOption("0.0% Z");
+  await expect(strip).toContainText("VAT$2.50");
+  await expect(strip).toContainText("Total$182.50");
+  await save(page);
+  await close(page);
+  await expect(pfiRow).toContainText("$182.50");
+  await expect(pfiRow).toContainText(/paid/i);
+
+  await removePfi();
+});

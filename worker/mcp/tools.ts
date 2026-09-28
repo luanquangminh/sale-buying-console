@@ -5,6 +5,7 @@ import type { Bindings, User } from "../types";
 import { commit, findByNumber, makeLine, nowIso, rowsOfKind, scopeSaleId, uid, upsert } from "./data";
 import { kindAllowed } from "../records";
 import { parseDmy } from "../../src/dates.js";
+import { orderTotals } from "../../src/money.js";
 
 const LineInput = z.object({
   product: z.string().describe("Product / service name"),
@@ -19,6 +20,8 @@ const LineInput = z.object({
 
 const text = (obj: unknown) => ({ content: [{ type: "text" as const, text: typeof obj === "string" ? obj : JSON.stringify(obj, null, 2) }] });
 const fail = (msg: string) => ({ isError: true, content: [{ type: "text" as const, text: msg }] });
+/** Money of an order as the screens show it: subtotal (net), vat, total (VAT included). */
+const moneyOf = (products: unknown) => { const t = orderTotals((products as any[]) || []); return { subtotal: t.net, vat: t.vat, total: t.total }; };
 
 /** Build an MCP server whose tools act as the authenticated app user. */
 export function buildServer(env: Bindings, user: User): McpServer {
@@ -31,11 +34,11 @@ export function buildServer(env: Bindings, user: User): McpServer {
     return text(rows.map((r) => ({ companyName: r.data.companyName, groupChatName: r.data.groupChatName, saleRep: reps.get(r.sale_id || "") || "", notes: (r.data.notes || []).length })));
   });
 
-  server.tool("list_pfis", "PFIs (proforma invoices to customers) with line counts and totals.", { customer: z.string().optional().describe("Filter by customer name (contains)") }, async ({ customer }) => {
+  server.tool("list_pfis", "PFIs (proforma invoices to customers) with line counts and money: subtotal (net), vat, total (VAT included).", { customer: z.string().optional().describe("Filter by customer name (contains)") }, async ({ customer }) => {
     const rows = await rowsOfKind(db, "pfis", scopeSaleId(user));
     const out = rows
       .filter((r) => !customer || String(r.data.customerName || "").toLowerCase().includes(customer.toLowerCase()))
-      .map((r) => ({ pfiNo: r.data.pfiNo, customerName: r.data.customerName, saleRep: r.data.saleName, currency: r.data.currency, incoterm: r.data.incoterm, lines: (r.data.products || []).length, total: (r.data.products || []).reduce((a: number, p: any) => a + (Number(p.amount) || 0), 0), createdAt: r.data.createdAt }));
+      .map((r) => ({ pfiNo: r.data.pfiNo, customerName: r.data.customerName, saleRep: r.data.saleName, currency: r.data.currency, incoterm: r.data.incoterm, lines: (r.data.products || []).length, ...moneyOf(r.data.products), createdAt: r.data.createdAt }));
     return text(out);
   });
 
@@ -43,7 +46,7 @@ export function buildServer(env: Bindings, user: User): McpServer {
     const row = await findByNumber(db, "pfis", "pfiNo", pfiNo);
     if (!row || (scopeSaleId(user) && row.sale_id !== user.id)) return fail(`PFI ${pfiNo} not found`);
     const d = row.data;
-    return text({ pfiNo: d.pfiNo, customerName: d.customerName, saleRep: d.saleName, currency: d.currency, incoterm: d.incoterm, paymentTerm: d.paymentTerm, delivery: d.delivery, payments: d.payments,
+    return text({ pfiNo: d.pfiNo, customerName: d.customerName, saleRep: d.saleName, currency: d.currency, incoterm: d.incoterm, paymentTerm: d.paymentTerm, delivery: d.delivery, payments: d.payments, ...moneyOf(d.products),
       lines: (d.products || []).map((p: any) => ({ product: p.product, ean: p.ean, caseBarcode: p.caseBarcode, pack: p.caseSize, bbd: p.bbd, quantity: p.quantity, rate: p.rate, vat: p.vat, amount: p.amount, orderStatus: p.orderStatus })) });
   });
 
@@ -96,10 +99,10 @@ export function buildServer(env: Bindings, user: User): McpServer {
   });
 
   if (user.role !== "sale") {
-  server.tool("list_pos", "Purchase orders to suppliers.", {}, async () => {
+  server.tool("list_pos", "Purchase orders to suppliers, with subtotal (net), vat and total (VAT included).", {}, async () => {
     if (user.role === "sale") return fail("POs are visible to buyer and admin only");
     const rows = await rowsOfKind(db, "pos");
-    return text(rows.map((r) => ({ poNo: r.data.poNo, supplierName: r.data.supplierName, currency: r.data.currency, lines: (r.data.products || []).length, sentStatus: r.data.sentStatus, receivedStatus: r.data.receivedStatus })));
+    return text(rows.map((r) => ({ poNo: r.data.poNo, supplierName: r.data.supplierName, currency: r.data.currency, lines: (r.data.products || []).length, ...moneyOf(r.data.products), sentStatus: r.data.sentStatus, receivedStatus: r.data.receivedStatus })));
   });
 
   server.tool("get_po", "One PO with its lines and linked PFIs.", { poNo: z.string() }, async ({ poNo }) => {
@@ -107,7 +110,7 @@ export function buildServer(env: Bindings, user: User): McpServer {
     const row = await findByNumber(db, "pos", "poNo", poNo);
     if (!row) return fail(`PO ${poNo} not found`);
     const d = row.data;
-    return text({ poNo: d.poNo, supplierName: d.supplierName, currency: d.currency, incoterm: d.incoterm, sentStatus: d.sentStatus, receivedStatus: d.receivedStatus,
+    return text({ poNo: d.poNo, supplierName: d.supplierName, currency: d.currency, incoterm: d.incoterm, sentStatus: d.sentStatus, receivedStatus: d.receivedStatus, ...moneyOf(d.products),
       lines: (d.products || []).map((p: any) => ({ product: p.product, ean: p.ean, caseBarcode: p.caseBarcode, pack: p.caseSize, bbd: p.bbd, quantity: p.quantity, rate: p.rate, vat: p.vat, amount: p.amount, orderStatus: p.orderStatus, linkedPfis: (p.linkedPfiRefs || []).length })) });
   });
 
