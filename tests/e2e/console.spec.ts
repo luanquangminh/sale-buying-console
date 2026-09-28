@@ -51,6 +51,13 @@ const save = async (page: Page) => {
   await expect(page.locator(".save-bar")).toContainText(/all changes saved/i);
 };
 const close = (page: Page) => page.getByRole("button", { name: "Close" }).click();
+/** Orders to update lists the PFIs under their sale rep: open every rep, then the row is there. */
+const order = async (page: Page, pfi: string) => {
+  await page.locator(".sale-group-head").first().waitFor();
+  const closed = page.locator(".sale-group:not(.open) > .sale-group-head");
+  while (await closed.count()) await closed.first().click();
+  return page.locator(".fulfil-head", { hasText: pfi }).first();
+};
 
 test("sale rep: note, PFI lines, attachment, payment, export", async ({ page }) => {
   await signIn(page, A.sale.username, A.sale.password);
@@ -116,7 +123,7 @@ test("buyer: inbox reply, PFI update, PO linked to the PFI, container rate", asy
   await expect(item).toContainText(/replied/i);
 
   await pill(page, "Orders to update").click();
-  await openDetail(page, page.locator(".fulfil-head", { hasText: "PFI 3200" }).first());
+  await openDetail(page, await order(page, "PFI 3200"));
   // A line already covered by a PO rolls up (no dropdown), so pick the first line that still has one.
   const first = page.locator(".detail-body tbody tr:not(.sub-row)").filter({ has: page.locator('option[value="ordered"]') }).first();
   if (await first.count()) {
@@ -504,7 +511,7 @@ test("a sale's save of an open PFI keeps the buyer's status change made meanwhil
   const buyerCtx = await browser.newContext(); const buyer = await buyerCtx.newPage();
   await signIn(buyer, A.buyer.username, A.buyer.password);
   await pill(buyer, "Orders to update").click();
-  await openDetail(buyer, buyer.locator(".fulfil-head", { hasText: "PFI 3200" }).first());
+  await openDetail(buyer, await order(buyer, "PFI 3200"));
   const buyerRow = () => buyer.locator(".detail-body tbody tr:not(.sub-row)", { hasText: LINE }).first();
   const statusBefore = await buyerRow().locator("select").first().inputValue();
   const statusNext = statusBefore === "ordered" ? "sending_order" : "ordered";
@@ -517,7 +524,7 @@ test("a sale's save of an open PFI keeps the buyer's status change made meanwhil
 
   await buyer.reload();
   await pill(buyer, "Orders to update").click();
-  await openDetail(buyer, buyer.locator(".fulfil-head", { hasText: "PFI 3200" }).first());
+  await openDetail(buyer, await order(buyer, "PFI 3200"));
   await expect(buyerRow().locator("select").first()).toHaveValue(statusNext);
   await expect(buyerRow()).toContainText("24 x 415g (sale edit)"); // and the sale's edit landed too
   // restore for the next run
@@ -818,7 +825,7 @@ test("order status Removed: offered on every screen, kept on a PO-wide change, i
 
   // Buyer, Orders to update: same list of statuses; the first line arrives in full.
   await pill(page, "Orders to update").click();
-  await openDetail(page, page.locator(".fulfil-head", { hasText: "PFI 3290" }).first());
+  await openDetail(page, await order(page, "PFI 3290"));
   const keepLine = page.locator(".detail-body tbody tr:not(.sub-row)", { hasText: KEEP });
   await expect(keepLine.locator("select").filter({ has: page.locator('option[value="removed"]') })).toHaveCount(1);
   await keepLine.locator("select").filter({ has: page.locator('option[value="removed"]') }).selectOption("received");
@@ -929,7 +936,7 @@ test("BBD received is a month: typed mm/yyyy, shown mm/yyyy everywhere, older fu
   // Buyer, Orders to update: the line's own box.
   await signIn(page, A.buyer.username, A.buyer.password);
   await pill(page, "Orders to update").click();
-  await openDetail(page, page.locator(".fulfil-head", { hasText: "PFI 3290" }).first());
+  await openDetail(page, await order(page, "PFI 3290"));
   const keepLine = page.locator(".detail-body tbody tr:not(.sub-row)", { hasText: KEEP });
   const bbdCell = keepLine.locator("td").nth(await headerIndex(/bbd received/i));
   const box = bbdCell.locator('.month-field input[type="text"]');
@@ -992,7 +999,7 @@ test("BBD received is a month: typed mm/yyyy, shown mm/yyyy everywhere, older fu
   expect(pushed).toBe(200);
   await page.reload();
   await pill(page, "Orders to update").click();
-  await openDetail(page, page.locator(".fulfil-head", { hasText: "PFI 3290" }).first());
+  await openDetail(page, await order(page, "PFI 3290"));
   await expect(box).toHaveValue("06/2027");
   await box.click(); await box.press("Tab");
   await expect(page.locator(".save-bar")).toContainText(/all changes saved/i);
@@ -1246,7 +1253,7 @@ test("customers: edit renames the customer on its PFIs and requests; delete wait
   await signIn(page, A.buyer.username, A.buyer.password); // the buyer sees the new name on the request and on the order
   await expect(page.locator(".feed-item", { hasText: ASK }).first()).toContainText(NEW);
   await pill(page, "Orders to update").click();
-  await expect(page.locator(".fulfil-head", { hasText: "PFI 3292" }).first()).toContainText(NEW);
+  await expect(await order(page, "PFI 3292")).toContainText(NEW);
 
   // Delete: refused while the PFI exists, with the reason; allowed once it is gone.
   await signIn(page, A.sale.username, A.sale.password);
@@ -1635,7 +1642,7 @@ test("PO: a PFI line that the cases ordered do not cover is flagged, with the ca
   await close(page);
   await signIn(page, A.buyer.username, A.buyer.password);
   await pill(page, "Orders to update").click();
-  await openDetail(page, page.locator(".fulfil-head", { hasText: "PFI 3293" }).first());
+  await openDetail(page, await order(page, "PFI 3293"));
   await expect(warning).toContainText(`${TEA}: needs 100, ordered 80, short 20`);
   await expect(pfiLine(TEA).locator(".cover-note")).toContainText("Short 20");
   await close(page);
@@ -1759,4 +1766,258 @@ test("drop-down panels open upwards when their button sits at the bottom of the 
   await expect(forwarder).toHaveValue("MSC");
   await forwarder.fill("");
   await page.setViewportSize(viewport);
+});
+
+test("orders to update: the PFIs are listed under their sale rep, pending first", async ({ page }) => {
+  const REP = "E2E Zed Rep"; const REP_USER = "e2e-zed"; const CUSTOMER = "E2E Zed Customer";
+  const repRow = () => page.locator(".account-row").filter({ has: page.locator(`input[value="${REP_USER}"]`) });
+  const pfiRow = page.locator(".pfi-list-row", { hasText: "PFI 3294" });
+  const group = (name: string) => page.locator(".sale-group", { has: page.locator(".sale-group-name", { hasText: name }) });
+  const removeRep = async () => {
+    await signIn(page, A.admin.username, A.admin.password);
+    if (await side(page, REP).count()) {
+      await side(page, REP).click();
+      await pill(page, "Order Tracking").click();
+      if (await pfiRow.count()) {
+        await openDetail(page, pfiRow);
+        await page.getByRole("button", { name: "Delete PFI" }).click();
+        await page.getByRole("button", { name: "Yes, delete" }).click();
+        await expect(pfiRow).toHaveCount(0);
+      }
+      await pill(page, "Customer").click();
+      const cust = page.locator(".cust-row", { hasText: CUSTOMER });
+      while (await cust.count()) { await cust.first().getByTitle("Delete customer").click(); await page.locator(".confirm-strip").getByRole("button", { name: "Yes, delete" }).click(); }
+    }
+    await side(page, "Accounts").click();
+    if (await repRow().count()) { await repRow().locator('button[title="Delete account"]').click(); await expect(repRow()).toHaveCount(0); }
+    await page.waitForTimeout(1200);
+  };
+  await removeRep(); // leftovers of an aborted run
+
+  // A second rep with one order, entered by admin in that rep's workspace.
+  const form = page.locator(".add-form").first();
+  await form.locator("select").selectOption("sale");
+  await form.locator("input").nth(0).fill(REP);
+  await form.locator("input").nth(1).fill(REP_USER);
+  await form.locator("input").nth(2).fill(`z${Math.random().toString(36).slice(2, 10)}`);
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(repRow()).toHaveCount(1);
+  await side(page, REP).click();
+  await page.getByRole("button", { name: "Add customer" }).click();
+  await page.locator(".add-form").first().locator("input").nth(0).fill(CUSTOMER);
+  await page.getByRole("button", { name: "Save customer" }).click();
+  await pill(page, "Order Tracking").click();
+  await page.getByRole("button", { name: "Add PFI" }).click();
+  await page.locator(".add-form").first().locator("input").nth(0).fill("3294");
+  await page.getByRole("button", { name: "Create PFI" }).click();
+  await page.locator(".detail-body").waitFor();
+  await close(page);
+  await page.waitForTimeout(1200);
+
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await pill(page, "Orders to update").click();
+  // Names only to start with, A to Z.
+  await expect(page.locator(".sale-group-head").first()).toBeVisible();
+  await expect(page.locator(".fulfil-head")).toHaveCount(0);
+  const names = (await page.locator(".sale-group-name").allInnerTexts()).map((n) => n.trim());
+  expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })));
+  expect(names).toContain(REP);
+  expect(names).toContain(A.sale.name);
+  expect(new Set(names).size).toBe(names.length); // one row per rep
+
+  // A rep opens to that rep's PFIs only, pending ones first.
+  await expect(group(REP).locator(".sale-group-counts")).toContainText("1 pending");
+  await expect(group(REP).locator(".sale-group-counts")).toContainText("1 PFI");
+  await group(REP).locator(".sale-group-head").click();
+  await expect(page.locator(".fulfil-head")).toHaveCount(1);
+  await expect(page.locator(".fulfil-head")).toContainText(`${CUSTOMER} — ${REP}`);
+  await expect(page.locator(".fulfil-head")).toContainText("PFI 3294");
+  await expect(page.locator(".fulfil-head .chip").first()).toHaveText(/pending/i);
+
+  const mine = group(A.sale.name!);
+  await mine.locator(".sale-group-head").click(); // a second rep can be open at the same time
+  const rows = mine.locator(".fulfil-head");
+  const total = await rows.count();
+  expect(total).toBeGreaterThan(1);
+  await expect(mine.locator(".sale-group-counts")).toContainText(`${total} PFIs`);
+  await expect(rows.filter({ hasText: "PFI 3200" })).toHaveCount(1);
+  await expect(rows.filter({ hasText: "PFI 3294" })).toHaveCount(0);
+  for (const text of await rows.allInnerTexts()) expect(text).toContain(`— ${A.sale.name}`);
+  const rank = (await rows.locator(".chip:not(.yellow)").allInnerTexts()).map((t) => ["PENDING", "COMPLETE ORDERING", "LOADED"].indexOf(t.trim().toUpperCase()));
+  expect(rank.every((r) => r >= 0)).toBe(true);
+  expect(rank).toEqual([...rank].sort((a, b) => a - b));
+  const pendingShown = rank.filter((r) => r === 0).length;
+  await expect(mine.locator(".sale-group-counts")).toContainText(`${pendingShown} pending`);
+  await expect(page.locator(".fulfil-head")).toHaveCount(total + 1);
+
+  // Opening an order works as before, and the list is as it was left.
+  await openDetail(page, rows.filter({ hasText: "PFI 3200" }));
+  await expect(page.locator(".modal-title")).toContainText("PFI 3200");
+  await close(page);
+  await expect(page.locator(".fulfil-head")).toHaveCount(total + 1);
+  await group(REP).locator(".sale-group-head").click(); // and a rep closes again
+  await expect(page.locator(".fulfil-head")).toHaveCount(total);
+
+  await removeRep();
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await pill(page, "Orders to update").click();
+  await expect(page.locator(".sale-group-head").first()).toBeVisible();
+  await expect(group(REP)).toHaveCount(0);
+});
+
+test("after a PO is sent: a quantity changed by Sale turns the row yellow, a removed line is named in red", async ({ page }) => {
+  const TEA = "E2E Mark Tea 100g"; const JAM = "E2E Mark Jam 200g"; const RICE = "E2E Mark Rice 1kg";
+  const YELLOW = "rgb(255, 246, 214)"; const RED = "rgb(255, 241, 239)";
+  const pfiRow = page.locator(".pfi-list-row", { hasText: "PFI 3295" });
+  const poRow = page.locator(".pfi-list-row", { hasText: "PO 4540" });
+  const TABLE = ".detail-body table.sticky-first tbody"; // the products table, not the unmatched rows under it
+  const lineRows = page.locator(`${TABLE} tr:not(.sub-row):not(.ghost-row):not(:has(td[colspan]))`);
+  const lineOf = (name: string) => lineRows.filter({ has: page.locator(`input[value="${name}"]`) });
+  const roLine = (name: string) => page.locator(`${TABLE} tr:not(.sub-row):not(.ghost-row)`, { hasText: name }); // the buyer reads the names
+  const allocOf = (name: string) => lineOf(name).locator("xpath=following-sibling::tr[contains(@class,'sub-row')][1]");
+  const addRow = async (name: string, qty: string) => {
+    const rowForm = page.locator(".detail-body .section-card").first().locator(".mini-form-row").first();
+    await rowForm.locator("input").nth(0).fill(name);
+    await rowForm.locator("input").nth(4).fill(qty);
+    await rowForm.locator("input").nth(5).fill("1");
+    await rowForm.getByRole("button", { name: "Add row" }).click();
+  };
+  const removeDoc = async (row: ReturnType<Page["locator"]>, button: string) => {
+    if (!(await row.count())) return;
+    await openDetail(page, row);
+    await page.getByRole("button", { name: button }).click();
+    await page.getByRole("button", { name: "Yes, delete" }).click();
+    await expect(row).toHaveCount(0);
+  };
+  const asSale = async () => { await signIn(page, A.sale.username, A.sale.password); await side(page, "Order Tracking").click(); };
+  const asBuyerOnPos = async () => { await signIn(page, A.buyer.username, A.buyer.password); await pill(page, "PO Tracking").click(); await pill(page, /^PO$/).click(); };
+  const setQty = async (name: string, qty: string) => { await openDetail(page, pfiRow); await lineOf(name).locator('input[type="number"]').first().fill(qty); await save(page); await close(page); await page.waitForTimeout(1200); };
+
+  await asBuyerOnPos();
+  await removeDoc(poRow, "Delete PO");
+  await asSale();
+  await removeDoc(pfiRow, "Delete PFI");
+  await page.getByRole("button", { name: "Add PFI" }).click();
+  await page.locator(".add-form").first().locator("input").nth(0).fill("3295");
+  await page.getByRole("button", { name: "Create PFI" }).click();
+  await page.locator(".detail-body").waitFor();
+  for (const [n, q] of [[TEA, "100"], [JAM, "40"], [RICE, "30"]]) await addRow(n, q);
+  await save(page);
+  await close(page);
+
+  // The buyer orders all three, without sending the PO yet.
+  await asBuyerOnPos();
+  await page.getByRole("button", { name: "Add PO" }).click();
+  await page.locator(".add-form").first().locator("input").nth(0).fill("4540");
+  await page.getByRole("button", { name: "Create PO" }).click();
+  await page.locator(".detail-body").waitFor();
+  for (const [n, q] of [[TEA, "100"], [JAM, "40"], [RICE, "30"]]) {
+    await addRow(n, q);
+    await lineOf(n).evaluate((el) => el.scrollIntoView({ block: "center" }));
+    await lineOf(n).locator(".pfi-picker-trigger").click();
+    await page.locator(".pfi-picker-option", { hasText: "PFI 3295" }).locator('input[type="checkbox"]').check();
+    await page.locator(".picker-backdrop").click();
+    await allocOf(n).locator('input[placeholder="cases"]').fill(q);
+  }
+  await save(page);
+  await close(page);
+
+  // A change made before the PO is sent is not flagged.
+  await asSale();
+  await setQty(TEA, "110");
+  await asBuyerOnPos();
+  await openDetail(page, poRow);
+  await expect(page.locator(".detail-body tr.row-changed")).toHaveCount(0);
+  await page.getByRole("button", { name: "Sent", exact: true }).click(); // from here on the buyer has to hear about changes
+  await save(page);
+  await expect(page.locator(".detail-body tr.row-changed, .detail-body tr.row-gone")).toHaveCount(0);
+  await close(page);
+
+  // Sale changes a quantity and removes a line.
+  await asSale();
+  await openDetail(page, pfiRow);
+  await lineOf(TEA).locator('input[type="number"]').first().fill("120");
+  await lineOf(RICE).getByTitle("Remove product line").click();
+  await expect(lineRows).toHaveCount(2);
+  await expect(page.locator(".detail-body tr.row-changed, .detail-body tr.row-gone")).toHaveCount(0); // these marks are for the buyer
+  await save(page);
+  await close(page);
+  await page.waitForTimeout(1200);
+
+  // Orders to update: the list points at the order, the order shows where.
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await pill(page, "Orders to update").click();
+  const group = page.locator(".sale-group", { has: page.locator(".sale-group-name", { hasText: A.sale.name! }) });
+  await expect(group.locator(".sale-group-counts")).toContainText("changed by Sale");
+  const listed = await order(page, "PFI 3295");
+  await expect(listed.locator(".chip.yellow")).toHaveText(/changed by sale/i);
+  await expect((await order(page, "PFI 3200")).locator(".chip.yellow")).toHaveCount(0);
+  await openDetail(page, listed);
+  await expect(roLine(TEA)).toHaveClass(/row-changed/);
+  await expect(roLine(TEA).locator("td").first()).toHaveCSS("background-color", YELLOW);
+  await expect(roLine(TEA).locator(".change-note")).toContainText("was 110");
+  await expect(roLine(JAM)).not.toHaveClass(/row-changed/);
+  const ghost = page.locator(".detail-body tr.ghost-row");
+  await expect(ghost).toHaveCount(1);
+  await expect(ghost.locator(".gone-note")).toContainText(`${RICE} has been removed`);
+  await expect(ghost.locator(".gone-note")).toHaveCSS("color", "rgb(178, 59, 59)");
+  await expect(ghost.locator("td").first()).toHaveCSS("background-color", RED);
+  const order16 = await page.locator(`${TABLE} tr:not(.sub-row)`).evaluateAll((rows) => rows.map((r) => (r.classList.contains("ghost-row") ? "GONE" : r.textContent!.includes("Tea") ? "TEA" : r.textContent!.includes("Jam") ? "JAM" : "?")));
+  expect(order16).toEqual(["TEA", "JAM", "GONE"]); // where the line used to be: third
+  await close(page);
+
+  // The PO shows the same on its rows; Seen and Removed settle them.
+  await pill(page, "PO Tracking").click();
+  await pill(page, /^PO$/).click();
+  await openDetail(page, poRow);
+  await expect(allocOf(TEA)).toHaveClass(/row-changed/);
+  await expect(allocOf(TEA).locator("td").nth(1)).toHaveCSS("background-color", YELLOW);
+  await expect(allocOf(TEA).locator(".change-note")).toContainText("Sale changed the quantity after this PO was sent: 110 → 120");
+  await expect(allocOf(JAM)).not.toHaveClass(/row-changed|row-gone/);
+  await expect(allocOf(RICE)).toHaveClass(/row-gone/);
+  await expect(allocOf(RICE).locator(".gone-note")).toContainText(`${RICE} has been removed`);
+  await expect(allocOf(RICE).locator(".gone-note")).toHaveCSS("color", "rgb(178, 59, 59)");
+  await allocOf(TEA).getByRole("button", { name: "Seen" }).click();
+  await expect(allocOf(TEA)).not.toHaveClass(/row-changed/);
+  await allocOf(RICE).locator("select").filter({ has: page.locator('option[value="removed"]') }).selectOption("removed");
+  await expect(allocOf(RICE)).not.toHaveClass(/row-gone/);
+  await save(page);
+  await close(page);
+  await pill(page, "Orders to update").click();
+  await expect((await order(page, "PFI 3295")).locator(".chip.yellow")).toHaveCount(0);
+  await openDetail(page, await order(page, "PFI 3295"));
+  await expect(page.locator(".detail-body tr.row-changed, .detail-body tr.ghost-row")).toHaveCount(0);
+  await close(page);
+
+  // Seen from the order itself works too.
+  await asSale();
+  await setQty(JAM, "45");
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await pill(page, "Orders to update").click();
+  await openDetail(page, await order(page, "PFI 3295"));
+  await expect(roLine(JAM)).toHaveClass(/row-changed/);
+  await expect(roLine(JAM).locator(".change-note")).toContainText("was 40");
+  await roLine(JAM).getByRole("button", { name: "Seen" }).click();
+  await expect(roLine(JAM)).not.toHaveClass(/row-changed/);
+  await save(page);
+  await close(page);
+  await pill(page, "PO Tracking").click();
+  await pill(page, /^PO$/).click();
+  await openDetail(page, poRow);
+  await expect(page.locator(".detail-body tr.row-changed")).toHaveCount(0);
+
+  // Back to not sent: nothing is remembered, so a later change is not flagged.
+  await page.getByRole("button", { name: "Have not Sent", exact: true }).click();
+  await save(page);
+  await close(page);
+  await asSale();
+  await setQty(TEA, "130");
+  await asBuyerOnPos();
+  await openDetail(page, poRow);
+  await expect(page.locator(".detail-body tr.row-changed")).toHaveCount(0);
+  await close(page);
+
+  await removeDoc(poRow, "Delete PO");
+  await asSale();
+  await removeDoc(pfiRow, "Delete PFI");
 });

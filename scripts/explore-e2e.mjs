@@ -135,6 +135,7 @@ await step("sale: customer, note, PFI 9101 with lines, collection date (2-digit 
 await step("buyer: fulfil PFI 9101 fully → Complete Ordering; floor stock via PO; unlink; delete PO", async () => {
   await login("exp-buyer", EXP_PASS);
   await side("Orders to update").click();
+  for (const closed = page.locator(".sale-group:not(.open) > .sale-group-head"); await closed.count();) await closed.first().click(); // PFIs are listed under their sale rep
   await openRow(page.locator(".fulfil-head", { hasText: "PFI 9101" }).first());
   const cnt = await lines().count(); expect(cnt === 2, `2 rows, got ${cnt}`);
   for (let i = 0; i < cnt; i++) {

@@ -12,6 +12,7 @@ import { sortLanesByPod } from "./lanes";
 import { lineCover, pfiLineCover, pfiShortages, poShortages } from "./allocation";
 import { placePanel } from "./popup";
 import { acknowledged, changeSinceSent, lineChange, removedSinceSent, stampSent } from "./sentMark";
+import { groupBySale, hasSaleChange } from "./orderGroups";
 import { applyReceipts, matchPfiLine, stripDerived } from "./receipts";
 import { mergeOtherRole } from "./merge";
 import { addMonths, inMonth, monthGrid, monthLabel, startOfMonth, todayLocalIso } from "./calendar";
@@ -492,6 +493,15 @@ const GlobalStyle = () => (
     .chip.amber { background:#FBF0DA; color:#A47521; }
     .chip.green { background:#E1F0E6; color:#2E6E48; }
     .chip.gray { background:#EDEFEE; color:#7C8891; }
+    .chip.yellow { background:#FFF1B8; color:#6B5200; }
+    .sale-group { border-bottom:1px solid #E5E9E9; }
+    .sale-group:last-child { border-bottom:none; }
+    .sale-group-head { display:flex; align-items:center; gap:14px; padding:14px 18px; cursor:pointer; border-left:3px solid transparent; }
+    .sale-group-head:hover { background:#F7FBF8; }
+    .sale-group.open > .sale-group-head { background:#D7EADD; border-left-color:#2F7A52; }
+    .sale-group-name { display:flex; align-items:center; gap:8px; font-weight:700; font-size:14.5px; min-width:150px; }
+    .sale-group-counts { display:flex; align-items:center; gap:8px; flex-wrap:wrap; flex:1; font-size:12px; }
+    .sale-group .fulfil-card { padding-left:22px; border-top:1px solid #EEF0EF; }
     .chip.blue { background:#DDEAF7; color:#2B5A8A; }
     .jobs-head-row { display:grid; grid-template-columns: 100px 2fr 2fr 110px 80px 64px 28px; gap:10px; padding:10px 18px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#7C8891; border-bottom:1px solid #E5E9E9; }
     .jobs-row { display:grid; grid-template-columns: 100px 2fr 2fr 110px 80px 64px 28px; gap:10px; padding:12px 18px; align-items:center; border-bottom:1px solid #EEF0EF; cursor:pointer; font-size:13.5px; border-left:3px solid transparent; }
@@ -2755,7 +2765,17 @@ function ReorderPanel({ reorders, onOpen, onHandled, onDismiss }) {
 function BuyerFulfillment({ pfisBySale, feedBuyerPfi, actions, pos, reorders }) {
   const [expanded, setExpanded] = useState(null);
   const [highlight, setHighlight] = useState(null);
+  const [openSales, setOpenSales] = useState(() => new Set()); // the reps whose PFIs are shown
   const allPfis = Object.values(pfisBySale).flat();
+  const groups = React.useMemo(
+    () => groupBySale(pfisBySale, (id) => ((actions.accounts || []).find((a) => a.id === id) || {}).name),
+    [pfisBySale, actions.accounts],
+  );
+  const toggleSale = (saleId) => setOpenSales((prev) => {
+    const next = new Set(prev);
+    if (next.has(saleId)) next.delete(saleId); else next.add(saleId);
+    return next;
+  });
 
   const openPfi = (pfiId, productId) => {
     setExpanded(pfiId);
@@ -2796,20 +2816,39 @@ function BuyerFulfillment({ pfisBySale, feedBuyerPfi, actions, pos, reorders }) 
         </div>
       ) : (
         <div className="card">
-          {allPfis.map((p) => (
-            <div key={p.id} className={`fulfil-card ${expanded === p.id ? "open" : ""}`}>
-              <div className="fulfil-head" onClick={() => openPfi(p.id)}>
-                <div>
-                  <div className="company-name">{p.customerName} <span className="muted">— {p.saleName}</span></div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <div className="pfi-code">{pfiLabel(p)} · {p.products.length} product line(s)</div>
-                    <span className={`chip ${TRACKING_TONE[pfiTrackingStatus(p)]}`}>{pfiTrackingStatus(p)}</span>
+          {groups.map((g) => {
+            const isOpen = openSales.has(g.saleId);
+            return (
+              <div key={g.saleId} className={`sale-group ${isOpen ? "open" : ""}`}>
+                <div className="sale-group-head" onClick={() => toggleSale(g.saleId)}>
+                  <div className="sale-group-name"><Users size={15} /> {g.saleName}</div>
+                  <div className="sale-group-counts">
+                    <span className={`chip ${g.counts.Pending ? "amber" : "gray"}`}>{g.counts.Pending} pending</span>
+                    {g.counts["Complete Ordering"] > 0 && <span className="chip blue">{g.counts["Complete Ordering"]} complete ordering</span>}
+                    {g.counts.Loaded > 0 && <span className="chip green">{g.counts.Loaded} loaded</span>}
+                    {g.changed > 0 && <span className="chip yellow">{g.changed} changed by Sale</span>}
+                    <span className="muted">{g.pfis.length} PFI{g.pfis.length === 1 ? "" : "s"}</span>
                   </div>
+                  <ChevronRight size={16} className={`chev ${isOpen ? "open" : ""}`} />
                 </div>
-                <ChevronRight size={16} className="chev" />
+                {isOpen && g.pfis.map((p) => (
+                  <div key={p.id} className={`fulfil-card ${expanded === p.id ? "open" : ""}`}>
+                    <div className="fulfil-head" onClick={() => openPfi(p.id)}>
+                      <div>
+                        <div className="company-name">{p.customerName} <span className="muted">— {p.saleName}</span></div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <div className="pfi-code">{pfiLabel(p)} · {p.products.length} product line(s)</div>
+                          <span className={`chip ${TRACKING_TONE[pfiTrackingStatus(p)]}`}>{pfiTrackingStatus(p)}</span>
+                          {hasSaleChange(p) && <span className="chip yellow">Changed by Sale</span>}
+                        </div>
+                      </div>
+                      <ChevronRight size={16} className="chev" />
+                    </div>
+                  </div>
+                ))}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
