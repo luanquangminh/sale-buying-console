@@ -2,9 +2,21 @@
 
 const numOrNull = (v) => (v === "" || v === undefined || v === null ? null : Number(v));
 
-/** Label for a PFI line covered by one or more PO rows (receipts) or, on a PO, its PFI allocations. */
+/** A PO-wide status change (sent, received) leaves rows the buyer marked Removed as they are. */
+export const keepRemoved = (current, next) => (current === "removed" ? current : next);
+
+/** A line is removed when every PO row covering it is removed or, with no PO row, when its own status is. */
+export function lineRemoved(p) {
+  const receipts = p.receipts || [];
+  if (receipts.length) return receipts.every((r) => r.orderStatus === "removed");
+  return p.orderStatus === "removed";
+}
+
+/** Label for a PFI line covered by one or more PO rows (receipts) or, on a PO, its PFI allocations. Removed rows are left out. */
 export function rollupStatusLabel(receipts) {
-  const list = receipts.map((r) => r.orderStatus || "not_ordered");
+  const all = receipts.map((r) => r.orderStatus || "not_ordered");
+  const list = all.filter((s) => s !== "removed");
+  if (all.length && !list.length) return "Removed";
   if (list.length && list.every((s) => s === "floor_stock")) return "Floor stock";
   if (list.every((s) => s === "received" || s === "floor_stock")) return "Received";
   if (list.some((s) => s === "received" || s === "floor_stock")) return "Partly received";
@@ -17,7 +29,7 @@ export function rollupStatusLabel(receipts) {
 export function lineReceivedTotal(p) {
   const receipts = p.receipts || [];
   if (receipts.length) {
-    return receipts.reduce((acc, r) => {
+    return receipts.filter((r) => r.orderStatus !== "removed").reduce((acc, r) => {
       const v = numOrNull(r.receivedQuantity);
       return v === null ? acc : acc === null ? v : acc + v;
     }, null);
@@ -35,10 +47,10 @@ export function lineComplete(p) {
 export const TRACKING_STATUSES = ["Pending", "Complete Ordering", "Loaded"];
 export const TRACKING_TONE = { Pending: "gray", "Complete Ordering": "blue", Loaded: "green" };
 
-/** Order Tracking overview status: Loaded (delivery flag) → Complete Ordering (all lines complete) → Pending. */
+/** Order Tracking overview status: Loaded (delivery flag) → Complete Ordering (all lines complete, removed ones ignored) → Pending. */
 export function pfiTrackingStatus(pfi) {
   if (pfi.delivery && pfi.delivery.loaded === "loaded") return "Loaded";
-  const lines = pfi.products || [];
+  const lines = (pfi.products || []).filter((p) => !lineRemoved(p));
   if (lines.length && lines.every(lineComplete)) return "Complete Ordering";
   return "Pending";
 }

@@ -66,7 +66,7 @@ test("sale rep: note, PFI lines, attachment, payment, export", async ({ page }) 
   await expect(card).toContainText(/awaiting buyer|buyer replied/i);
 
   await side(page, "Order Tracking").click();
-  await openDetail(page, page.locator(".pfi-list-row").first());
+  await openDetail(page, page.locator(".pfi-list-row", { hasText: "PFI 3200" }));
   const rows = page.locator(".detail-body tbody tr:not(.sub-row):not(:has(td[colspan]))");
   if ((await rows.count()) === 0) {
     await page.locator('.detail-body input[accept=".xlsx,.xls"]').setInputFiles(FIX("products.xlsx"));
@@ -186,7 +186,7 @@ test("sale rep sees the buyer's updates and the PO receipt, requests a reorder",
   await side(page, "Order Tracking").click();
   await expect(page.locator(".activity-panel")).toContainText("Buyer saved PFI 3200");
   await expect(page.locator(".activity-panel")).toContainText(/Buyer (saved|updated) PO 4500/);
-  await openDetail(page, page.locator(".pfi-list-row").first());
+  await openDetail(page, page.locator(".pfi-list-row", { hasText: "PFI 3200" }));
   const receipt = page.locator(".detail-body tr.sub-row", { hasText: "PO 4500" }).first();
   await expect(receipt).toContainText("Received");
   await expect(receipt).toContainText("Short 2");
@@ -705,4 +705,103 @@ test("warehouse: the note box takes the full width and holds a long note", async
   await page.getByRole("button", { name: "Delete entry" }).click();
   await page.getByRole("button", { name: "Yes, delete" }).click();
   await expect(page.locator(".cal-event", { hasText: TITLE })).toHaveCount(0);
+});
+
+test("order status Removed: offered on every screen, kept on a PO-wide change, ignored for Complete Ordering", async ({ page }) => {
+  const KEEP = "E2E Keep Tea 100g";
+  const DROP = "E2E Drop Jam 200g";
+  const lineRows = page.locator(".detail-body tbody tr:not(.sub-row):not(:has(td[colspan]))");
+  const lineOf = (name: string) => lineRows.filter({ has: page.locator(`input[value="${name}"]`) });
+  const cell = async (tr: ReturnType<Page["locator"]>, header: RegExp) => {
+    const headers = await page.locator(".detail-body thead").first().locator("th").allInnerTexts();
+    return tr.locator("td").nth(headers.findIndex((h) => header.test(h)));
+  };
+
+  // Sale: a PFI with two lines.
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Order Tracking").click();
+  const pfiRow = page.locator(".pfi-list-row", { hasText: "PFI 3290" });
+  if (!(await pfiRow.count())) {
+    await page.getByRole("button", { name: "Add PFI" }).click();
+    await page.locator(".add-form").first().locator("input").nth(0).fill("3290");
+    await page.getByRole("button", { name: "Create PFI" }).click();
+    await page.locator(".detail-body").waitFor();
+    const rowForm = page.locator(".detail-body .section-card").first().locator(".mini-form-row").first();
+    for (const [name, qty] of [[KEEP, "10"], [DROP, "8"]]) {
+      await rowForm.locator("input").nth(0).fill(name);
+      await rowForm.locator("input").nth(4).fill(qty);
+      await rowForm.locator("input").nth(5).fill("2");
+      await rowForm.getByRole("button", { name: "Add row" }).click();
+    }
+    await expect(lineRows).toHaveCount(2);
+    await save(page);
+    await close(page);
+  }
+
+  // Buyer, PO Tracking: the PO row covering the second line is marked Removed.
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await pill(page, "PO Tracking").click();
+  await pill(page, /^PO$/).click();
+  await openDetail(page, page.locator(".pfi-list-row", { hasText: "PO 4510" }));
+  if (!(await lineOf(DROP).count())) {
+    const rowForm = page.locator(".detail-body .section-card").first().locator(".mini-form-row").first();
+    await rowForm.locator("input").nth(0).fill(DROP);
+    await rowForm.locator("input").nth(4).fill("8");
+    await rowForm.locator("input").nth(5).fill("1.2");
+    await rowForm.getByRole("button", { name: "Add row" }).click();
+    await lineOf(DROP).locator(".pfi-picker-trigger").click();
+    await page.locator(".pfi-picker-option", { hasText: "PFI 3290" }).locator('input[type="checkbox"]').check();
+    await page.locator(".picker-backdrop").click();
+    await page.locator(".detail-body tr.sub-row", { hasText: "PFI 3290" }).locator('input[placeholder="cases"]').fill("8");
+  }
+  const alloc = page.locator(".detail-body tr.sub-row", { hasText: "PFI 3290" }).first();
+  const allocStatus = alloc.locator("select").filter({ has: page.locator('option[value="removed"]') });
+  await expect(allocStatus.locator("option")).toHaveText(["Not ordered", "Sending order", "Ordered", "Received", "Floor stock", "Removed"]);
+  await allocStatus.selectOption("removed");
+  await expect(allocStatus).toHaveCSS("color", "rgb(178, 59, 59)");
+  await expect(await cell(lineOf(DROP), /order status/i)).toHaveText("Removed");
+  await page.getByRole("button", { name: "Sent", exact: true }).click(); // a PO-wide change leaves the removed row alone
+  await page.getByRole("button", { name: "Received", exact: true }).click();
+  await expect(allocStatus).toHaveValue("removed");
+  await page.getByRole("button", { name: "Not received yet", exact: true }).click();
+  await page.getByRole("button", { name: "Have not Sent", exact: true }).click();
+  await expect(allocStatus).toHaveValue("removed");
+  await save(page);
+  await close(page);
+
+  // Buyer, Orders to update: same list of statuses; the first line arrives in full.
+  await pill(page, "Orders to update").click();
+  await openDetail(page, page.locator(".fulfil-head", { hasText: "PFI 3290" }).first());
+  const keepLine = page.locator(".detail-body tbody tr:not(.sub-row)", { hasText: KEEP });
+  await expect(keepLine.locator("select").filter({ has: page.locator('option[value="removed"]') })).toHaveCount(1);
+  await keepLine.locator("select").filter({ has: page.locator('option[value="removed"]') }).selectOption("received");
+  await keepLine.locator('input[type="number"]').fill("10");
+  const dropLine = page.locator(".detail-body tbody tr:not(.sub-row)", { hasText: DROP });
+  await expect(await cell(dropLine, /order status/i)).toHaveText("Removed");
+  await expect(await cell(dropLine, /short \/ surplus/i)).toHaveText("—");
+  await expect(page.locator(".detail-body tr.sub-row", { hasText: "PO 4510" }).locator("select").filter({ has: page.locator('option[value="removed"]') })).toHaveValue("removed");
+  await save(page);
+  await close(page);
+
+  // Sale, Order Tracking: the removed line no longer holds the order back.
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Order Tracking").click();
+  await expect(pfiRow.locator(".chip").last()).toHaveText(/^complete ordering$/i);
+  await openDetail(page, pfiRow);
+  const saleSub = page.locator(".detail-body tr.sub-row", { hasText: "PO 4510" }).first();
+  await expect(await cell(saleSub, /order status/i)).toHaveText("Removed");
+  await expect((await cell(saleSub, /order status/i)).locator("span")).toHaveCSS("color", "rgb(178, 59, 59)"); // red, also when read-only
+  await close(page);
+
+  // Put the row back on order: the line counts again and the PFI is Pending.
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await pill(page, "PO Tracking").click();
+  await pill(page, /^PO$/).click();
+  await openDetail(page, page.locator(".pfi-list-row", { hasText: "PO 4510" }));
+  await allocStatus.selectOption("ordered");
+  await save(page);
+  await close(page);
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Order Tracking").click();
+  await expect(pfiRow.locator(".chip").last()).toHaveText(/^pending$/i);
 });

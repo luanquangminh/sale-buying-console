@@ -4,7 +4,7 @@ import { api } from "./api";
 import { useSyncStore } from "./syncStore";
 import { extractPdfForImport, imageToDataUrl } from "./pdfExtract";
 import { fmtDate, parseDmy, todayIso } from "./dates";
-import { pfiTrackingStatus, rollupStatusLabel, TRACKING_TONE } from "./status";
+import { keepRemoved, pfiTrackingStatus, rollupStatusLabel, TRACKING_TONE } from "./status";
 import { applyReceipts, matchPfiLine, stripDerived } from "./receipts";
 import { mergeOtherRole } from "./merge";
 import { addMonths, inMonth, monthGrid, monthLabel, startOfMonth, todayLocalIso } from "./calendar";
@@ -46,11 +46,12 @@ const ORDER_STATUSES = [
   { value: "ordered", label: "Ordered" },
   { value: "received", label: "Received" },
   { value: "floor_stock", label: "Floor stock" },
+  { value: "removed", label: "Removed" },
 ];
 const ORDER_STATUS_LABEL = Object.fromEntries(ORDER_STATUSES.map((s) => [s.value, s.label]));
-const ORDER_STATUS_TONE = { not_ordered: "grey", sending_order: "amber", ordered: "blue", received: "green", floor_stock: "green" };
+const ORDER_STATUS_TONE = { not_ordered: "grey", sending_order: "amber", ordered: "blue", received: "green", floor_stock: "green", removed: "removed" };
 const DOC_STATUS_TONE = { not_applied: "grey", applied: "amber", waiting_delivery: "blue" };
-const ROLLUP_TONE = { "Not ordered": "grey", Ordering: "amber", Ordered: "blue", "Partly received": "amber", Received: "green", "Floor stock": "green" };
+const ROLLUP_TONE = { "Not ordered": "grey", Ordering: "amber", Ordered: "blue", "Partly received": "amber", Received: "green", "Floor stock": "green", Removed: "removed" };
 const PFI_DELIVERY_TYPES = [
   { value: "delivery", label: "Delivery to customer" },
   { value: "collection", label: "Customer collection" },
@@ -402,6 +403,7 @@ const GlobalStyle = () => (
     .tone-green { color:#2E6E48; font-weight:600; }
     .tone-red { color:#B23B3B; font-weight:600; }
     select.tone-grey { color:#7C8891; }
+    .tone-removed, .data-table .ro.tone-removed { color:#B23B3B; font-weight:600; }
     select.tone-amber { color:#A47521; background:#FDF8EC; border-color:#EAD9AE; }
     select.tone-blue { color:#2A5FA8; background:#EEF4FC; border-color:#C5D8F0; }
     select.tone-green { color:#2E6E48; background:#EDF7F0; border-color:#BFE3CB; }
@@ -1366,7 +1368,7 @@ function ProductsTable({
               <th>Rate</th>
               <th>Amount</th>
               <th style={{ minWidth: 150 }}>{isPo ? "PFI" : "PO No."}</th>
-              <th style={{ borderLeft: "2px solid #BFE3CB" }}>Order status</th>
+              <th style={{ borderLeft: "2px solid #BFE3CB", minWidth: 118 }}>Order status</th>
               <th>Est. delivery</th>
               <th>Received qty</th>
               <th>Received date</th>
@@ -1387,14 +1389,16 @@ function ProductsTable({
               const hasAllocations = allocations.length > 0;
               const rolledUp = hasReceipts || hasAllocations;
 
-              const sumReceived = (arr, key) => arr.reduce((acc, r) => {
+              const allocStatus = (a) => a.orderStatus || p.orderStatus || "not_ordered";
+              const sumReceived = (arr, key, statusOf) => arr.filter((r) => statusOf(r) !== "removed").reduce((acc, r) => {
                 const v = numOrNull(r[key]);
                 return v === null ? acc : (acc === null ? v : acc + v);
               }, null);
 
               const totalReceived = hasReceipts
-                ? sumReceived(receipts, "receivedQuantity")
-                : hasAllocations ? sumReceived(allocations, "receivedQty") : numOrNull(p.receivedQuantity);
+                ? sumReceived(receipts, "receivedQuantity", (r) => r.orderStatus)
+                : hasAllocations ? sumReceived(allocations, "receivedQty", allocStatus)
+                  : p.orderStatus === "removed" ? null : numOrNull(p.receivedQuantity);
 
               const diff = totalReceived === null ? null : totalReceived - Number(p.quantity || 0);
               const short = diff !== null && diff < 0 ? Math.abs(diff) : 0;
@@ -1402,7 +1406,7 @@ function ProductsTable({
 
               const statusSource = hasReceipts
                 ? receipts
-                : hasAllocations ? allocations.map((a) => ({ orderStatus: a.orderStatus || p.orderStatus })) : [];
+                : hasAllocations ? allocations.map((a) => ({ orderStatus: allocStatus(a) })) : [];
               const rollLabel = rolledUp ? rollupStatusLabel(statusSource) : null;
 
               return (
@@ -1506,7 +1510,7 @@ function ProductsTable({
 
                   {/* PFI view: one row per PO covering this line */}
                   {receipts.map((r) => {
-                    const rq = numOrNull(r.receivedQuantity);
+                    const rq = r.orderStatus === "removed" ? null : numOrNull(r.receivedQuantity);
                     const rdiff = rq === null ? null : rq - Number(r.quantity || 0);
                     return (
                       <tr key={`${r.poLineId}-${r.pfiId}`} className={`sub-row ${hit === p.id ? "row-hit" : ""}`}>
@@ -1560,9 +1564,9 @@ function ProductsTable({
                   {allocations.map((a) => {
                     const alloc = numOrNull(a.allocatedQty);
                     const got = numOrNull(a.receivedQty);
-                    const adiff = got === null || alloc === null ? null : got - alloc;
                     const opt = optionFor(a.pfiId);
-                    const st = a.orderStatus || p.orderStatus || "not_ordered";
+                    const st = allocStatus(a);
+                    const adiff = got === null || alloc === null || st === "removed" ? null : got - alloc;
                     return (
                       <tr key={`${p.id}-${a.pfiId}`} className={`sub-row ${hit === p.id ? "row-hit" : ""}`}>
                         <td className="ro"><span className="sub-arrow">↳</span> <strong>{opt ? opt.shortLabel : "PFI"}</strong></td>
@@ -2623,8 +2627,8 @@ function PoDetail({ po, actions, allPfiOptions }) {
     ...patch,
     products: d.products.map((p) => ({
       ...p,
-      orderStatus,
-      linkedPfiRefs: (p.linkedPfiRefs || []).map((r) => ({ ...r, orderStatus })),
+      orderStatus: keepRemoved(p.orderStatus, orderStatus),
+      linkedPfiRefs: (p.linkedPfiRefs || []).map((r) => ({ ...r, orderStatus: keepRemoved(r.orderStatus || p.orderStatus, orderStatus) })),
     })),
   }));
 
@@ -2657,7 +2661,7 @@ function PoDetail({ po, actions, allPfiOptions }) {
           </div>
         </div>
         <div className="muted" style={{ maxWidth: 280, lineHeight: 1.5 }}>
-          Received sets every PFI row on this PO to Received. Enter what each PFI actually got — a short delivery stays short.
+          Received sets every PFI row on this PO to Received, except rows marked Removed. Enter what each PFI actually got — a short delivery stays short.
         </div>
       </div>
 
@@ -4868,8 +4872,8 @@ export default function App() {
         ...extraPatch,
         products: po.products.map((p) => ({
           ...p,
-          orderStatus,
-          linkedPfiRefs: (p.linkedPfiRefs || []).map((r) => ({ ...r, orderStatus })),
+          orderStatus: keepRemoved(p.orderStatus, orderStatus),
+          linkedPfiRefs: (p.linkedPfiRefs || []).map((r) => ({ ...r, orderStatus: keepRemoved(r.orderStatus || p.orderStatus, orderStatus) })),
         })),
       }
     )));
@@ -4892,7 +4896,8 @@ export default function App() {
       : sourcePo.sentStatus === "sent" ? "ordered" : "sending_order";
     setPoLineStatus(poId, orderStatus, { receivedStatus });
     sourcePo.products.forEach((prod) => {
-      notifyLinkedSales(sourcePo, prod.product, prod.linkedPfiRefs,
+      const liveRefs = (prod.linkedPfiRefs || []).filter((r) => (r.orderStatus || prod.orderStatus) !== "removed");
+      notifyLinkedSales(sourcePo, prod.product, liveRefs,
         receivedStatus === "received"
           ? `${poLabel(sourcePo)} — "${prod.product}" marked received. Check the quantity and BBD on that PO row.`
           : `${poLabel(sourcePo)} — "${prod.product}" reopened, no longer marked received.`);

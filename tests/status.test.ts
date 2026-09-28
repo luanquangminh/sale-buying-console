@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lineComplete, pfiTrackingStatus, rollupStatusLabel } from "../src/status.js";
+import { keepRemoved, lineComplete, lineReceivedTotal, lineRemoved, pfiTrackingStatus, rollupStatusLabel } from "../src/status.js";
 
 const r = (orderStatus: string, receivedQuantity: string | number = "") => ({ orderStatus, receivedQuantity });
 
@@ -15,6 +15,33 @@ describe("rollupStatusLabel", () => {
     expect(rollupStatusLabel([r("floor_stock")])).toBe("Floor stock");
     expect(rollupStatusLabel([r("floor_stock"), r("received")])).toBe("Received");
     expect(rollupStatusLabel([r("floor_stock"), r("ordered")])).toBe("Partly received");
+  });
+  it("leaves removed rows out of the ladder", () => {
+    expect(rollupStatusLabel([r("removed")])).toBe("Removed");
+    expect(rollupStatusLabel([r("removed"), r("removed")])).toBe("Removed");
+    expect(rollupStatusLabel([r("removed"), r("received")])).toBe("Received");
+    expect(rollupStatusLabel([r("removed"), r("ordered")])).toBe("Ordered");
+    expect(rollupStatusLabel([r("removed"), r("not_ordered")])).toBe("Not ordered");
+    expect(rollupStatusLabel([r("removed"), r("received"), r("ordered")])).toBe("Partly received");
+  });
+});
+
+describe("removed lines", () => {
+  it("a line is removed when its own status is, or when every PO row covering it is", () => {
+    expect(lineRemoved({ quantity: 5, orderStatus: "removed" })).toBe(true);
+    expect(lineRemoved({ quantity: 5, orderStatus: "ordered" })).toBe(false);
+    expect(lineRemoved({ quantity: 5, orderStatus: "ordered", receipts: [r("removed")] })).toBe(true);
+    expect(lineRemoved({ quantity: 5, orderStatus: "removed", receipts: [r("removed"), r("ordered")] })).toBe(false);
+  });
+  it("cases on a removed PO row do not count as received", () => {
+    expect(lineReceivedTotal({ quantity: 20, receipts: [r("removed", 8), r("received", 12)] })).toBe(12);
+    expect(lineReceivedTotal({ quantity: 20, receipts: [r("removed", 8)] })).toBe(null);
+    expect(lineComplete({ quantity: 20, receipts: [r("removed", 20)] })).toBe(false);
+  });
+  it("a PO-wide status change leaves removed rows alone", () => {
+    expect(keepRemoved("removed", "received")).toBe("removed");
+    expect(keepRemoved("ordered", "received")).toBe("received");
+    expect(keepRemoved(undefined, "ordered")).toBe("ordered");
   });
 });
 
@@ -47,6 +74,14 @@ describe("pfiTrackingStatus", () => {
   });
   it("is Loaded as soon as the delivery is marked loaded, whatever the lines say", () => {
     expect(pfiTrackingStatus({ products: [line(10, 0)], delivery: { loaded: "loaded" } })).toBe("Loaded");
+  });
+  it("ignores removed lines when deciding Complete Ordering", () => {
+    const removed = { quantity: 8, receivedQuantity: "", orderStatus: "removed" };
+    expect(pfiTrackingStatus({ products: [line(10, 10), removed], delivery: {} })).toBe("Complete Ordering");
+    expect(pfiTrackingStatus({ products: [line(10, 4), removed], delivery: {} })).toBe("Pending");
+    expect(pfiTrackingStatus({ products: [removed], delivery: {} })).toBe("Pending");
+    const viaPo = { quantity: 8, receivedQuantity: "", receipts: [r("removed")] };
+    expect(pfiTrackingStatus({ products: [line(10, 10), viaPo], delivery: {} })).toBe("Complete Ordering");
   });
   it("reads old records without the loaded field as not loaded", () => {
     expect(pfiTrackingStatus({ products: [line(10, 10)], delivery: { type: "delivery" } })).toBe("Complete Ordering");
