@@ -681,3 +681,28 @@ test("PO: FOB is an incoterm on a new PO, and UK Local Transport hides the sub-t
   await page.getByRole("button", { name: "Add PFI" }).click();
   await expect(page.locator(".add-form").first().locator("select").nth(2).locator("option")).toHaveText(["Ex-Work", "Delivered"]);
 });
+
+test("warehouse: the note box takes the full width and holds a long note", async ({ page }) => {
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await side(page, "Warehouse's Space").click();
+  const TITLE = "E2E: long note";
+  const NOTE_TEXT = ["Gate B, 10:00 to 12:00.", "6 pallets, 2 of them chilled.", "Driver: call the office 30 minutes before arrival.", "Bring the signed packing list back."].join("\n");
+  const leftovers = page.locator(".cal-event", { hasText: TITLE });
+  while (await leftovers.count()) { await leftovers.first().click(); await page.getByRole("button", { name: "Delete entry" }).click(); await page.getByRole("button", { name: "Yes, delete" }).click(); }
+  const day = (n: number) => page.locator(".cal-day:not(.out)", { has: page.locator(".cal-date", { hasText: new RegExp(`^${n}$`) }) });
+  await day(12).hover();
+  await day(12).locator(".cal-add").click();
+  const note = page.locator(".modal-panel textarea");
+  const box = await note.boundingBox();
+  const body = await page.locator(".modal-body").boundingBox();
+  expect(box!.height).toBeGreaterThanOrEqual(140);
+  expect(box!.width).toBeGreaterThan(body!.width * 0.9); // the whole row, not a corner of it
+  await page.locator(".modal-panel input").first().fill(TITLE);
+  await note.fill(NOTE_TEXT);
+  await page.getByRole("button", { name: "Save entry" }).click();
+  await day(12).locator(".cal-event", { hasText: TITLE }).click();
+  await expect(note).toHaveValue(NOTE_TEXT);
+  await page.getByRole("button", { name: "Delete entry" }).click();
+  await page.getByRole("button", { name: "Yes, delete" }).click();
+  await expect(page.locator(".cal-event", { hasText: TITLE })).toHaveCount(0);
+});

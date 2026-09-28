@@ -427,6 +427,7 @@ const GlobalStyle = () => (
     .mini-field { display:flex; flex-direction:column; gap:4px; }
     .mini-field label { font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:#7C8891; }
     .mini-field input, .mini-field select, .mini-field textarea { border:1px solid #D8E6DC; border-radius:3px; padding:7px 9px; font-size:12.5px; font-family:inherit; }
+    .mini-field textarea.wh-note { width:100%; min-height:140px; resize:vertical; line-height:1.45; }
 
     .doc-card { border:1px dashed #C7CDCE; border-radius:3px; padding:10px 12px; margin-bottom:8px; display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
     .doc-type-badge { font-size:10px; font-weight:700; background:#2F7A52; color:#fff; padding:2px 8px; border-radius:3px; letter-spacing:.04em; flex-shrink:0; }
@@ -3508,7 +3509,7 @@ function WarehouseTab({ events, actions, userName }) {
               </select>
             </div>
             <div className="mini-field"><label>PO / PFI no.</label><input placeholder="2424" value={editing.refNo} onChange={(e) => setEditing({ ...editing, refNo: e.target.value })} /></div>
-            <div className="mini-field" style={{ gridColumn: "span 3" }}><label>Note</label><textarea rows={2} placeholder="Pallets, time window, driver…" value={editing.note} onChange={(e) => setEditing({ ...editing, note: e.target.value })} /></div>
+            <div className="mini-field" style={{ gridColumn: "1 / -1" }}><label>Note</label><textarea className="wh-note" rows={7} placeholder="Pallets, time window, driver…" value={editing.note} onChange={(e) => setEditing({ ...editing, note: e.target.value })} /></div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <button className="btn btn-accent" disabled={!editing.title.trim() || !editing.date} onClick={saveEntry}><Save size={14} /> Save entry</button>
