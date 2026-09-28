@@ -39,6 +39,7 @@ const INCOTERMS = [
   { value: "ex-work", label: "Ex-Work" },
   { value: "delivered", label: "Delivered" },
 ];
+const PO_INCOTERMS = [...INCOTERMS, { value: "fob", label: "FOB" }];
 const ORDER_STATUSES = [
   { value: "not_ordered", label: "Not ordered" },
   { value: "sending_order", label: "Sending order" },
@@ -2497,7 +2498,7 @@ function PoCreateForm({ suppliers, existingNumbers, currency, setCurrency, onCre
   const [supplierId, setSupplierId] = useState(suppliers[0]?.id || "");
   const [poNo, setPoNo] = useState("");
   const [paymentTerm, setPaymentTerm] = useState("");
-  const [incoterm, setIncoterm] = useState(INCOTERMS[0].value);
+  const [incoterm, setIncoterm] = useState(PO_INCOTERMS[0].value);
   const [error, setError] = useState("");
 
   const submit = () => {
@@ -2546,7 +2547,7 @@ function PoCreateForm({ suppliers, existingNumbers, currency, setCurrency, onCre
         <div>
           <label>Incoterm</label>
           <select value={incoterm} onChange={(e) => setIncoterm(e.target.value)}>
-            {INCOTERMS.map((i) => <option key={i.value} value={i.value}>{i.label}</option>)}
+            {PO_INCOTERMS.map((i) => <option key={i.value} value={i.value}>{i.label}</option>)}
           </select>
         </div>
         <div>
@@ -2735,7 +2736,7 @@ function PoList({ suppliers, pos, expandedPoId, setExpandedPoId, actions, allPfi
                     <div className="pfi-code">{poLabel(p)}</div>
                   </div>
                   <div className="muted">{p.currency}</div>
-                  <div className="muted">{INCOTERMS.find((i) => i.value === p.incoterm)?.label}</div>
+                  <div className="muted">{PO_INCOTERMS.find((i) => i.value === p.incoterm)?.label}</div>
                   <div className="muted sm-mono">{formatMoney(total, p.currency)}</div>
                   <div><span className={`chip ${status}`}>{paymentStatusLabel(status)}</span></div>
                   <ChevronRight size={16} className="chev" />
@@ -2749,7 +2750,7 @@ function PoList({ suppliers, pos, expandedPoId, setExpandedPoId, actions, allPfi
       {openPo && (
         <Modal
           title={`${poLabel(openPo)} — ${openPo.supplierName}`}
-          subtitle={`${openPo.currency} · ${INCOTERMS.find((i) => i.value === openPo.incoterm)?.label} · Payment term: ${openPo.paymentTerm || "—"}`}
+          subtitle={`${openPo.currency} · ${PO_INCOTERMS.find((i) => i.value === openPo.incoterm)?.label} · Payment term: ${openPo.paymentTerm || "—"}`}
           deleteLabel="Delete PO"
           onDelete={() => {
             setExpandedPoId(null);
