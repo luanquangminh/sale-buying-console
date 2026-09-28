@@ -1658,3 +1658,78 @@ test("PO: a PFI line that the cases ordered do not cover is flagged, with the ca
   await side(page, "Order Tracking").click();
   await removeDoc(pfiRow, "Delete PFI");
 });
+
+test("drop-down panels open upwards when their button sits at the bottom of the window", async ({ page }) => {
+  const viewport = page.viewportSize()!;
+  // Button and panel are measured in one go, so a scroll in between cannot skew the comparison.
+  const measure = (anchorSel: string, panelSel: string) => page.evaluate(([a, p]) => {
+    const anchors = document.querySelectorAll(a);
+    const t = anchors[anchors.length - 1].getBoundingClientRect();
+    const b = document.querySelector(p)!.getBoundingClientRect();
+    return { top: t.top, bottom: t.bottom, panel: { top: b.top, bottom: b.bottom, left: b.left, right: b.right }, vh: window.innerHeight, vw: window.innerWidth };
+  }, [anchorSel, panelSel]);
+  const check = (m: Awaited<ReturnType<typeof measure>>, panelHeight: number) => {
+    expect(m.panel.top).toBeGreaterThanOrEqual(0); // all of it on screen
+    expect(m.panel.bottom).toBeLessThanOrEqual(m.vh);
+    expect(m.panel.left).toBeGreaterThanOrEqual(0);
+    expect(m.panel.right).toBeLessThanOrEqual(m.vw);
+    const above = m.panel.bottom <= m.top + 1; const below = m.panel.top >= m.bottom - 1;
+    expect(above || below).toBe(true); // attached to its button
+    const roomBelow = m.vh - m.bottom; const roomAbove = m.top;
+    expect(above).toBe(roomBelow < panelHeight && roomAbove > roomBelow); // upwards only when there is no room underneath
+    return { above, below };
+  };
+
+  // Link PFI on a PO row.
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await pill(page, "PO Tracking").click();
+  await pill(page, /^PO$/).click();
+  await openDetail(page, page.locator(".pfi-list-row", { hasText: "PO 4500" }));
+  const TRIGGER = ".detail-body .pfi-picker-trigger"; const PICKER = ".pfi-picker-panel";
+  const trigger = page.locator(TRIGGER).last();
+  const picker = page.locator(PICKER);
+  await trigger.evaluate((el) => el.scrollIntoView({ block: "end" })); // the last row, at the very bottom
+  await trigger.click();
+  await expect(picker).toBeVisible();
+  expect(check(await measure(TRIGGER, PICKER), 236).above).toBe(true);
+  await expect(picker.locator(".pfi-picker-option").first()).toBeInViewport({ ratio: 1 });
+  await picker.locator(".pfi-picker-search").fill("3200"); // usable where it opened; a shorter list stays attached to the button
+  await expect(picker.locator(".pfi-picker-option")).toHaveCount(1);
+  expect(check(await measure(TRIGGER, PICKER), 236).above).toBe(true);
+  await page.locator(".picker-backdrop").click();
+  await expect(picker).toHaveCount(0);
+
+  const first = page.locator(TRIGGER).first(); // a row with room underneath opens downwards, as before
+  await first.evaluate((el) => el.scrollIntoView({ block: "center" }));
+  await first.click();
+  await expect(picker).toBeVisible();
+  const m = await page.evaluate(([a, p]) => {
+    const t = document.querySelector(a)!.getBoundingClientRect(); const b = document.querySelector(p)!.getBoundingClientRect();
+    return { top: t.top, bottom: t.bottom, panel: { top: b.top, bottom: b.bottom, left: b.left, right: b.right }, vh: window.innerHeight, vw: window.innerWidth };
+  }, [TRIGGER, PICKER]);
+  expect(check(m, 236).below).toBe(true);
+  await page.locator(".picker-backdrop").click();
+  const discard = page.getByRole("button", { name: "Discard" });
+  if (await discard.isEnabled()) await discard.click();
+  await close(page);
+
+  // Forwarder suggestions in Container Rate, in a window only tall enough for the form.
+  await side(page, "Container Rate").click();
+  await page.locator(".lane-row", { hasText: "Lagos" }).first().click();
+  const FORWARDER = ".lane-detail .mini-form-row input";
+  const forwarder = page.locator(FORWARDER).first();
+  const box = (await forwarder.boundingBox())!;
+  await page.setViewportSize({ width: viewport.width, height: Math.ceil(box.y + box.height + 40) });
+  await forwarder.click();
+  const suggest = page.locator(".suggest-panel");
+  await expect(suggest).toBeVisible();
+  const s = await page.evaluate(([a, p]) => {
+    const t = document.querySelector(a)!.getBoundingClientRect(); const b = document.querySelector(p)!.getBoundingClientRect();
+    return { top: t.top, bottom: t.bottom, panel: { top: b.top, bottom: b.bottom, left: b.left, right: b.right }, vh: window.innerHeight, vw: window.innerWidth };
+  }, [FORWARDER, ".suggest-panel"]);
+  expect(check(s, 214).above).toBe(true);
+  await suggest.locator(".suggest-option", { hasText: /^MSC$/ }).click();
+  await expect(forwarder).toHaveValue("MSC");
+  await forwarder.fill("");
+  await page.setViewportSize(viewport);
+});

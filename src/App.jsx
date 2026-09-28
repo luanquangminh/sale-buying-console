@@ -10,6 +10,7 @@ import { orderTotals, vatOption, VAT_OPTIONS } from "./money";
 import { DUE_TONE, dueLabel, dueState } from "./payments";
 import { sortLanesByPod } from "./lanes";
 import { lineCover, poShortages } from "./allocation";
+import { placePanel } from "./popup";
 import { applyReceipts, matchPfiLine, stripDerived } from "./receipts";
 import { mergeOtherRole } from "./merge";
 import { addMonths, inMonth, monthGrid, monthLabel, startOfMonth, todayLocalIso } from "./calendar";
@@ -1267,7 +1268,8 @@ function SuggestInput({ value, onChange, names, style, placeholder, onEnter }) {
   const open = () => {
     if (!inputRef.current) return;
     const r = inputRef.current.getBoundingClientRect();
-    setAnchor({ top: r.bottom + 2, left: r.left, width: Math.max(r.width, 190) });
+    const width = Math.max(r.width, 190);
+    setAnchor({ ...placePanel(r, { width: window.innerWidth, height: window.innerHeight }, { width, height: 214 }, 2), width });
   };
   const close = () => setAnchor(null);
 
@@ -1303,7 +1305,7 @@ function SuggestInput({ value, onChange, names, style, placeholder, onEnter }) {
         <div
           ref={panelRef}
           className="suggest-panel"
-          style={{ position: "fixed", top: anchor.top, left: anchor.left, width: anchor.width, zIndex: 61 }}
+          style={{ position: "fixed", ...anchor, zIndex: 61 }}
           onMouseDown={(e) => e.preventDefault()}
         >
           {options.map((n) => (
@@ -1324,7 +1326,7 @@ function PfiLinkPicker({ options, selected, onToggle }) {
   const openPanel = () => {
     if (triggerRef.current) {
       const r = triggerRef.current.getBoundingClientRect();
-      setAnchor({ top: r.bottom + 4, left: Math.min(r.left, window.innerWidth - 276) });
+      setAnchor(placePanel(r, { width: window.innerWidth, height: window.innerHeight }, { width: 260, height: 236 }));
     }
     setQuery("");
     setOpen(true);
@@ -1343,7 +1345,7 @@ function PfiLinkPicker({ options, selected, onToggle }) {
       {open && anchor && (
         <>
           <div className="picker-backdrop" onClick={() => setOpen(false)} />
-          <div className="pfi-picker-panel" style={{ position: "fixed", top: anchor.top, left: anchor.left, zIndex: 61 }}>
+          <div className="pfi-picker-panel" style={{ position: "fixed", ...anchor, zIndex: 61 }}>
             <input
               className="pfi-picker-search"
               autoFocus
