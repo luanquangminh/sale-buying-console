@@ -2055,7 +2055,7 @@ test("after a PO is sent: a quantity changed by Sale turns the row yellow, a rem
   await openDetail(page, poRow);
   await expect(allocOf(TEA)).toHaveClass(/row-changed/);
   await expect(allocOf(TEA).locator("td").nth(1)).toHaveCSS("background-color", YELLOW);
-  await expect(allocOf(TEA).locator(".change-note")).toContainText("Sale changed the quantity after this PO was sent: 110 → 120");
+  await expect(allocOf(TEA).locator(".change-note")).toContainText("Sale changed this line after the order went out: quantity 110 → 120");
   await expect(allocOf(JAM)).not.toHaveClass(/row-changed|row-gone/);
   await expect(allocOf(RICE)).toHaveClass(/row-gone/);
   await expect(allocOf(RICE).locator(".gone-note")).toContainText(`${RICE} has been removed`);
@@ -2216,6 +2216,99 @@ test("a row set to Ordered counts as sent, even when the PO's Sent button was ne
   await expect(allocOf(JAM)).toHaveClass(/row-changed/);
   await close(page);
 
+  await removeDoc(poRow, "Delete PO");
+  await asSale();
+  await removeDoc(pfiRow, "Delete PFI");
+});
+
+test("any change by Sale on an ordered line is flagged, and a PO row named more briefly finds its line", async ({ page }) => {
+  const LONG = "E2E Wide Nutella Biscuits Tube T12 168g"; const BRIEF = "E2E Wide Nutella Biscuits Tube"; const RENAMED = "E2E Wide Nutella Biscuits Tube T12 170g";
+  const TABLE = ".detail-body table.sticky-first tbody";
+  const pfiRow = page.locator(".pfi-list-row", { hasText: "PFI 3297" });
+  const poRow = page.locator(".pfi-list-row", { hasText: "PO 4560" });
+  const lineRows = page.locator(`${TABLE} tr:not(.sub-row):not(.ghost-row):not(:has(td[colspan]))`);
+  const lineOf = (name: string) => lineRows.filter({ has: page.locator(`input[value="${name}"]`) });
+  const allocOf = (name: string) => lineOf(name).locator("xpath=following-sibling::tr[contains(@class,'sub-row')][1]");
+  const addRow = async (name: string, qty: string, rate: string) => {
+    const rowForm = page.locator(".detail-body .section-card").first().locator(".mini-form-row").first();
+    await rowForm.locator("input").nth(0).fill(name);
+    await rowForm.locator("input").nth(4).fill(qty);
+    await rowForm.locator("input").nth(5).fill(rate);
+    await rowForm.getByRole("button", { name: "Add row" }).click();
+  };
+  const removeDoc = async (row: ReturnType<Page["locator"]>, button: string) => {
+    if (!(await row.count())) return;
+    await openDetail(page, row);
+    await page.getByRole("button", { name: button }).click();
+    await page.getByRole("button", { name: "Yes, delete" }).click();
+    await expect(row).toHaveCount(0);
+  };
+  const asSale = async () => { await signIn(page, A.sale.username, A.sale.password); await side(page, "Order Tracking").click(); };
+  const asBuyerOnPos = async () => { await signIn(page, A.buyer.username, A.buyer.password); await pill(page, "PO Tracking").click(); await pill(page, /^PO$/).click(); };
+
+  await asBuyerOnPos();
+  await removeDoc(poRow, "Delete PO");
+  await asSale();
+  await removeDoc(pfiRow, "Delete PFI");
+  await page.getByRole("button", { name: "Add PFI" }).click();
+  await page.locator(".add-form").first().locator("input").nth(0).fill("3297");
+  await page.getByRole("button", { name: "Create PFI" }).click();
+  await page.locator(".detail-body").waitFor();
+  await addRow(LONG, "630", "5");
+  await save(page);
+  await close(page);
+
+  // The PO names the product more briefly: the row still finds its line by itself.
+  await asBuyerOnPos();
+  await page.getByRole("button", { name: "Add PO" }).click();
+  await page.locator(".add-form").first().locator("input").nth(0).fill("4560");
+  await page.getByRole("button", { name: "Create PO" }).click();
+  await page.locator(".detail-body").waitFor();
+  await addRow(BRIEF, "630", "4");
+  await lineOf(BRIEF).locator(".pfi-picker-trigger").click();
+  await page.locator(".pfi-picker-option", { hasText: "PFI 3297" }).locator('input[type="checkbox"]').check();
+  await page.locator(".picker-backdrop").click();
+  const pick = allocOf(BRIEF).locator("select.line-pick");
+  await expect(pick).not.toHaveValue("");
+  await expect(pick.locator("option:checked")).toContainText(LONG);
+  await allocOf(BRIEF).locator('input[placeholder="cases"]').fill("630");
+  await expect(allocOf(BRIEF).locator(".cover-note")).toContainText("630 of 630 for this PFI");
+  await allocOf(BRIEF).locator("select").filter({ has: page.locator('option[value="removed"]') }).selectOption("ordered");
+  await save(page);
+  await close(page);
+
+  // Sale changes the rate, then the name: each is flagged, and named.
+  await asSale();
+  await openDetail(page, pfiRow);
+  await expect(page.locator(".unmatched-block")).toHaveCount(0); // the PO row sits under its line
+  await expect(page.locator(`${TABLE} tr.sub-row`, { hasText: "PO 4560" })).toHaveCount(1);
+  await expect(lineOf(LONG)).not.toHaveClass(/row-changed/);
+  await lineOf(LONG).locator('input[type="number"]').nth(1).fill("5.5");
+  await expect(lineOf(LONG)).toHaveClass(/row-changed/);
+  await expect(lineOf(LONG).locator(".change-note")).toHaveText(/^rate was 5$/);
+  await lineOf(LONG).locator("input").first().fill(RENAMED);
+  await expect(lineOf(RENAMED).locator(".change-note")).toContainText(`name was ${LONG}; rate was 5`);
+  await lineOf(RENAMED).locator("input").first().fill(LONG); // typed back: only the rate is left
+  await expect(lineOf(LONG).locator(".change-note")).toHaveText(/^rate was 5$/);
+  await lineOf(LONG).locator("input").first().fill(RENAMED);
+  await save(page);
+  await close(page);
+  await page.waitForTimeout(1200);
+
+  await asBuyerOnPos();
+  await openDetail(page, poRow);
+  await expect(allocOf(BRIEF)).toHaveClass(/row-changed/);
+  await expect(allocOf(BRIEF).locator(".change-note")).toContainText(`Sale changed this line after the order went out: name ${LONG} → ${RENAMED}; rate 5 → 5.5`);
+  await expect(pick.locator("option:checked")).toContainText(RENAMED); // still the same line
+  await allocOf(BRIEF).getByRole("button", { name: "Seen" }).click();
+  await expect(allocOf(BRIEF)).not.toHaveClass(/row-changed/);
+  await save(page);
+  await close(page);
+  await pill(page, "Orders to update").click();
+  await expect((await order(page, "PFI 3297")).locator(".chip.yellow")).toHaveCount(0);
+
+  await pill(page, "PO Tracking").click();
+  await pill(page, /^PO$/).click();
   await removeDoc(poRow, "Delete PO");
   await asSale();
   await removeDoc(pfiRow, "Delete PFI");

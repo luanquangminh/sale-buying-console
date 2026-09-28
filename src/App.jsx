@@ -11,7 +11,7 @@ import { DUE_TONE, dueLabel, dueState, groupByCustomer, PAY_STATUSES, PAY_STATUS
 import { sortLanesByPod } from "./lanes";
 import { lineCover, pfiLineCover, pfiShortages, poShortages } from "./allocation";
 import { placePanel } from "./popup";
-import { acknowledged, changeSinceSent, lineChange, removedSinceSent, stampSent } from "./sentMark";
+import { acknowledged, changeSinceSent, describeChanges, describeWas, lineChange, removedSinceSent, stampSent } from "./sentMark";
 import { groupBySale, hasSaleChange } from "./orderGroups";
 import { applyReceipts, matchPfiLine, stripDerived } from "./receipts";
 import { mergeOtherRole } from "./merge";
@@ -392,7 +392,7 @@ const GlobalStyle = () => (
     .data-table tr.row-changed td:first-child { box-shadow:inset 3px 0 0 #D9A400; }
     .data-table tr.row-gone td, .data-table.sticky-first tr.row-gone td:first-child { background:#FFF1EF !important; }
     .data-table tr.row-gone td:first-child { box-shadow:inset 3px 0 0 #C64B4B; }
-    .change-note { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:5px; font-size:11px; line-height:1.4; color:#6B5200; font-weight:600; }
+    .change-note { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:5px; font-size:11px; line-height:1.4; color:#6B5200; font-weight:600; white-space:normal; }
     .change-note .btn { font-size:10.5px; padding:2px 8px; }
     .gone-note { color:#B23B3B; font-weight:700; font-size:12px; line-height:1.45; }
     .gone-note span { font-weight:500; color:#8A4A4A; }
@@ -1763,7 +1763,21 @@ function ProductsTable({
                     ref={(el) => { rowRefs.current[p.id] = el; }}
                     className={`${rolledUp ? "parent-row" : ""} ${hit === p.id ? "row-hit" : ""} ${changed ? "row-changed" : ""}`}
                   >
-                    <td>{canEditSale ? <input value={p.product} onChange={(e) => onSaleField(p.id, "product", e.target.value)} /> : <span className="ro">{p.product}</span>}</td>
+                    <td>
+                      {canEditSale ? <input value={p.product} onChange={(e) => onSaleField(p.id, "product", e.target.value)} /> : <span className="ro">{p.product}</span>}
+                      {changed && (
+                        <div className="change-note" title={`Changed after PO ${changed.pos.join(", PO ")} was sent`}>
+                          <span>{describeWas(changed.changes)}</span>
+                          {canSettleMarks && (
+                            <button
+                              className="btn btn-sm"
+                              title="You have dealt with the change: stop highlighting this line"
+                              onClick={() => changed.stale.forEach((r) => onReceiptField(r, "sent", acknowledged(r.sent, pfi.products, new Date().toISOString())))}
+                            >Seen</button>
+                          )}
+                        </div>
+                      )}
+                    </td>
                     <td><DescriptionCell p={p} editable={canEditSale} onField={onSaleField} /></td>
                     <td>
                       {canEditSale ? (
@@ -1774,16 +1788,6 @@ function ProductsTable({
                     </td>
                     <td>
                       {canEditSale ? <input type="number" value={p.quantity} onChange={(e) => onSaleField(p.id, "quantity", e.target.value)} /> : <span className="ro">{p.quantity}</span>}
-                      {changed && (
-                        <div className="change-note">
-                          <span title={`Changed after PO ${changed.pos.join(", PO ")} was sent`}>was {changed.from}</span>
-                          {canSettleMarks && <button
-                            className="btn btn-sm"
-                            title="You have dealt with the change: stop highlighting this line"
-                            onClick={() => (p.receipts || []).filter((r) => r.sent && Number(r.sent.qty) !== changed.to).forEach((r) => onReceiptField(r, "sent", { ...r.sent, qty: changed.to, product: p.product || r.sent.product, at: new Date().toISOString() }))}
-                          >Seen</button>}
-                        </div>
-                      )}
                     </td>
                     <td>{canEditSale ? <input type="number" value={p.rate} onChange={(e) => onSaleField(p.id, "rate", e.target.value)} /> : <span className="ro">{p.rate}</span>}</td>
                     <td><span className="ro sm-mono">{formatMoney(p.amount, pfi.currency)}</span></td>
@@ -1950,7 +1954,7 @@ function ProductsTable({
                           )}
                           {change && change.kind === "changed" && (
                             <div className="change-note">
-                              <span>Sale changed the quantity after this PO was sent: {change.from} → {change.to}</span>
+                              <span>Sale changed this line after the order went out: {describeChanges(change.changes)}</span>
                               <button className="btn btn-sm" title="You have dealt with the change: stop highlighting this row" onClick={() => onAllocationField(p.id, a.pfiId, "sent", acknowledged(a.sent, opt.lines || [], new Date().toISOString()))}>Seen</button>
                             </div>
                           )}
@@ -4648,7 +4652,7 @@ function Shell({ user, onLogout, store }) {
         saleId: rep.id,
         shortLabel: pfiLabel(p),
         customerName: p.customerName,
-        lines: (p.products || []).map(({ id, product, ean, caseBarcode, quantity, receipts }) => ({ id, product, ean, caseBarcode, quantity, receipts: receipts || [] })),
+        lines: (p.products || []).map(({ id, product, ean, caseBarcode, caseSize, bbd, vat, quantity, rate, receipts }) => ({ id, product, ean, caseBarcode, caseSize, bbd, vat, quantity, rate, receipts: receipts || [] })),
         label: `${pfiLabel(p)} — ${p.customerName}`,
         search: `${p.pfiNo || ""} ${p.customerName}`,
       });
