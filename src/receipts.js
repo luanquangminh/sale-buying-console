@@ -1,11 +1,16 @@
 /*
  * How a PO row reaches a PFI line. Each PO product carries `linkedPfiRefs[]` (one per PFI it is split
  * across). A ref names the PFI and, since v1.1, the PFI line (`pfiProductId`). Older refs have no line
- * id, so the match falls back to EAN, then case barcode, then a normalised product name. An explicit id
- * whose line was deleted leaves the row unmatched (visible on the PFI) rather than re-matching it.
+ * id, so the match falls back to EAN, then case barcode, then a normalised product name, then a name that
+ * is the start of the other (a PO often names the product more briefly). An explicit id whose line was
+ * deleted leaves the row unmatched (visible on the PFI) rather than re-matching it.
  */
 
 export const normName = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+const code = (v) => String(v || "").trim().replace(/^0+/, "");
+/** Both sides carry the code and it is not the same one. */
+const clash = (a, b) => Boolean(code(a) && code(b) && code(a) !== code(b));
 
 /** The id of the PFI line a PO row covers, or null when nothing matches. */
 export function matchPfiLine(pfiProducts, ref, poLine) {
@@ -18,6 +23,16 @@ export function matchPfiLine(pfiProducts, ref, poLine) {
   if (cb) { const hit = lines.find((p) => String(p.caseBarcode || "").trim() === cb); if (hit) return hit.id; }
   const name = normName(poLine && poLine.product);
   if (name) { const hit = lines.find((p) => normName(p.product) === name); if (hit) return hit.id; }
+  // "Nutella Biscuits Tube" on the PO for "Nutella Biscuits Tube T12 168g" on the PFI: one name is the start of the other,
+  // in whole words and at least two of them. Taken only when a single line fits and no code on both sides says otherwise.
+  if (name.split(" ").length >= 2) {
+    const hits = lines.filter((p) => {
+      const n = normName(p.product);
+      if (n.split(" ").length < 2 || !(n.startsWith(`${name} `) || name.startsWith(`${n} `))) return false;
+      return !clash(p.ean, poLine.ean) && !clash(p.caseBarcode, poLine.caseBarcode);
+    });
+    if (hits.length === 1) return hits[0].id;
+  }
   return null;
 }
 

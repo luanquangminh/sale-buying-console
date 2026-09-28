@@ -24,6 +24,45 @@ describe("matchPfiLine", () => {
     expect(matchPfiLine(lines, { pfiProductId: null }, { product: "x", ean: "5000168014920" })).toBe("L2");
     expect(matchPfiLine(lines, {}, { product: "x", ean: "5000168014920" })).toBe("L2");
   });
+  describe("a PO that names the product more briefly than the PFI", () => {
+    const pfi = [
+      { id: "N", product: "Nutella Biscuits Tube T12 \n168g", ean: "", caseBarcode: "" },
+      { id: "K", product: "Kendamil RTD Stage 1 6pk 250ml", ean: "", caseBarcode: "" },
+      { id: "A", product: "Aptamil Comfort Baby Milk Powder From Birth 800g", ean: "8718117611942", caseBarcode: "8718117111947" },
+      { id: "P1", product: "Pepsi Max Tropical NAS 330ml", ean: "4062139023776", caseBarcode: "04062139023769" },
+      { id: "P2", product: "Pepsi Max Cherry NAS 330ml", ean: "87171259", caseBarcode: "04060800170255" },
+      { id: "S", product: "Snickers Protein Bar 47g", ean: "5000159516211", caseBarcode: "05000159516204" },
+    ];
+    it("matches when the PO name is the start of one line's name", () => {
+      expect(matchPfiLine(pfi, {}, { product: "Nutella Biscuits Tube", ean: "8000500310397", caseBarcode: "8000500310502" })).toBe("N");
+      expect(matchPfiLine(pfi, {}, { product: "Kendamil RTD Stage 1", ean: "", caseBarcode: "" })).toBe("K");
+    });
+    it("works the other way round too, the PFI being the brief one", () => {
+      expect(matchPfiLine([{ id: "X", product: "Kendamil RTD Stage 1", ean: "" }], {}, { product: "Kendamil RTD Stage 1 6pk 250ml" })).toBe("X");
+    });
+    it("does not match when a code on both sides says they differ", () => {
+      expect(matchPfiLine(pfi, {}, { product: "Aptamil Comfort Baby Milk Powder From Birth", ean: "5051594006850", caseBarcode: "5051594006973" })).toBeNull();
+    });
+    it("takes a leading zero on a case barcode as no difference", () => {
+      const line = [{ id: "Z", product: "Fanta Lemon 330ml Can", ean: "", caseBarcode: "05017726153281" }];
+      expect(matchPfiLine(line, {}, { product: "Fanta Lemon 330ml", ean: "", caseBarcode: "5017726153281x" })).toBeNull(); // a real difference
+      expect(matchPfiLine([{ id: "Z", product: "Fanta Lemon 330ml Can", ean: "5449000006004", caseBarcode: "" }], {}, { product: "Fanta Lemon 330ml", ean: "05449000006004" })).toBe("Z");
+    });
+    it("does not guess between two lines, nor between products that only share words", () => {
+      expect(matchPfiLine(pfi, {}, { product: "Pepsi Max", ean: "" })).toBeNull(); // Tropical or Cherry?
+      expect(matchPfiLine(pfi, {}, { product: "Pepsi Max 330ml", ean: "87170146" })).toBeNull(); // not the start of either name
+      expect(matchPfiLine(pfi, {}, { product: "Snickers Peanut Butter Protein Bar 47g", ean: "5056357900857" })).toBeNull();
+    });
+    it("needs at least two words, and whole words", () => {
+      expect(matchPfiLine(pfi, {}, { product: "Nutella" })).toBeNull();
+      expect(matchPfiLine(pfi, {}, { product: "Nutella Bisc" })).toBeNull();
+    });
+    it("keeps the exact rules first", () => {
+      const both = [{ id: "long", product: "Nutella Biscuits Tube T12 168g", ean: "" }, { id: "exact", product: "Nutella Biscuits Tube", ean: "" }];
+      expect(matchPfiLine(both, {}, { product: "Nutella Biscuits Tube" })).toBe("exact");
+      expect(matchPfiLine(both, { pfiProductId: "" }, { product: "Nutella Biscuits Tube" })).toBeNull(); // the buyer said: no line
+    });
+  });
   it("returns null when nothing matches", () => {
     expect(matchPfiLine(lines, {}, { product: "Happy Hippo Cocoa Cream 5pk 20.7g", ean: "40084008" })).toBeNull();
     expect(matchPfiLine([], {}, { product: "anything" })).toBeNull();
