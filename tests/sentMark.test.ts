@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acknowledged, changeSinceSent, lineChange, removedSinceSent, stampSent, stampSentAsOf } from "../src/sentMark.js";
+import { acknowledged, changeSinceSent, isSent, lineChange, removedSinceSent, stampSent, stampSentAsOf } from "../src/sentMark.js";
 
 const NOW = "2026-09-28T10:00:00.000Z";
 const LINES = [
@@ -8,6 +8,7 @@ const LINES = [
 ];
 const linesOf = (lines: any[]) => () => lines;
 const ref = (extra: Record<string, unknown> = {}) => ({ pfiId: "pfi-1", saleId: "sale-1", pfiProductId: "L-tea", allocatedQty: 100, orderStatus: "ordered", ...extra });
+const waiting = (extra: Record<string, unknown> = {}) => ref({ orderStatus: "sending_order", ...extra }); // a row whose order has not gone out
 const po = (sentStatus: string, refs: any[]) => ({ id: "po-1", poNo: "2480", sentStatus, products: [{ id: "row-1", product: "Yogi Tea Classic Chai", ean: "4012824406711", quantity: 100, linkedPfiRefs: refs }] });
 const refsOf = (p: any) => p.products[0].linkedPfiRefs;
 
@@ -38,12 +39,28 @@ describe("stampSent", () => {
     const out = stampSent(po("sent", [ref({ pfiProductId: undefined })]), linesOf(LINES), NOW); // matched by EAN
     expect(refsOf(out)[0].sent).toMatchObject({ lineId: "L-tea", qty: 100 });
   });
-  it("remembers nothing while the PO is not sent, and forgets when it goes back to not sent", () => {
-    const draft = po("not_sent", [ref()]);
+  it("remembers nothing while the order has not gone out, and forgets when it goes back to that", () => {
+    const draft = po("not_sent", [waiting()]);
     expect(stampSent(draft, linesOf(LINES), NOW)).toBe(draft);
+    const notOrdered = po("not_sent", [ref({ orderStatus: "not_ordered" })]);
+    expect(stampSent(notOrdered, linesOf(LINES), NOW)).toBe(notOrdered);
     const sent = stampSent(po("sent", [ref()]), linesOf(LINES), NOW);
-    const back = stampSent({ ...sent, sentStatus: "not_sent" }, linesOf(LINES), NOW);
+    const back = stampSent({ ...sent, sentStatus: "not_sent", products: [{ ...sent.products[0], linkedPfiRefs: [{ ...refsOf(sent)[0], orderStatus: "sending_order" }] }] }, linesOf(LINES), NOW);
     expect(refsOf(back)[0]).not.toHaveProperty("sent");
+  });
+  it("counts a row set to Ordered, Received or Floor stock as sent, whatever the PO's Sent button says", () => {
+    for (const status of ["ordered", "received", "floor_stock"]) {
+      const out = stampSent(po("not_sent", [ref({ orderStatus: status })]), linesOf(LINES), NOW);
+      expect(refsOf(out)[0].sent).toMatchObject({ lineId: "L-tea", qty: 100 });
+    }
+    const viaRow = { id: "po-1", poNo: "2485", sentStatus: "not_sent", products: [{ id: "row-1", product: "Yogi Tea Classic Chai", ean: "4012824406711", quantity: 100, orderStatus: "ordered", linkedPfiRefs: [ref({ orderStatus: undefined })] }] };
+    expect(refsOf(stampSent(viaRow, linesOf(LINES), NOW))[0].sent).toMatchObject({ qty: 100 }); // the status of the PO line, when the link has none of its own
+  });
+  it("judges each row of a PO on its own", () => {
+    const mixed = { id: "po-1", poNo: "2485", sentStatus: "not_sent", products: [{ id: "row-1", product: "Yogi Tea Classic Chai", ean: "4012824406711", quantity: 100, linkedPfiRefs: [ref({ orderStatus: "ordered" }), ref({ pfiId: "pfi-2", orderStatus: "sending_order" })] }] };
+    const out = stampSent(mixed, linesOf(LINES), NOW);
+    expect(refsOf(out)[0]).toHaveProperty("sent");
+    expect(refsOf(out)[1]).not.toHaveProperty("sent");
   });
   it("leaves a row that matches no line alone", () => {
     const out = stampSent(po("sent", [ref({ pfiProductId: "" }), ref({ pfiId: "pfi-2", pfiProductId: "L-gone" })]), linesOf(LINES), NOW);
@@ -151,7 +168,12 @@ describe("stampSentAsOf (POs sent before links remembered anything)", () => {
     expect(refsOf(out)[0].sent).toEqual({ lineId: "L-rice", qty: 30, product: "Rice 1kg", index: 2, at: THEN });
     expect(stampSentAsOf(po("sent", [ref()]), linesOf(then), linesOf([]), THEN).products[0].linkedPfiRefs[0].sent).toMatchObject({ qty: 100 }); // the whole PFI is newer
   });
-  it("leaves alone what already remembers, rows marked Removed, rows with no line, and POs not sent", () => {
+  it("covers a row set to Ordered on a PO that is not marked Sent", () => {
+    const now = [{ ...then[0], quantity: 1500 }, then[1]];
+    const out = stampSentAsOf(po("not_sent", [ref({ orderStatus: "ordered" })]), linesOf(now), linesOf(then), THEN);
+    expect(changeSinceSent(refsOf(out)[0], now)).toEqual({ kind: "changed", product: "Yogi Tea Classic Chai", from: 100, to: 1500 });
+  });
+  it("leaves alone what already remembers, rows marked Removed, rows with no line, and rows whose order has not gone out", () => {
     const kept = { lineId: "L-tea", qty: 90, product: "Yogi Tea Classic Chai", index: 0, at: NOW };
     const already = po("sent", [ref({ sent: kept })]);
     expect(stampSentAsOf(already, linesOf(then), linesOf(then), THEN)).toBe(already);
@@ -159,7 +181,7 @@ describe("stampSentAsOf (POs sent before links remembered anything)", () => {
     expect(stampSentAsOf(removed, linesOf(then), linesOf(then), THEN)).toBe(removed);
     const noLine = po("sent", [ref({ pfiProductId: "" })]);
     expect(stampSentAsOf(noLine, linesOf(then), linesOf(then), THEN)).toBe(noLine);
-    const notSent = po("not_sent", [ref()]);
+    const notSent = po("not_sent", [waiting()]);
     expect(stampSentAsOf(notSent, linesOf(then), linesOf(then), THEN)).toBe(notSent);
   });
   it("changes nothing else on the PO", () => {
@@ -167,5 +189,17 @@ describe("stampSentAsOf (POs sent before links remembered anything)", () => {
     const out = stampSentAsOf(before, linesOf(then), linesOf(then), THEN);
     const strip = (p: any) => ({ ...p, products: p.products.map((l: any) => ({ ...l, linkedPfiRefs: l.linkedPfiRefs.map(({ sent, ...r }: any) => r) })) });
     expect(strip(out)).toEqual(strip(before));
+  });
+});
+
+describe("isSent", () => {
+  const row = { orderStatus: "not_ordered" };
+  it("follows the PO's Sent button or the row's own status", () => {
+    expect(isSent({ sentStatus: "sent" }, row, { orderStatus: "sending_order" })).toBe(true);
+    expect(isSent({ sentStatus: "not_sent" }, row, { orderStatus: "ordered" })).toBe(true);
+    expect(isSent({ sentStatus: "not_sent" }, row, { orderStatus: "received" })).toBe(true);
+    expect(isSent({ sentStatus: "not_sent" }, row, { orderStatus: "floor_stock" })).toBe(true);
+    expect(isSent({}, { orderStatus: "ordered" }, {})).toBe(true);
+    for (const status of ["not_ordered", "sending_order", "removed", undefined]) expect(isSent({ sentStatus: "not_sent" }, row, { orderStatus: status })).toBe(false);
   });
 });

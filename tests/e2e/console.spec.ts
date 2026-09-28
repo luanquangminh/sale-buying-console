@@ -2079,3 +2079,116 @@ test("after a PO is sent: a quantity changed by Sale turns the row yellow, a rem
   await asSale();
   await removeDoc(pfiRow, "Delete PFI");
 });
+
+test("a row set to Ordered counts as sent, even when the PO's Sent button was never pressed", async ({ page }) => {
+  const TEA = "E2E Row Tea 100g"; const JAM = "E2E Row Jam 200g";
+  const YELLOW = "rgb(255, 246, 214)";
+  const TABLE = ".detail-body table.sticky-first tbody";
+  const pfiRow = page.locator(".pfi-list-row", { hasText: "PFI 3296" });
+  const poRow = page.locator(".pfi-list-row", { hasText: "PO 4550" });
+  const lineRows = page.locator(`${TABLE} tr:not(.sub-row):not(.ghost-row):not(:has(td[colspan]))`);
+  const lineOf = (name: string) => lineRows.filter({ has: page.locator(`input[value="${name}"]`) });
+  const roLine = (name: string) => page.locator(`${TABLE} tr:not(.sub-row):not(.ghost-row)`, { hasText: name });
+  const allocOf = (name: string) => lineOf(name).locator("xpath=following-sibling::tr[contains(@class,'sub-row')][1]");
+  const statusOf = (row: ReturnType<Page["locator"]>) => row.locator("select").filter({ has: page.locator('option[value="removed"]') });
+  const addRow = async (name: string, qty: string) => {
+    const rowForm = page.locator(".detail-body .section-card").first().locator(".mini-form-row").first();
+    await rowForm.locator("input").nth(0).fill(name);
+    await rowForm.locator("input").nth(4).fill(qty);
+    await rowForm.locator("input").nth(5).fill("1");
+    await rowForm.getByRole("button", { name: "Add row" }).click();
+  };
+  const removeDoc = async (row: ReturnType<Page["locator"]>, button: string) => {
+    if (!(await row.count())) return;
+    await openDetail(page, row);
+    await page.getByRole("button", { name: button }).click();
+    await page.getByRole("button", { name: "Yes, delete" }).click();
+    await expect(row).toHaveCount(0);
+  };
+  const asSale = async () => { await signIn(page, A.sale.username, A.sale.password); await side(page, "Order Tracking").click(); };
+  const asBuyerOnPos = async () => { await signIn(page, A.buyer.username, A.buyer.password); await pill(page, "PO Tracking").click(); await pill(page, /^PO$/).click(); };
+  const setQty = async (name: string, qty: string) => { await openDetail(page, pfiRow); await lineOf(name).locator('input[type="number"]').first().fill(qty); await save(page); await close(page); await page.waitForTimeout(1200); };
+
+  await asBuyerOnPos();
+  await removeDoc(poRow, "Delete PO");
+  await asSale();
+  await removeDoc(pfiRow, "Delete PFI");
+  await page.getByRole("button", { name: "Add PFI" }).click();
+  await page.locator(".add-form").first().locator("input").nth(0).fill("3296");
+  await page.getByRole("button", { name: "Create PFI" }).click();
+  await page.locator(".detail-body").waitFor();
+  await addRow(TEA, "1400");
+  await addRow(JAM, "280");
+  await save(page);
+  await close(page);
+
+  // The buyer links both lines and sets the tea row to Ordered; the PO itself stays "Have not Sent".
+  await asBuyerOnPos();
+  await page.getByRole("button", { name: "Add PO" }).click();
+  await page.locator(".add-form").first().locator("input").nth(0).fill("4550");
+  await page.getByRole("button", { name: "Create PO" }).click();
+  await page.locator(".detail-body").waitFor();
+  for (const [n, q] of [[TEA, "1400"], [JAM, "280"]]) {
+    await addRow(n, q);
+    await lineOf(n).evaluate((el) => el.scrollIntoView({ block: "center" }));
+    await lineOf(n).locator(".pfi-picker-trigger").click();
+    await page.locator(".pfi-picker-option", { hasText: "PFI 3296" }).locator('input[type="checkbox"]').check();
+    await page.locator(".picker-backdrop").click();
+    await allocOf(n).locator('input[placeholder="cases"]').fill(q);
+  }
+  await statusOf(allocOf(TEA)).selectOption("ordered");
+  await expect(page.locator(".toggle-btn.notsent-on", { hasText: "Have not Sent" })).toHaveCount(1);
+  await save(page);
+  await close(page);
+
+  // Sale changes both quantities: only the ordered row is flagged.
+  await asSale();
+  await openDetail(page, pfiRow);
+  await lineOf(TEA).locator('input[type="number"]').first().fill("1500");
+  await expect(lineOf(TEA)).toHaveClass(/row-changed/);
+  await expect(lineOf(TEA).locator("td").first()).toHaveCSS("background-color", YELLOW);
+  await expect(lineOf(TEA).locator(".change-note")).toContainText("was 1400");
+  await lineOf(JAM).locator('input[type="number"]').first().fill("300");
+  await expect(lineOf(JAM)).not.toHaveClass(/row-changed/); // its order has not gone out
+  await save(page);
+  await close(page);
+  await page.waitForTimeout(1200);
+
+  await asBuyerOnPos();
+  await openDetail(page, poRow);
+  await expect(allocOf(TEA)).toHaveClass(/row-changed/);
+  await expect(allocOf(TEA).locator(".change-note")).toContainText("1400 → 1500");
+  await expect(allocOf(JAM)).not.toHaveClass(/row-changed/);
+  await close(page);
+
+  // Set to Ordered from Orders to update: from then on the jam is watched too.
+  await pill(page, "Orders to update").click();
+  await openDetail(page, await order(page, "PFI 3296"));
+  await expect(roLine(TEA)).toHaveClass(/row-changed/);
+  const jamSub = roLine(JAM).locator("xpath=following-sibling::tr[contains(@class,'sub-row')][1]");
+  await statusOf(jamSub).selectOption("ordered");
+  await save(page);
+  await close(page);
+  await asSale();
+  await setQty(JAM, "320");
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await pill(page, "Orders to update").click();
+  await openDetail(page, await order(page, "PFI 3296"));
+  await expect(roLine(JAM)).toHaveClass(/row-changed/);
+  await expect(roLine(JAM).locator(".change-note")).toContainText("was 300"); // what it was when the row was set to Ordered
+  await close(page);
+
+  // Back to Not ordered: the row forgets, and the mark goes.
+  await pill(page, "PO Tracking").click();
+  await pill(page, /^PO$/).click();
+  await openDetail(page, poRow);
+  await statusOf(allocOf(TEA)).selectOption("not_ordered");
+  await save(page);
+  await expect(allocOf(TEA)).not.toHaveClass(/row-changed/);
+  await expect(allocOf(JAM)).toHaveClass(/row-changed/);
+  await close(page);
+
+  await removeDoc(poRow, "Delete PO");
+  await asSale();
+  await removeDoc(pfiRow, "Delete PFI");
+});

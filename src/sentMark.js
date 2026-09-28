@@ -1,13 +1,19 @@
 /*
- * After a PO has been sent to the supplier, the buyer has to hear about what the sale changes on a PFI line
- * that PO covers. When a PO is saved as sent, each of its links remembers the PFI line as it stood (`sent`:
- * line id, quantity, name, place in the list). A quantity that no longer matches, or a line that is gone,
- * is what the screens flag. Going back to "not sent" forgets; a row the buyer marked Removed is left alone.
+ * Once the order for a PO row has gone out, the buyer has to hear about what the sale changes on the PFI line
+ * that row covers. The order has gone out when the PO is marked Sent, or when the row itself says Ordered,
+ * Received or Floor stock (buyers set a row to Ordered without touching the PO's Sent button). From then on the
+ * link remembers the PFI line as it stood (`sent`: line id, quantity, name, place in the list). A quantity that
+ * no longer matches, or a line that is gone, is what the screens flag. A link whose order has not gone out
+ * (any more) forgets; a row the buyer marked Removed is left alone.
  */
 import { matchPfiLine } from "./receipts";
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const live = (status) => status !== "removed";
+const ORDER_PLACED = ["ordered", "received", "floor_stock"];
+
+/** Has the order for this PO row gone out? */
+export const isSent = (po, line, ref) => po.sentStatus === "sent" || ORDER_PLACED.includes(ref.orderStatus || line.orderStatus);
 
 const snapshot = (lines, lineId, now) => {
   const index = lines.findIndex((l) => l.id === lineId);
@@ -21,7 +27,7 @@ export function stampSent(po, linesOf, now) {
   const products = (po.products || []).map((p) => {
     let rowTouched = false;
     const refs = (p.linkedPfiRefs || []).map((ref) => {
-      if (po.sentStatus !== "sent") {
+      if (!isSent(po, p, ref)) {
         if (!("sent" in ref)) return ref;
         const { sent, ...rest } = ref;
         rowTouched = true;
@@ -44,15 +50,14 @@ export function stampSent(po, linesOf, now) {
 /**
  * For POs that were sent before links remembered anything. The PFI lines as they stood at an earlier moment
  * (`linesThen`, from a copy of the data) become the reference, so that what Sale changed since then shows.
- * Links that already remember, rows marked Removed and POs not sent are left alone. Same object back when nothing changes.
+ * Links that already remember, rows marked Removed and rows whose order has not gone out are left alone. Same object back when nothing changes.
  */
 export function stampSentAsOf(po, linesNow, linesThen, at) {
-  if (po.sentStatus !== "sent") return po;
   let touched = false;
   const products = (po.products || []).map((p) => {
     let rowTouched = false;
     const refs = (p.linkedPfiRefs || []).map((ref) => {
-      if (ref.sent || !live(ref.orderStatus || p.orderStatus)) return ref;
+      if (ref.sent || !isSent(po, p, ref) || !live(ref.orderStatus || p.orderStatus)) return ref;
       const now = linesNow(ref) || [];
       const then = linesThen(ref) || [];
       const lineId = matchPfiLine(now, ref, p) || matchPfiLine(then, ref, p); // still there, or there then and removed since

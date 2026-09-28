@@ -5393,6 +5393,11 @@ export default function App() {
           };
         }),
       }));
+      // A row set to Ordered from the PFI side has its order out: it starts remembering the line, like a PO saved as sent.
+      const linesOf = (ref) => (ref.pfiId === draft.id ? draft.products || [] : ((pfisBySale[ref.saleId] || []).find((x) => x.id === ref.pfiId) || {}).products || []);
+      const patched = new Set(allocPatches.map((x) => x.poLineId));
+      const at = new Date().toISOString();
+      nextPos = nextPos.map((po) => ((po.products || []).some((pr) => patched.has(pr.id)) ? stampSent(po, linesOf, at) : po));
       setPos(nextPos);
     }
 
