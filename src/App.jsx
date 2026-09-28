@@ -9,6 +9,7 @@ import { matchNames, uniqueNames } from "./suggest";
 import { orderTotals, vatOption, VAT_OPTIONS } from "./money";
 import { DUE_TONE, dueLabel, dueState } from "./payments";
 import { sortLanesByPod } from "./lanes";
+import { lineCover, poShortages } from "./allocation";
 import { applyReceipts, matchPfiLine, stripDerived } from "./receipts";
 import { mergeOtherRole } from "./merge";
 import { addMonths, inMonth, monthGrid, monthLabel, startOfMonth, todayLocalIso } from "./calendar";
@@ -442,6 +443,13 @@ const GlobalStyle = () => (
     .import-note.err { background:#FBE4E1; color:#B23B3B; border:1px solid #F3C6C1; }
     .import-note.busy { background:#FBF0DA; color:#A47521; border:1px solid #EAD9AE; }
     .alloc-note { font-size:10px; color:#7C8891; margin-top:4px; }
+    .cover-note { display:inline-flex; flex-direction:column; gap:1px; padding:4px 8px; border-radius:3px; font-size:10.5px; line-height:1.3; white-space:nowrap; }
+    .cover-note strong { font-size:11.5px; }
+    .cover-note.short { background:#FBE4E1; color:#9A2E2E; }
+    .cover-note.ok { background:#EAF6EE; color:#2E6E48; }
+    .short-warning { background:#FFF4F2; border:1px solid #F2CFCA; border-left:3px solid #C64B4B; border-radius:3px; padding:10px 14px; margin-bottom:10px; font-size:12.5px; color:#5A2A2A; }
+    .short-warning-head { display:flex; align-items:center; gap:7px; font-weight:700; color:#9A2E2E; margin-bottom:5px; }
+    .short-warning ul { margin:0; padding-left:20px; line-height:1.65; }
 
     .lane-head-row { display:grid; grid-template-columns:1.1fr 1.6fr .9fr .8fr .8fr 1.1fr 28px; gap:10px; padding:10px 18px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#7C8891; border-bottom:1px solid #E5E9E9; }
     .lane-row { display:grid; grid-template-columns:1.1fr 1.6fr .9fr .8fr .8fr 1.1fr 28px; gap:10px; padding:13px 18px; align-items:center; border-bottom:1px solid #EEF0EF; cursor:pointer; font-size:13.5px; border-left:3px solid transparent; }
@@ -1411,6 +1419,7 @@ function ProductsTable({
   const isPo = variant === "po";
   const canDelete = variant === "pfi-sale" || variant === "po";
   const totals = orderTotals(pfi.products);
+  const shortages = variant === "po" ? poShortages(pfi, allPfiOptions) : [];
 
   const jumpTo = (productId) => {
     const el = rowRefs.current[productId];
@@ -1623,6 +1632,20 @@ function ProductsTable({
           : "Each PO covering a line appears as its own row underneath it, with the cases allocated to this PFI."}
       </div>
 
+      {shortages.length > 0 && (
+        <div className="short-warning" role="alert">
+          <div className="short-warning-head"><AlertTriangle size={14} /> {shortages.length === 1 ? "1 PFI line is" : `${shortages.length} PFI lines are`} not fully covered by the cases ordered</div>
+          <ul>
+            {shortages.map((sh) => (
+              <li key={`${sh.pfiId}:${sh.lineId}`}>
+                <strong>{sh.pfiLabel}</strong> · {sh.customerName} — {sh.product}: needs {sh.need}, allocated {sh.allocated}
+                {sh.others > 0 ? ` (this PO ${sh.here} + other POs ${sh.others})` : ""}, <strong>short {sh.short}</strong>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className={`table-scroll zoom-${zoom}`}>
         <table className="data-table sticky-first">
           <thead>
@@ -1833,6 +1856,8 @@ function ProductsTable({
                     const opt = optionFor(a.pfiId);
                     const st = allocStatus(a);
                     const adiff = got === null || alloc === null || st === "removed" ? null : got - alloc;
+                    const coveredLine = opt ? matchPfiLine(opt.lines || [], a, p) : null;
+                    const cover = coveredLine && st !== "removed" ? lineCover(opt, coveredLine, pfi) : null;
                     return (
                       <tr key={`${p.id}-${a.pfiId}`} className={`sub-row ${hit === p.id ? "row-hit" : ""}`}>
                         <td className="ro"><span className="sub-arrow">↳</span> <strong>{opt ? opt.shortLabel : "PFI"}</strong></td>
@@ -1853,8 +1878,17 @@ function ProductsTable({
                         </td>
                         <td />
                         <td><input type="number" placeholder="cases" value={a.allocatedQty ?? ""} onChange={(e) => onAllocationField(p.id, a.pfiId, "allocatedQty", e.target.value)} /></td>
-                        <td />
-                        <td />
+                        <td colSpan={2}>
+                          {cover && (
+                            <div
+                              className={`cover-note ${cover.short > 0 ? "short" : "ok"}`}
+                              title={`The PFI line needs ${cover.need}. This PO gives ${cover.here}${cover.others > 0 ? `, other POs give ${cover.others}` : ""}.`}
+                            >
+                              <strong>{cover.short > 0 ? `Short ${cover.short}` : "Covered"}</strong>
+                              <span>{cover.allocated} of {cover.need} for this PFI</span>
+                            </div>
+                          )}
+                        </td>
                         <td><span className="ro po-no-cell">{opt ? opt.shortLabel : "—"}</span></td>
                         <td style={{ borderLeft: "2px solid #BFE3CB" }}>
                           <select className={`tone-${ORDER_STATUS_TONE[st] || "grey"}`} value={st} onChange={(e) => onAllocationField(p.id, a.pfiId, "orderStatus", e.target.value)}>
@@ -4437,7 +4471,7 @@ function Shell({ user, onLogout, store }) {
         saleId: rep.id,
         shortLabel: pfiLabel(p),
         customerName: p.customerName,
-        lines: (p.products || []).map(({ id, product, ean, caseBarcode }) => ({ id, product, ean, caseBarcode })),
+        lines: (p.products || []).map(({ id, product, ean, caseBarcode, quantity, receipts }) => ({ id, product, ean, caseBarcode, quantity, receipts: receipts || [] })),
         label: `${pfiLabel(p)} — ${p.customerName}`,
         search: `${p.pfiNo || ""} ${p.customerName}`,
       });

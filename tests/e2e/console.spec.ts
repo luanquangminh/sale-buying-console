@@ -1521,3 +1521,140 @@ test("container rate: lanes are listed A to Z by POD, also after a new lane, a r
   await clean();
   expect(await mine()).toEqual([]);
 });
+
+test("PO: a PFI line that the cases ordered do not cover is flagged, with the cases missing", async ({ page }) => {
+  const TEA = "E2E Cover Tea 100g"; const JAM = "E2E Cover Jam 200g";
+  const pfiRow = page.locator(".pfi-list-row", { hasText: "PFI 3293" });
+  const poRow = (no: string) => page.locator(".pfi-list-row", { hasText: `PO ${no}` });
+  const lineRows = page.locator(".detail-body tbody tr:not(.sub-row):not(:has(td[colspan]))");
+  const lineOf = (name: string) => lineRows.filter({ has: page.locator(`input[value="${name}"]`) });
+  const addRow = async (name: string, qty: string) => {
+    const rowForm = page.locator(".detail-body .section-card").first().locator(".mini-form-row").first();
+    await rowForm.locator("input").nth(0).fill(name);
+    await rowForm.locator("input").nth(4).fill(qty);
+    await rowForm.locator("input").nth(5).fill("1");
+    await rowForm.getByRole("button", { name: "Add row" }).click();
+  };
+  const linkToPfi = async (name: string) => {
+    await lineOf(name).locator(".pfi-picker-trigger").click();
+    await page.locator(".pfi-picker-option", { hasText: "PFI 3293" }).locator('input[type="checkbox"]').check();
+    await page.locator(".picker-backdrop").click();
+  };
+  const removeDoc = async (row: ReturnType<Page["locator"]>, button: string) => {
+    if (!(await row.count())) return;
+    await openDetail(page, row);
+    await page.getByRole("button", { name: button }).click();
+    await page.getByRole("button", { name: "Yes, delete" }).click();
+    await expect(row).toHaveCount(0);
+  };
+  const openPos = async () => { await pill(page, "PO Tracking").click(); await pill(page, /^PO$/).click(); };
+  const newPo = async (no: string) => {
+    await page.getByRole("button", { name: "Add PO" }).click();
+    await page.locator(".add-form").first().locator("input").nth(0).fill(no);
+    await page.getByRole("button", { name: "Create PO" }).click();
+    await page.locator(".detail-body").waitFor();
+  };
+  const alloc = page.locator(".detail-body tr.sub-row", { hasText: "PFI 3293" });
+  const warning = page.locator(".detail-body .short-warning");
+
+  // Leftovers of an aborted run, then the order: tea 100 cases, jam 40.
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await openPos();
+  await removeDoc(poRow("4531"), "Delete PO");
+  await removeDoc(poRow("4530"), "Delete PO");
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Order Tracking").click();
+  await removeDoc(pfiRow, "Delete PFI");
+  await page.getByRole("button", { name: "Add PFI" }).click();
+  await page.locator(".add-form").first().locator("input").nth(0).fill("3293");
+  await page.getByRole("button", { name: "Create PFI" }).click();
+  await page.locator(".detail-body").waitFor();
+  await addRow(TEA, "100");
+  await addRow(JAM, "40");
+  await save(page);
+  await close(page);
+
+  // First PO: 80 cases of tea for an order of 100.
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await openPos();
+  await newPo("4530");
+  await expect(warning).toHaveCount(0); // nothing linked yet, nothing to warn about
+  await addRow(TEA, "80");
+  await linkToPfi(TEA);
+  const teaAlloc = alloc.first();
+  await expect(teaAlloc.locator(".cover-note")).toHaveClass(/short/); // no cases typed: the whole row goes to the PFI
+  await expect(teaAlloc.locator(".cover-note")).toContainText("Short 20");
+  await expect(teaAlloc.locator(".cover-note")).toContainText("80 of 100 for this PFI");
+  await expect(warning).toContainText("1 PFI line is not fully covered");
+  await expect(warning).toContainText(`PFI 3293 · Acme Foods Ltd — ${TEA}: needs 100, allocated 80, short 20`);
+
+  const cases = teaAlloc.locator('input[placeholder="cases"]');
+  await cases.fill("60");
+  await expect(teaAlloc.locator(".cover-note")).toContainText("Short 40");
+  await expect(warning).toContainText("allocated 60, short 40");
+  await cases.fill("100"); // covered: the warning goes
+  await expect(teaAlloc.locator(".cover-note")).toHaveClass(/ok/);
+  await expect(teaAlloc.locator(".cover-note")).toContainText("Covered");
+  await expect(teaAlloc.locator(".cover-note")).toContainText("100 of 100 for this PFI");
+  await expect(warning).toHaveCount(0);
+  await cases.fill("80");
+  await expect(warning).toContainText("short 20");
+
+  await addRow(JAM, "40"); // a second line of the same PFI, covered in full
+  await linkToPfi(JAM);
+  const jamAlloc = alloc.nth(1);
+  await jamAlloc.locator('input[placeholder="cases"]').fill("40");
+  await expect(jamAlloc.locator(".cover-note")).toContainText("Covered");
+  await expect(warning).toContainText("1 PFI line is not fully covered"); // still only the tea
+  await expect(warning).not.toContainText(JAM);
+
+  // A removed row gives nothing and asks for nothing.
+  const teaStatus = teaAlloc.locator("select").filter({ has: page.locator('option[value="removed"]') });
+  await teaStatus.selectOption("removed");
+  await expect(teaAlloc.locator(".cover-note")).toHaveCount(0);
+  await expect(warning).toHaveCount(0);
+  await teaStatus.selectOption("ordered");
+  await expect(warning).toContainText("short 20");
+  await save(page);
+  await expect(warning).toContainText("short 20"); // saving does not hide it
+  await close(page);
+
+  // Second PO tops the tea up: what the first PO gives is counted.
+  await newPo("4531");
+  await addRow(TEA, "30");
+  await linkToPfi(TEA);
+  await alloc.first().locator('input[placeholder="cases"]').fill("15");
+  await expect(alloc.first().locator(".cover-note")).toContainText("Short 5");
+  await expect(alloc.first().locator(".cover-note")).toContainText("95 of 100 for this PFI");
+  await expect(warning).toContainText("needs 100, allocated 95 (this PO 15 + other POs 80), short 5");
+  await alloc.first().locator('input[placeholder="cases"]').fill("20");
+  await expect(alloc.first().locator(".cover-note")).toContainText("Covered");
+  await expect(warning).toHaveCount(0);
+  await save(page);
+  await close(page);
+
+  await openDetail(page, poRow("4530")); // and the first PO no longer warns
+  await expect(alloc.first().locator(".cover-note")).toContainText("Covered");
+  await expect(alloc.first().locator(".cover-note")).toContainText("100 of 100 for this PFI");
+  await expect(warning).toHaveCount(0);
+  await close(page);
+
+  // The sale orders 20 more: both POs warn again.
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Order Tracking").click();
+  await openDetail(page, pfiRow);
+  await lineOf(TEA).locator('input[type="number"]').first().fill("120");
+  await save(page);
+  await close(page);
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await openPos();
+  await openDetail(page, poRow("4530"));
+  await expect(warning).toContainText("needs 120, allocated 100 (this PO 80 + other POs 20), short 20");
+  await close(page);
+
+  await removeDoc(poRow("4531"), "Delete PO");
+  await removeDoc(poRow("4530"), "Delete PO");
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Order Tracking").click();
+  await removeDoc(pfiRow, "Delete PFI");
+});
