@@ -15,8 +15,10 @@ const watchPushes = (page: Page) => {
   const open = new Set<unknown>();
   inFlight.set(page, open);
   page.on("request", (r) => { if (r.url().includes("/api/sync") && r.method() === "POST") open.add(r); });
+  page.on("response", (r) => open.delete(r.request())); // the server has answered: the change is in, whether or not the body is read
   page.on("requestfinished", (r) => open.delete(r));
   page.on("requestfailed", (r) => open.delete(r));
+  page.on("framenavigated", (f) => { if (f === page.mainFrame()) open.clear(); }); // what the page left behind on reloading is not waited for
 };
 /** Wait until nothing has been on its way for a moment (the store debounces by 300 ms), however slow the server is. */
 const settled = async (page: Page, quiet = 900, limit = 30_000) => {
