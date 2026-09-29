@@ -1,4 +1,4 @@
-/* Payment tracking: invoices to collect, by customer, and where each stands against its due date. */
+/* Customer Balance (the tab first named Payment tracking): invoices to collect, by customer, and where each stands against its due date. */
 
 export const PAY_STATUSES = [
   { value: "not_paid", label: "Have not paid" },

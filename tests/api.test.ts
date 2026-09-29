@@ -203,7 +203,7 @@ describe("a rep's own notes on a customer", () => {
   });
 });
 
-describe("payment tracking", () => {
+describe("customer balance (payment records)", () => {
   it("round-trips for admin and stays away from every other role", async () => {
     const { cookie: admin } = await login();
     const accounts = [

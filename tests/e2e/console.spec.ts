@@ -1391,20 +1391,22 @@ test("suppliers: edit renames the supplier on its POs; delete waits until its PO
   await expect(supRow(NEW)).toHaveCount(0);
 });
 
-test("payment tracking: invoices sit under their customer with the outstanding total; each invoice has its status", async ({ page }) => {
+test("customer balance: invoices sit under their customer with the outstanding total; each invoice has its status", async ({ page }) => {
   const iso = (offsetDays: number) => { const d = new Date(); d.setDate(d.getDate() + offsetDays); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
   const dmy = (offsetDays: number) => { const [y, m, d] = iso(offsetDays).split("-"); return `${d}/${m}/${y}`; };
   const typeDate = async (field: ReturnType<Page["locator"]>, value: string) => { const box = field.locator('.date-field input[type="text"]'); await box.fill(value); await box.press("Enter"); };
 
   for (const who of [A.sale, A.buyer, A.warehouse]) {
     await signIn(page, who.username, who.password);
-    await expect(page.locator(".side-item", { hasText: "Payment tracking" })).toHaveCount(0);
+    await expect(page.locator(".side-item", { hasText: "Customer Balance" })).toHaveCount(0);
     const state = await page.evaluate(async () => (await fetch("/api/state")).json());
     expect(state.slices.paymentTracks).toEqual([]);
   }
 
   await signIn(page, A.admin.username, A.admin.password);
-  await side(page, "Payment tracking").click();
+  await expect(page.locator(".side-item", { hasText: "Payment tracking" })).toHaveCount(0); // the tab's first name
+  await side(page, "Customer Balance").click();
+  await expect(page.locator(".page-title")).toHaveText("Customer Balance");
   const find = page.locator(".overview-bar input");
   const row = (inv: string) => page.locator("tr.pay-row", { hasText: inv });
   const customer = (name: string) => page.locator(".pay-cust", { has: page.locator(".pay-cust-row .company-name", { hasText: name }) });
@@ -1518,7 +1520,7 @@ test("payment tracking: invoices sit under their customer with the outstanding t
   expect(pushed).toBe(200);
 
   await page.reload(); // everything was saved; the list opens folded
-  await side(page, "Payment tracking").click();
+  await side(page, "Customer Balance").click();
   await expect(page.locator(".pay-cust-row").first()).toBeVisible();
   await expect(page.locator("tr.pay-row")).toHaveCount(0);
   await expect(customer("Acme Foods Ltd").locator(".pay-cust-total")).toHaveText("£900.75");

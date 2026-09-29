@@ -3733,7 +3733,7 @@ function DeliveryBookingTab({ bookings, actions }) {
   );
 }
 
-/* ---------------- Payment tracking (Admin only): invoices to collect ---------------- */
+/* ---------------- Customer Balance (Admin only; first named Payment tracking): invoices to collect ---------------- */
 
 const EMPTY_PAYMENT = { customer: "", inv: "", loadingDate: "", eta: "", currency: CURRENCIES[0], amount: "", dueDate: "", onHold: false };
 
@@ -4708,7 +4708,7 @@ function Shell({ user, onLogout, store }) {
                 <ClipboardList size={14} /> Mai
               </div>
               <div className={`side-item ${topSection === "payments" ? "active" : ""}`} onClick={() => setTopSection("payments")}>
-                <CreditCard size={14} /> Payment tracking
+                <CreditCard size={14} /> Customer Balance
               </div>
             </>
           )}
@@ -4906,7 +4906,7 @@ function Shell({ user, onLogout, store }) {
             <>
               <div className="page-header">
                 <div>
-                  <div className="page-title sm-display">Payment tracking</div>
+                  <div className="page-title sm-display">Customer Balance</div>
                   <div className="page-sub">Invoices to collect, with their due dates and containers on hold — Admin only</div>
                 </div>
               </div>
@@ -4988,7 +4988,7 @@ export default function App() {
   const [customerMemos, setCustomerMemos] = slice("customerMemos");
   const [paymentTracks, setPaymentTracks] = slice("paymentTracks");
 
-  /* Payment tracking (admin only): invoices to collect */
+  /* Customer Balance (admin only): invoices to collect */
   const addPaymentTrack = (data) => {
     const now = new Date().toISOString();
     const row = {
