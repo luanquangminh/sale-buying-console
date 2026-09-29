@@ -554,6 +554,9 @@ const GlobalStyle = () => (
     .done-tick.on { color:#1B5237; background:#D5EEDC; }
     .done-tick input { width:auto; min-width:0; margin:0; }
     .cal-dot { width:7px; height:7px; border-radius:50%; flex:none; background:#7C8891; }
+    .cal-party { display:inline-block; flex:none; min-width:13px; text-align:center; font-size:9px; font-weight:700; line-height:13px; border-radius:2px; background:rgba(255,255,255,.75); color:#3A4147; margin-right:3px; }
+    .cal-party.unset { background:#FFF1B8; color:#6B5200; }
+    select.wh-party.unset { border-color:#D9A400; background:#FFFBEA; }
     .cal-event.type-delivery .cal-dot { background:#2B5A8A; }
     .cal-event.type-collection .cal-dot { background:#A47521; }
     .cal-more { border:none; background:transparent; color:#2F7A52; font-size:11px; cursor:pointer; text-align:left; padding:2px 6px; font-family:inherit; font-weight:600; }
@@ -4190,7 +4193,9 @@ function JobsTab({ jobs, actions, userName }) {
   );
 }
 
-/* ---------------- Warehouse's Space (Admin, Buyer, Warehouse): delivery / collection calendar ---------------- */
+/* ---------------- Warehouse's Space: delivery / collection calendar ----------------
+   Admin, Buyer and Warehouse see and edit every entry. Sale reps only look, and only at the entries marked as a customer's:
+   the server never sends them a supplier entry, nor one that is not marked yet. */
 
 const WH_TYPES = [
   { value: "delivery", label: "Delivery" },
@@ -4198,24 +4203,31 @@ const WH_TYPES = [
   { value: "other", label: "Other" },
 ];
 const WH_TYPE_LABEL = Object.fromEntries(WH_TYPES.map((t) => [t.value, t.label]));
+const WH_PARTIES = [
+  { value: "customer", label: "Customer" },
+  { value: "supplier", label: "Supplier" },
+];
+const WH_PARTY_LABEL = Object.fromEntries(WH_PARTIES.map((t) => [t.value, t.label]));
 const MAX_VISIBLE_EVENTS = 4;
 
-function WarehouseTab({ events, actions, userName }) {
+function WarehouseTab({ events, actions, userName, readOnly = false }) {
   const [cursor, setCursor] = useState(() => startOfMonth(todayLocalIso()));
-  const [editing, setEditing] = useState(null); // { id?, date, title, type, refNo, note, done }
+  const [editing, setEditing] = useState(null); // { id?, date, title, party, type, refNo, note, done }
   const [showAll, setShowAll] = useState(null); // ISO date whose cell shows every entry
   const today = todayLocalIso();
-  const list = events || [];
+  const list = (events || []).filter((e) => !readOnly || e.party === "customer"); // a rep's list holds customer entries only; checked here as well
   const byDay = {};
   for (const e of list) (byDay[e.date] ||= []).push(e);
   for (const k of Object.keys(byDay)) byDay[k].sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
   const grid = monthGrid(cursor);
   const countThisMonth = list.filter((e) => inMonth(e.date || "", cursor)).length;
 
-  const openNew = (date) => setEditing({ date, title: "", type: "delivery", refNo: "", note: "", done: false });
-  const openEdit = (e) => setEditing({ id: e.id, date: e.date, title: e.title, type: e.type || "delivery", refNo: e.refNo || "", note: e.note || "", done: !!e.done });
+  const openNew = (date) => { if (!readOnly) setEditing({ date, title: "", party: "", type: "delivery", refNo: "", note: "", done: false }); };
+  const openEdit = (e) => setEditing({ id: e.id, date: e.date, title: e.title, party: WH_PARTY_LABEL[e.party] ? e.party : "", type: e.type || "delivery", refNo: e.refNo || "", note: e.note || "", done: !!e.done });
+  // A new entry has to say whose goods it is about. One entered before the choice existed can still be saved without: it stays hidden from Sale.
+  const canSave = Boolean(editing && editing.title.trim() && editing.date && (editing.id || editing.party));
   const saveEntry = () => {
-    if (!editing || !editing.title.trim() || !editing.date) return;
+    if (readOnly || !canSave) return;
     const { id, ...fields } = editing;
     if (id) actions.updateWarehouseEvent(id, { ...fields, title: fields.title.trim() });
     else actions.addWarehouseEvent({ ...fields, createdBy: userName });
@@ -4238,8 +4250,10 @@ function WarehouseTab({ events, actions, userName }) {
             <span><span className="cal-dot" style={{ display: "inline-block", marginRight: 4 }} />Other</span>
             <span><span className="cal-swatch todo" />Not done</span>
             <span><span className="cal-swatch done" />Done</span>
+            {!readOnly && <span><span className="cal-party">C</span>Customer</span>}
+            {!readOnly && <span><span className="cal-party">S</span>Supplier</span>}
           </span>
-          <button className="btn btn-accent btn-sm" style={{ marginLeft: 8 }} onClick={() => openNew(today)}><Plus size={12} /> New entry</button>
+          {!readOnly && <button className="btn btn-accent btn-sm" style={{ marginLeft: 8 }} onClick={() => openNew(today)}><Plus size={12} /> New entry</button>}
         </div>
       </div>
 
@@ -4254,11 +4268,11 @@ function WarehouseTab({ events, actions, userName }) {
               <div key={iso} className={`cal-day ${inMonth(iso, cursor) ? "" : "out"} ${iso === today ? "today" : ""}`} data-date={iso} onDoubleClick={() => openNew(iso)}>
                 <div className="cal-day-top">
                   <span className="cal-date">{Number(iso.slice(8, 10))}</span>
-                  <button className="cal-add" title={`Add an entry on ${fmtDate(iso)}`} onClick={() => openNew(iso)}>+</button>
+                  {!readOnly && <button className="cal-add" title={`Add an entry on ${fmtDate(iso)}`} onClick={() => openNew(iso)}>+</button>}
                 </div>
                 {shown.map((e) => (
-                  <button key={e.id} className={`cal-event type-${e.type || "other"} ${e.done ? "is-done" : "is-todo"}`} title={`${e.done ? "Done" : "Not done"} · ${WH_TYPE_LABEL[e.type] || "Other"}${e.refNo ? ` · ${e.refNo}` : ""}${e.note ? `\n${e.note}` : ""}`} onClick={() => openEdit(e)}>
-                    <span className="cal-dot" /><span className="cal-text">{e.title}</span>
+                  <button key={e.id} className={`cal-event type-${e.type || "other"} ${e.done ? "is-done" : "is-todo"}`} title={`${e.done ? "Done" : "Not done"} · ${WH_PARTY_LABEL[e.party] || "Customer or supplier not set"} · ${WH_TYPE_LABEL[e.type] || "Other"}${e.refNo ? ` · ${e.refNo}` : ""}${e.note ? `\n${e.note}` : ""}`} onClick={() => openEdit(e)}>
+                    <span className="cal-dot" />{!readOnly && <span className={`cal-party ${WH_PARTY_LABEL[e.party] ? "" : "unset"}`}>{e.party === "customer" ? "C" : e.party === "supplier" ? "S" : "?"}</span>}<span className="cal-text">{e.title}</span>
                   </button>
                 ))}
                 {!expanded && dayEvents.length > MAX_VISIBLE_EVENTS && (
@@ -4271,7 +4285,19 @@ function WarehouseTab({ events, actions, userName }) {
         </div>
       </div>
 
-      {editing && (
+      {editing && readOnly && (
+        <Modal title={editing.title} subtitle={`${fmtDate(editing.date)} · ${WH_TYPE_LABEL[editing.type] || "Other"} · view only`} onClose={() => setEditing(null)}>
+          <div className="booking-grid wh-view" style={{ marginBottom: 6 }}>
+            <div className="mini-field"><label>Date</label><div className="booking-value">{fmtDate(editing.date) || "—"}</div></div>
+            <div className="mini-field"><label>Type</label><div className="booking-value">{WH_TYPE_LABEL[editing.type] || "Other"}</div></div>
+            <div className="mini-field"><label>PO / PFI no.</label><div className="booking-value">{editing.refNo || "—"}</div></div>
+            <div className="mini-field"><label>Status</label><div className="booking-value"><span className={`chip ${editing.done ? "green" : "red"}`}>{editing.done ? "Done" : "Not done"}</span></div></div>
+            <div className="mini-field" style={{ gridColumn: "1 / -1" }}><label>Note</label><div className="booking-value" style={{ whiteSpace: "pre-wrap" }}>{editing.note || "—"}</div></div>
+          </div>
+        </Modal>
+      )}
+
+      {editing && !readOnly && (
         <Modal
           title={editing.id ? "Entry" : "New entry"}
           subtitle={`${fmtDate(editing.date) || "no date"}${editing.id ? "" : " · double-click a day to add there"}`}
@@ -4286,8 +4312,15 @@ function WarehouseTab({ events, actions, userName }) {
             </div>
             <div className="mini-field"><label>Date</label><DateField value={editing.date} onChange={(v) => setEditing({ ...editing, date: v })} /></div>
             <div className="mini-field">
+              <label>Customer / Supplier</label>
+              <select className={`wh-party ${editing.party ? "" : "unset"}`} aria-label="Customer or supplier" value={editing.party} onChange={(e) => setEditing({ ...editing, party: e.target.value })}>
+                <option value="">Choose…</option>
+                {WH_PARTIES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </div>
+            <div className="mini-field">
               <label>Type</label>
-              <select value={editing.type} onChange={(e) => setEditing({ ...editing, type: e.target.value })}>
+              <select aria-label="Type" value={editing.type} onChange={(e) => setEditing({ ...editing, type: e.target.value })}>
                 {WH_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
             </div>
@@ -4301,8 +4334,13 @@ function WarehouseTab({ events, actions, userName }) {
             <div className="mini-field" style={{ gridColumn: "1 / -1" }}><label>Note</label><textarea className="wh-note" rows={7} placeholder="Pallets, time window, driver…" value={editing.note} onChange={(e) => setEditing({ ...editing, note: e.target.value })} /></div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <button className="btn btn-accent" disabled={!editing.title.trim() || !editing.date} onClick={saveEntry}><Save size={14} /> Save entry</button>
+            <button className="btn btn-accent" disabled={!canSave} onClick={saveEntry}><Save size={14} /> Save entry</button>
             <button className="btn btn-ghost" onClick={() => setEditing(null)}>Cancel</button>
+            <span className="muted" style={{ fontSize: 12 }}>
+              {editing.party === "customer" ? "Sale reps can see this entry (view only)."
+                : editing.party === "supplier" ? "Hidden from Sale reps."
+                  : editing.id ? "Customer or supplier not chosen yet: hidden from Sale reps until it is." : "Choose Customer or Supplier to save. Sale reps see customer entries only."}
+            </span>
           </div>
         </Modal>
       )}
@@ -4763,7 +4801,7 @@ function Shell({ user, onLogout, store }) {
               </div>
             </>
           )}
-          {(isAdmin || isBuyer) && (
+          {(isAdmin || isBuyer || isSale) && (
             <div className={`side-item ${topSection === "warehouse" ? "active" : ""}`} onClick={() => setTopSection("warehouse")}>
               <Warehouse size={14} /> Warehouse's Space
             </div>
@@ -4866,15 +4904,15 @@ function Shell({ user, onLogout, store }) {
             </>
           )}
 
-          {topSection === "warehouse" && (isAdmin || isBuyer || isWarehouse) && (
+          {topSection === "warehouse" && (isAdmin || isBuyer || isWarehouse || isSale) && (
             <>
               <div className="page-header">
                 <div>
                   <div className="page-title sm-display">Warehouse's Space</div>
-                  <div className="page-sub">Delivery / collection calendar — shared by Admin, Buyer and Warehouse</div>
+                  <div className="page-sub">{isSale ? "Deliveries and collections for customers — view only" : "Delivery / collection calendar — shared by Admin, Buyer and Warehouse; Sale sees the customer entries only"}</div>
                 </div>
               </div>
-              <WarehouseTab events={store.warehouseEvents} actions={store} userName={user.name} />
+              <WarehouseTab events={store.warehouseEvents} actions={store} userName={user.name} readOnly={isSale} />
             </>
           )}
 
@@ -5032,7 +5070,7 @@ export default function App() {
 
   /* Warehouse's Space (admin + buyer + warehouse): delivery / collection calendar */
   const addWarehouseEvent = (data) => {
-    const ev = { id: uid("wh"), date: data.date, title: (data.title || "").trim(), type: data.type || "delivery", refNo: data.refNo || "", note: data.note || "", done: !!data.done, createdBy: data.createdBy || "", createdAt: new Date().toISOString() };
+    const ev = { id: uid("wh"), date: data.date, title: (data.title || "").trim(), type: data.type || "delivery", refNo: data.refNo || "", note: data.note || "", done: !!data.done, party: WH_PARTY_LABEL[data.party] ? data.party : "", createdBy: data.createdBy || "", createdAt: new Date().toISOString() };
     setWarehouseEvents((prev) => [...(prev || []), ev]);
     return ev.id;
   };

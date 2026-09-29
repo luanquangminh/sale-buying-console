@@ -589,7 +589,8 @@ test("warehouse: admin creates the login; it sees only the calendar; entries add
   await day(15).hover();
   await day(15).locator(".cal-add").click();
   await page.locator(".modal-panel input").first().fill(TITLE);
-  await page.locator(".modal-panel select").first().selectOption("collection");
+  await page.locator('.modal-panel select[aria-label="Customer or supplier"]').selectOption("supplier");
+  await page.locator('.modal-panel select[aria-label="Type"]').selectOption("collection");
   await page.locator(".modal-panel textarea").fill("2 pallets, 10am");
   await page.getByRole("button", { name: "Save entry" }).click();
   await expect(day(15).locator(".cal-event", { hasText: TITLE })).toHaveCount(1);
@@ -734,6 +735,7 @@ test("warehouse: the note box takes the full width and holds a long note", async
   expect(box!.height).toBeGreaterThanOrEqual(140);
   expect(box!.width).toBeGreaterThan(body!.width * 0.9); // the whole row, not a corner of it
   await page.locator(".modal-panel input").first().fill(TITLE);
+  await page.locator('.modal-panel select[aria-label="Customer or supplier"]').selectOption("supplier");
   await note.fill(NOTE_TEXT);
   await page.getByRole("button", { name: "Save entry" }).click();
   await day(12).locator(".cal-event", { hasText: TITLE }).click();
@@ -1053,6 +1055,7 @@ test("warehouse: an entry is red until it is ticked Done, then green, for every 
   const tick = page.locator(".modal-panel .done-tick input");
   await expect(tick).not.toBeChecked(); // a new entry starts as not done
   await page.locator(".modal-panel input").first().fill(TITLE);
+  await page.locator('.modal-panel select[aria-label="Customer or supplier"]').selectOption("supplier");
   await page.getByRole("button", { name: "Save entry" }).click();
 
   const RED = "rgb(251, 225, 222)"; const GREEN = "rgb(213, 238, 220)";
@@ -2314,4 +2317,118 @@ test("any change by Sale on an ordered line is flagged, and a PO row named more 
   await removeDoc(poRow, "Delete PO");
   await asSale();
   await removeDoc(pfiRow, "Delete PFI");
+});
+
+test("warehouse calendar: every entry says customer or supplier; sale reps see the customer entries only, and only look", async ({ page }) => {
+  const CUST = "E2E: customer collection"; const SUPP = "E2E: supplier delivery"; const OLD = "E2E: entered before the choice";
+  const party = page.locator('.modal-panel select[aria-label="Customer or supplier"]');
+  const day = (n: number) => page.locator(".cal-day:not(.out)", { has: page.locator(".cal-date", { hasText: new RegExp(`^${n}$`) }) });
+  const entry = (title: string) => page.locator(".cal-event", { hasText: title });
+  const clean = async () => {
+    for (const t of [CUST, SUPP, OLD]) while (await entry(t).count()) { await entry(t).first().click(); await page.getByRole("button", { name: "Delete entry" }).click(); await page.getByRole("button", { name: "Yes, delete" }).click(); }
+    await settled(page);
+  };
+
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await side(page, "Warehouse's Space").click();
+  await clean();
+
+  // The form: the choice comes before Type, and a new entry cannot be saved without it.
+  await day(18).hover();
+  await day(18).locator(".cal-add").click();
+  const labels = (await page.locator(".modal-panel .booking-grid .mini-field > label:first-child").allInnerTexts()).map((l) => l.toUpperCase());
+  expect(labels).toEqual(["TITLE", "DATE", "CUSTOMER / SUPPLIER", "TYPE", "PO / PFI NO.", "STATUS", "NOTE"]);
+  await expect(party.locator("option")).toHaveText(["Choose…", "Customer", "Supplier"]);
+  await expect(party).toHaveValue("");
+  await page.locator(".modal-panel input").first().fill(CUST);
+  await expect(page.getByRole("button", { name: "Save entry" })).toBeDisabled();
+  await party.selectOption("customer");
+  await expect(page.locator(".modal-body")).toContainText("Sale reps can see this entry (view only).");
+  await page.locator('.modal-panel select[aria-label="Type"]').selectOption("collection");
+  await page.locator(".modal-panel textarea").fill("3 pallets, gate B");
+  await page.getByRole("button", { name: "Save entry" }).click();
+  await day(18).hover();
+  await day(18).locator(".cal-add").click();
+  await page.locator(".modal-panel input").first().fill(SUPP);
+  await party.selectOption("supplier");
+  await expect(page.locator(".modal-body")).toContainText("Hidden from Sale reps.");
+  await page.getByRole("button", { name: "Save entry" }).click();
+  await expect(entry(CUST).locator(".cal-party")).toHaveText("C");
+  await expect(entry(SUPP).locator(".cal-party")).toHaveText("S");
+  await settled(page);
+
+  // An entry made before the choice existed: shown to the team with a question mark, editable, and saved without the choice if need be.
+  const iso = await day(18).getAttribute("data-date");
+  const pushed = await page.evaluate(async ([date, title]) => {
+    const now = new Date().toISOString();
+    const data = { id: "wh-e2e-before-the-choice", date, title, type: "delivery", refNo: "", note: "", done: false, createdBy: "e2e", createdAt: now };
+    return (await fetch("/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes: [{ kind: "warehouseEvents", id: data.id, createdAt: now, data }] }) })).status;
+  }, [iso, OLD]);
+  expect(pushed).toBe(200);
+  await page.reload();
+  await side(page, "Warehouse's Space").click();
+  await expect(entry(OLD).locator(".cal-party")).toHaveText("?");
+  await entry(OLD).click();
+  await expect(party).toHaveValue("");
+  await expect(page.locator(".modal-body")).toContainText("hidden from Sale reps until it is");
+  await page.locator(".modal-panel .done-tick input").check();
+  await page.getByRole("button", { name: "Save entry" }).click(); // ticking Done does not force the choice
+  await expect(entry(OLD)).toHaveClass(/is-done/);
+  await settled(page);
+
+  // Warehouse and admin see all three.
+  for (const who of [A.warehouse, A.admin]) {
+    await signIn(page, who.username, who.password);
+    if (who === A.admin) await side(page, "Warehouse's Space").click();
+    for (const t of [CUST, SUPP, OLD]) await expect(entry(t)).toHaveCount(1);
+  }
+
+  // A sale rep: the tab is there, with the customer entry only, and nothing to add or change.
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Warehouse's Space").click();
+  await expect(page.locator(".page-sub")).toContainText("view only");
+  await expect(entry(CUST)).toHaveCount(1);
+  await expect(entry(SUPP)).toHaveCount(0);
+  await expect(entry(OLD)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "New entry" })).toHaveCount(0);
+  await expect(page.locator(".cal-add")).toHaveCount(0);
+  await expect(page.locator(".cal-party")).toHaveCount(0);
+  await day(19).dblclick();
+  await expect(page.locator(".modal-panel")).toHaveCount(0);
+  await entry(CUST).click();
+  await expect(page.locator(".modal-title")).toHaveText(CUST);
+  await expect(page.locator(".modal-sub")).toContainText("view only");
+  await expect(page.locator(".modal-body")).toContainText("3 pallets, gate B");
+  await expect(page.locator(".modal-body")).toContainText("Collection");
+  await expect(page.locator(".modal-panel input, .modal-panel select, .modal-panel textarea")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /save entry|delete entry/i })).toHaveCount(0);
+  await close(page);
+  const state = await page.evaluate(async () => (await fetch("/api/state")).json());
+  expect(state.slices.warehouseEvents.map((e: any) => e.title)).toEqual(expect.arrayContaining([CUST]));
+  expect(state.slices.warehouseEvents.every((e: any) => e.party === "customer")).toBe(true);
+  expect(JSON.stringify(state)).not.toContain(SUPP); // the supplier entry never reached the rep's browser
+  expect(JSON.stringify(state)).not.toContain(OLD);
+  const refused = await page.evaluate(async ([title]) => (await fetch("/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes: [{ kind: "warehouseEvents", id: "wh-e2e-from-a-rep", data: { id: "wh-e2e-from-a-rep", date: "2026-09-29", title, party: "customer" } }] }) })).status, ["from a rep"]);
+  expect(refused).toBe(403);
+
+  // Moved to Supplier by the buyer: gone from the rep's calendar. Marked Customer: it appears.
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await side(page, "Warehouse's Space").click();
+  await entry(CUST).click();
+  await party.selectOption("supplier");
+  await page.getByRole("button", { name: "Save entry" }).click();
+  await entry(OLD).click();
+  await party.selectOption("customer");
+  await page.getByRole("button", { name: "Save entry" }).click();
+  await settled(page);
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Warehouse's Space").click();
+  await expect(entry(OLD)).toHaveCount(1);
+  await expect(entry(CUST)).toHaveCount(0);
+  await expect(entry(SUPP)).toHaveCount(0);
+
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await side(page, "Warehouse's Space").click();
+  await clean();
+  for (const t of [CUST, SUPP, OLD]) await expect(entry(t)).toHaveCount(0);
 });
