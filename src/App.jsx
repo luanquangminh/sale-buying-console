@@ -554,7 +554,7 @@ const GlobalStyle = () => (
     .done-tick.on { color:#1B5237; background:#D5EEDC; }
     .done-tick input { width:auto; min-width:0; margin:0; }
     .cal-dot { width:7px; height:7px; border-radius:50%; flex:none; background:#7C8891; }
-    .cal-party { display:inline-block; flex:none; min-width:13px; text-align:center; font-size:9px; font-weight:700; line-height:13px; border-radius:2px; background:rgba(255,255,255,.75); color:#3A4147; margin-right:3px; }
+    .cal-party { display:inline-block; flex:none; min-width:13px; text-align:center; font-size:9px; font-weight:700; line-height:13px; border-radius:2px; background:rgba(255,255,255,.75); color:#3A4147; margin-left:-1px; }
     .cal-party.unset { background:#FFF1B8; color:#6B5200; }
     select.wh-party.unset { border-color:#D9A400; background:#FFFBEA; }
     .cal-event.type-delivery .cal-dot { background:#2B5A8A; }
@@ -4250,8 +4250,8 @@ function WarehouseTab({ events, actions, userName, readOnly = false }) {
             <span><span className="cal-dot" style={{ display: "inline-block", marginRight: 4 }} />Other</span>
             <span><span className="cal-swatch todo" />Not done</span>
             <span><span className="cal-swatch done" />Done</span>
-            {!readOnly && <span><span className="cal-party">C</span>Customer</span>}
-            {!readOnly && <span><span className="cal-party">S</span>Supplier</span>}
+            {!readOnly && <span><span className="cal-party" style={{ marginRight: 4 }}>C</span>Customer</span>}
+            {!readOnly && <span><span className="cal-party" style={{ marginRight: 4 }}>S</span>Supplier</span>}
           </span>
           {!readOnly && <button className="btn btn-accent btn-sm" style={{ marginLeft: 8 }} onClick={() => openNew(today)}><Plus size={12} /> New entry</button>}
         </div>
