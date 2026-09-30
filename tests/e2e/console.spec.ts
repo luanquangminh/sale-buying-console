@@ -747,6 +747,49 @@ test("warehouse: the note box takes the full width and holds a long note", async
   await expect(page.locator(".cal-event", { hasText: TITLE })).toHaveCount(0);
 });
 
+test("warehouse: a long title wraps inside its day; the seven columns stay equal and under their weekday", async ({ page }) => {
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await side(page, "Warehouse's Space").click();
+  const TITLE = "E2E: PAUL BENTLEY WHOLESALE CONFECTIONER LTD collection 2 pallets";
+  const leftovers = page.locator(".cal-event", { hasText: "E2E: PAUL BENTLEY" });
+  while (await leftovers.count()) { await leftovers.first().click(); await page.getByRole("button", { name: "Delete entry" }).click(); await page.getByRole("button", { name: "Yes, delete" }).click(); }
+  const day = (n: number) => page.locator(".cal-day:not(.out)", { has: page.locator(".cal-date", { hasText: new RegExp(`^${n}$`) }) });
+  await day(17).hover();
+  await day(17).locator(".cal-add").click();
+  await page.locator(".modal-panel input").first().fill(TITLE);
+  await page.locator('.modal-panel select[aria-label="Customer or supplier"]').selectOption("customer");
+  await page.getByRole("button", { name: "Save entry" }).click();
+  const entry = day(17).locator(".cal-event", { hasText: TITLE });
+  await entry.waitFor();
+  const m = await page.evaluate(() => {
+    const grid = document.querySelector(".cal-grid") as HTMLElement;
+    const card = grid.parentElement as HTMLElement;
+    const days = [...grid.querySelectorAll(".cal-day")].slice(0, 7) as HTMLElement[];
+    const heads = [...document.querySelectorAll(".cal-head > div")] as HTMLElement[];
+    const text = [...document.querySelectorAll(".cal-event .cal-text")].find((t) => (t.textContent || "").startsWith("E2E: PAUL BENTLEY")) as HTMLElement;
+    const widths = days.map((d) => Math.round(d.getBoundingClientRect().width));
+    return {
+      widths,
+      headLefts: heads.map((h) => Math.round(h.getBoundingClientRect().left)),
+      dayLefts: days.map((d) => Math.round(d.getBoundingClientRect().left)),
+      gridRight: Math.round(grid.getBoundingClientRect().right), cardRight: Math.round(card.getBoundingClientRect().right),
+      textLines: Math.round(text.getBoundingClientRect().height / parseFloat(getComputedStyle(text).lineHeight)),
+      textCut: (text.closest(".cal-event") as HTMLElement).scrollHeight > (text.closest(".cal-event") as HTMLElement).clientHeight + 1,
+      shown: text.innerText,
+    };
+  });
+  expect(Math.max(...m.widths) - Math.min(...m.widths)).toBeLessThanOrEqual(2); // seven equal columns, whatever the titles
+  for (let i = 0; i < 7; i++) expect(Math.abs(m.headLefts[i] - m.dayLefts[i])).toBeLessThanOrEqual(2); // each weekday over its column
+  expect(m.gridRight).toBeLessThanOrEqual(m.cardRight + 1); // nothing pushed past the card
+  expect(m.textLines).toBeGreaterThanOrEqual(2); // the title wrapped
+  expect(m.textCut).toBe(false); // and none of it is cut off
+  expect(m.shown).toBe(TITLE);
+  await entry.click();
+  await page.getByRole("button", { name: "Delete entry" }).click();
+  await page.getByRole("button", { name: "Yes, delete" }).click();
+  await expect(page.locator(".cal-event", { hasText: TITLE })).toHaveCount(0);
+});
+
 test("container rate: forwarders typed before are offered when adding a rate", async ({ page }) => {
   await signIn(page, A.buyer.username, A.buyer.password);
   await side(page, "Container Rate").click();
