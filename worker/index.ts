@@ -4,7 +4,7 @@ import { authApp, currentUser } from "./auth";
 import { getVersion } from "./db";
 import { filesApp } from "./files";
 import { mcpApp } from "./mcp/index";
-import { buildSnapshot, isKind, kindAllowed } from "./records";
+import { buildSnapshot, isKind, kindAllowed, partlyAllowed, recordWritable } from "./records";
 import { applyChanges } from "./sync";
 import type { AppEnv } from "./types";
 
@@ -30,8 +30,15 @@ app.post("/sync", async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body || !Array.isArray(body.changes)) return c.json({ ok: false, error: "Expected { changes: [] }" }, 400);
   const user = c.get("user");
-  const denied = body.changes.find((ch: { kind?: unknown }) => isKind(ch.kind) && !kindAllowed(ch.kind, user));
+  const denied = body.changes.find((ch: { kind?: unknown }) => isKind(ch.kind) && !kindAllowed(ch.kind, user) && !partlyAllowed(ch.kind, user));
   if (denied) return c.json({ ok: false, error: `${denied.kind} is not available to the ${user.role} role` }, 403);
+  // a kind reached record by record: the record sent, and the one stored under that id, both have to be the user's
+  const partial = body.changes.filter((ch: { kind?: unknown }) => isKind(ch.kind) && !kindAllowed(ch.kind, user) && partlyAllowed(ch.kind, user));
+  for (const ch of partial) {
+    const stored = await c.env.DB.prepare("SELECT data FROM records WHERE kind = ? AND id = ?").bind(ch.kind, String(ch.id)).first<{ data: string }>();
+    const own = (!stored || recordWritable(ch.kind, user, JSON.parse(stored.data))) && (ch.deleted || recordWritable(ch.kind, user, ch.data));
+    if (!own) return c.json({ ok: false, error: `${ch.kind}: a ${user.role} may only write an entry of their own customers` }, 403);
+  }
   try {
     const version = await applyChanges(c.env.DB, body.changes, user);
     return c.json({ ok: true, version });

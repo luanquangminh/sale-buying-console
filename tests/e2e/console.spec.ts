@@ -632,7 +632,7 @@ test("AI agent link: phase-by-phase guide, key test against the real endpoint, p
   await expect(card.locator(".agent-test-result")).toHaveClass(/err/);
   await card.locator(".agent-pass input").fill(A.sale.password);
   await card.getByRole("button", { name: "Test my key" }).click();
-  await expect(card.locator(".agent-test-result")).toHaveText(/Connected — 5 tools/);
+  await expect(card.locator(".agent-test-result")).toHaveText(/Connected — 7 tools/); // a rep's tools, the calendar ones included
 
   // phase 3 follows the chosen assistant
   const phase3 = card.locator(".agent-phase").nth(2);
@@ -2364,13 +2364,16 @@ test("any change by Sale on an ordered line is flagged, and a PO row named more 
   await removeDoc(pfiRow, "Delete PFI");
 });
 
-test("warehouse calendar: every entry says customer or supplier; sale reps see the customer entries only, and only look", async ({ page }) => {
-  const CUST = "E2E: customer collection"; const SUPP = "E2E: supplier delivery"; const OLD = "E2E: entered before the choice";
+test("warehouse calendar: every entry says customer or supplier; a sale rep sees and adds the entries of their own customers only", async ({ page }) => {
+  const CUST = "E2E: customer collection"; const NOREP = "E2E: customer of no rep"; const SUPP = "E2E: supplier delivery"; const OLD = "E2E: entered before the choice"; const MINE = "E2E: added by the rep";
+  const TITLES = [CUST, NOREP, SUPP, OLD, MINE];
   const party = page.locator('.modal-panel select[aria-label="Customer or supplier"]');
+  const rep = page.locator('.modal-panel select[aria-label="Sale rep"]');
   const day = (n: number) => page.locator(".cal-day:not(.out)", { has: page.locator(".cal-date", { hasText: new RegExp(`^${n}$`) }) });
   const entry = (title: string) => page.locator(".cal-event", { hasText: title });
+  const labelsOfForm = async () => (await page.locator(".modal-panel .booking-grid .mini-field > label:first-child").allInnerTexts()).map((l) => l.toUpperCase());
   const clean = async () => {
-    for (const t of [CUST, SUPP, OLD]) while (await entry(t).count()) { await entry(t).first().click(); await page.getByRole("button", { name: "Delete entry" }).click(); await page.getByRole("button", { name: "Yes, delete" }).click(); }
+    for (const t of TITLES) while (await entry(t).count()) { await entry(t).first().click(); await page.getByRole("button", { name: "Delete entry" }).click(); await page.getByRole("button", { name: "Yes, delete" }).click(); }
     await settled(page);
   };
 
@@ -2378,28 +2381,40 @@ test("warehouse calendar: every entry says customer or supplier; sale reps see t
   await side(page, "Warehouse's Space").click();
   await clean();
 
-  // The form: the choice comes before Type, and a new entry cannot be saved without it.
+  // The form: the choice comes before Type, a new entry cannot be saved without it, and a customer entry names the rep whose customer it is.
   await day(18).hover();
   await day(18).locator(".cal-add").click();
-  const labels = (await page.locator(".modal-panel .booking-grid .mini-field > label:first-child").allInnerTexts()).map((l) => l.toUpperCase());
-  expect(labels).toEqual(["TITLE", "DATE", "CUSTOMER / SUPPLIER", "TYPE", "PO / PFI NO.", "STATUS", "NOTE"]);
+  expect(await labelsOfForm()).toEqual(["TITLE", "DATE", "CUSTOMER / SUPPLIER", "TYPE", "PO / PFI NO.", "STATUS", "NOTE"]);
   await expect(party.locator("option")).toHaveText(["Choose…", "Customer", "Supplier"]);
   await expect(party).toHaveValue("");
   await page.locator(".modal-panel input").first().fill(CUST);
   await expect(page.getByRole("button", { name: "Save entry" })).toBeDisabled();
   await party.selectOption("customer");
-  await expect(page.locator(".modal-body")).toContainText("Sale reps can see this entry (view only).");
+  expect(await labelsOfForm()).toEqual(["TITLE", "DATE", "CUSTOMER / SUPPLIER", "SALE REP", "TYPE", "PO / PFI NO.", "STATUS", "NOTE"]);
+  await expect(rep).toHaveValue("");
+  await expect(page.locator(".modal-body")).toContainText("No sale rep sees this entry");
+  await rep.selectOption({ label: A.sale.name });
+  await expect(page.locator(".modal-body")).toContainText(`${A.sale.name} sees this entry too (view only).`);
   await page.locator('.modal-panel select[aria-label="Type"]').selectOption("collection");
   await page.locator(".modal-panel textarea").fill("3 pallets, gate B");
   await page.getByRole("button", { name: "Save entry" }).click();
   await day(18).hover();
   await day(18).locator(".cal-add").click();
+  await page.locator(".modal-panel input").first().fill(NOREP);
+  await party.selectOption("customer");
+  await page.getByRole("button", { name: "Save entry" }).click();
+  await day(18).hover();
+  await day(18).locator(".cal-add").click();
   await page.locator(".modal-panel input").first().fill(SUPP);
   await party.selectOption("supplier");
+  await expect(rep).toHaveCount(0);
   await expect(page.locator(".modal-body")).toContainText("Hidden from Sale reps.");
   await page.getByRole("button", { name: "Save entry" }).click();
   await expect(entry(CUST).locator(".cal-party")).toHaveText("C");
+  await expect(entry(NOREP).locator(".cal-party")).toHaveText("C");
   await expect(entry(SUPP).locator(".cal-party")).toHaveText("S");
+  expect(await entry(CUST).getAttribute("title")).toContain(`${A.sale.name}'s customer`);
+  expect(await entry(NOREP).getAttribute("title")).toContain("no sale rep");
   await settled(page);
 
   // An entry made before the choice existed: shown to the team with a question mark, editable, and saved without the choice if need be.
@@ -2421,25 +2436,20 @@ test("warehouse calendar: every entry says customer or supplier; sale reps see t
   await expect(entry(OLD)).toHaveClass(/is-done/);
   await settled(page);
 
-  // Warehouse and admin see all three.
+  // Warehouse and admin see all four.
   for (const who of [A.warehouse, A.admin]) {
     await signIn(page, who.username, who.password);
     if (who === A.admin) await side(page, "Warehouse's Space").click();
-    for (const t of [CUST, SUPP, OLD]) await expect(entry(t)).toHaveCount(1);
+    for (const t of [CUST, NOREP, SUPP, OLD]) await expect(entry(t)).toHaveCount(1);
   }
 
-  // A sale rep: the tab is there, with the customer entry only, and nothing to add or change.
+  // The sale rep: the tab is there with the entry of their customer only; the others never reach their browser.
   await signIn(page, A.sale.username, A.sale.password);
   await side(page, "Warehouse's Space").click();
-  await expect(page.locator(".page-sub")).toContainText("view only");
+  await expect(page.locator(".page-sub")).toContainText("your customers");
   await expect(entry(CUST)).toHaveCount(1);
-  await expect(entry(SUPP)).toHaveCount(0);
-  await expect(entry(OLD)).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "New entry" })).toHaveCount(0);
-  await expect(page.locator(".cal-add")).toHaveCount(0);
+  for (const t of [NOREP, SUPP, OLD]) await expect(entry(t)).toHaveCount(0);
   await expect(page.locator(".cal-party")).toHaveCount(0);
-  await day(19).dblclick();
-  await expect(page.locator(".modal-panel")).toHaveCount(0);
   await entry(CUST).click();
   await expect(page.locator(".modal-title")).toHaveText(CUST);
   await expect(page.locator(".modal-sub")).toContainText("view only");
@@ -2448,32 +2458,66 @@ test("warehouse calendar: every entry says customer or supplier; sale reps see t
   await expect(page.locator(".modal-panel input, .modal-panel select, .modal-panel textarea")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /save entry|delete entry/i })).toHaveCount(0);
   await close(page);
+  const me = await page.evaluate(async () => (await fetch("/api/auth/me")).json());
   const state = await page.evaluate(async () => (await fetch("/api/state")).json());
   expect(state.slices.warehouseEvents.map((e: any) => e.title)).toEqual(expect.arrayContaining([CUST]));
-  expect(state.slices.warehouseEvents.every((e: any) => e.party === "customer")).toBe(true);
-  expect(JSON.stringify(state)).not.toContain(SUPP); // the supplier entry never reached the rep's browser
-  expect(JSON.stringify(state)).not.toContain(OLD);
-  const refused = await page.evaluate(async ([title]) => (await fetch("/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes: [{ kind: "warehouseEvents", id: "wh-e2e-from-a-rep", data: { id: "wh-e2e-from-a-rep", date: "2026-09-29", title, party: "customer" } }] }) })).status, ["from a rep"]);
-  expect(refused).toBe(403);
+  expect(state.slices.warehouseEvents.every((e: any) => e.party === "customer" && e.saleId === me.user.id)).toBe(true);
+  for (const t of [NOREP, SUPP, OLD]) expect(JSON.stringify(state)).not.toContain(t);
+  const refused = await page.evaluate(async () => {
+    const now = new Date().toISOString();
+    const push = async (data: any) => (await fetch("/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes: [{ kind: "warehouseEvents", id: data.id, createdAt: now, data }] }) })).status;
+    const base = { date: "2026-09-19", type: "delivery", refNo: "", note: "", done: false, createdBy: "e2e", createdAt: now };
+    return [await push({ ...base, id: "wh-e2e-rep-supplier", title: "E2E: a rep's supplier entry", party: "supplier" }), await push({ ...base, id: "wh-e2e-rep-norep", title: "E2E: a rep's entry for nobody", party: "customer", saleId: "" }), await push({ ...base, id: "wh-e2e-before-the-choice", title: "E2E: taken over", party: "customer", saleId: "sale-somebody-else" })];
+  });
+  expect(refused).toEqual([403, 403, 403]);
 
-  // Moved to Supplier by the buyer: gone from the rep's calendar. Marked Customer: it appears.
+  // The rep adds an entry: a customer entry of theirs, with no choice to make and no Done tick; the team sees it marked with the rep's name.
+  await expect(page.getByRole("button", { name: "New entry" })).toHaveCount(1);
+  await day(19).hover();
+  await day(19).locator(".cal-add").click();
+  await expect(page.locator(".modal-sub")).toContainText("for one of your customers");
+  expect(await labelsOfForm()).toEqual(["TITLE", "DATE", "TYPE", "PO / PFI NO.", "NOTE"]);
+  await expect(page.locator(".modal-body")).toContainText("Seen by Admin, Buyer and Warehouse, and by you.");
+  await page.locator(".modal-panel input").first().fill(MINE);
+  await page.locator('.modal-panel select[aria-label="Type"]').selectOption("collection");
+  await page.locator(".modal-panel textarea").fill("2 pallets, before noon");
+  await page.getByRole("button", { name: "Save entry" }).click();
+  await expect(day(19).locator(".cal-event", { hasText: MINE })).toHaveCount(1);
+  await settled(page);
+  await entry(MINE).click();
+  await expect(page.locator(".modal-sub")).toContainText("view only"); // once in, the rep does not change it
+  await expect(page.getByRole("button", { name: /save entry|delete entry/i })).toHaveCount(0);
+  await close(page);
+  await page.reload();
+  await side(page, "Warehouse's Space").click();
+  await expect(entry(MINE)).toHaveCount(1); // it came back from the server
+
+  // The buyer: the rep's entry is a customer entry of that rep. Moved to Supplier: gone from the rep's calendar. Marked as the rep's customer: it appears.
   await signIn(page, A.buyer.username, A.buyer.password);
   await side(page, "Warehouse's Space").click();
+  await expect(entry(MINE).locator(".cal-party")).toHaveText("C");
+  expect(await entry(MINE).getAttribute("title")).toContain(`${A.sale.name}'s customer`);
+  await entry(MINE).click();
+  await expect(party).toHaveValue("customer");
+  await expect(rep).toHaveValue(me.user.id);
+  await expect(page.locator(".modal-body")).toContainText("2 pallets, before noon");
+  await close(page);
   await entry(CUST).click();
   await party.selectOption("supplier");
   await page.getByRole("button", { name: "Save entry" }).click();
   await entry(OLD).click();
   await party.selectOption("customer");
+  await rep.selectOption({ label: A.sale.name });
   await page.getByRole("button", { name: "Save entry" }).click();
   await settled(page);
   await signIn(page, A.sale.username, A.sale.password);
   await side(page, "Warehouse's Space").click();
   await expect(entry(OLD)).toHaveCount(1);
-  await expect(entry(CUST)).toHaveCount(0);
-  await expect(entry(SUPP)).toHaveCount(0);
+  await expect(entry(MINE)).toHaveCount(1);
+  for (const t of [CUST, NOREP, SUPP]) await expect(entry(t)).toHaveCount(0);
 
   await signIn(page, A.buyer.username, A.buyer.password);
   await side(page, "Warehouse's Space").click();
   await clean();
-  for (const t of [CUST, SUPP, OLD]) await expect(entry(t)).toHaveCount(0);
+  for (const t of TITLES) await expect(entry(t)).toHaveCount(0);
 });

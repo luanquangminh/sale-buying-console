@@ -4196,8 +4196,8 @@ function JobsTab({ jobs, actions, userName }) {
 }
 
 /* ---------------- Warehouse's Space: delivery / collection calendar ----------------
-   Admin, Buyer and Warehouse see and edit every entry. Sale reps only look, and only at the entries marked as a customer's:
-   the server never sends them a supplier entry, nor one that is not marked yet. */
+   Admin, Buyer and Warehouse see and edit every entry. A sale rep sees and adds the entries of their own customers only:
+   the server never sends them a supplier entry, another rep's, nor one not marked yet; what they add is a customer entry of theirs. */
 
 const WH_TYPES = [
   { value: "delivery", label: "Delivery" },
@@ -4212,27 +4212,32 @@ const WH_PARTIES = [
 const WH_PARTY_LABEL = Object.fromEntries(WH_PARTIES.map((t) => [t.value, t.label]));
 const MAX_VISIBLE_EVENTS = 4;
 
-function WarehouseTab({ events, actions, userName, readOnly = false }) {
+function WarehouseTab({ events, actions, userName, me, reps = [] }) {
+  const isRep = me.role === "sale";
   const [cursor, setCursor] = useState(() => startOfMonth(todayLocalIso()));
-  const [editing, setEditing] = useState(null); // { id?, date, title, party, type, refNo, note, done }
+  const [editing, setEditing] = useState(null); // { id?, date, title, party, saleId, type, refNo, note, done }
   const [showAll, setShowAll] = useState(null); // ISO date whose cell shows every entry
   const today = todayLocalIso();
-  const list = (events || []).filter((e) => !readOnly || e.party === "customer"); // a rep's list holds customer entries only; checked here as well
+  const repName = (id) => (reps.find((r) => r.id === id) || {}).name || "";
+  const list = (events || []).filter((e) => !isRep || (e.party === "customer" && e.saleId === me.id)); // a rep's list holds their customers' entries only; checked here as well
   const byDay = {};
   for (const e of list) (byDay[e.date] ||= []).push(e);
   for (const k of Object.keys(byDay)) byDay[k].sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
   const grid = monthGrid(cursor);
   const countThisMonth = list.filter((e) => inMonth(e.date || "", cursor)).length;
 
-  const openNew = (date) => { if (!readOnly) setEditing({ date, title: "", party: "", type: "delivery", refNo: "", note: "", done: false }); };
-  const openEdit = (e) => setEditing({ id: e.id, date: e.date, title: e.title, party: WH_PARTY_LABEL[e.party] ? e.party : "", type: e.type || "delivery", refNo: e.refNo || "", note: e.note || "", done: !!e.done });
+  // A rep adds entries of their own customers; they cannot change an entry once it is in
+  const openNew = (date) => setEditing({ date, title: "", party: isRep ? "customer" : "", saleId: isRep ? me.id : "", type: "delivery", refNo: "", note: "", done: false });
+  const openEdit = (e) => setEditing({ id: e.id, date: e.date, title: e.title, party: WH_PARTY_LABEL[e.party] ? e.party : "", saleId: e.saleId || "", type: e.type || "delivery", refNo: e.refNo || "", note: e.note || "", done: !!e.done });
+  const viewing = Boolean(editing && editing.id && isRep);
   // A new entry has to say whose goods it is about. One entered before the choice existed can still be saved without: it stays hidden from Sale.
-  const canSave = Boolean(editing && editing.title.trim() && editing.date && (editing.id || editing.party));
+  const canSave = Boolean(editing && !viewing && editing.title.trim() && editing.date && (editing.id || editing.party));
   const saveEntry = () => {
-    if (readOnly || !canSave) return;
+    if (!canSave) return;
     const { id, ...fields } = editing;
-    if (id) actions.updateWarehouseEvent(id, { ...fields, title: fields.title.trim() });
-    else actions.addWarehouseEvent({ ...fields, createdBy: userName });
+    const entry = { ...fields, title: fields.title.trim(), saleId: fields.party === "customer" ? fields.saleId || "" : "" }; // a rep goes with a customer entry only
+    if (id) actions.updateWarehouseEvent(id, entry);
+    else actions.addWarehouseEvent({ ...entry, createdBy: userName });
     setCursor(startOfMonth(editing.date));
     setEditing(null);
   };
@@ -4252,10 +4257,10 @@ function WarehouseTab({ events, actions, userName, readOnly = false }) {
             <span><span className="cal-dot" style={{ display: "inline-block", marginRight: 4 }} />Other</span>
             <span><span className="cal-swatch todo" />Not done</span>
             <span><span className="cal-swatch done" />Done</span>
-            {!readOnly && <span><span className="cal-party" style={{ marginRight: 4 }}>C</span>Customer</span>}
-            {!readOnly && <span><span className="cal-party" style={{ marginRight: 4 }}>S</span>Supplier</span>}
+            {!isRep && <span><span className="cal-party" style={{ marginRight: 4 }}>C</span>Customer</span>}
+            {!isRep && <span><span className="cal-party" style={{ marginRight: 4 }}>S</span>Supplier</span>}
           </span>
-          {!readOnly && <button className="btn btn-accent btn-sm" style={{ marginLeft: 8 }} onClick={() => openNew(today)}><Plus size={12} /> New entry</button>}
+          <button className="btn btn-accent btn-sm" style={{ marginLeft: 8 }} onClick={() => openNew(today)}><Plus size={12} /> New entry</button>
         </div>
       </div>
 
@@ -4270,11 +4275,11 @@ function WarehouseTab({ events, actions, userName, readOnly = false }) {
               <div key={iso} className={`cal-day ${inMonth(iso, cursor) ? "" : "out"} ${iso === today ? "today" : ""}`} data-date={iso} onDoubleClick={() => openNew(iso)}>
                 <div className="cal-day-top">
                   <span className="cal-date">{Number(iso.slice(8, 10))}</span>
-                  {!readOnly && <button className="cal-add" title={`Add an entry on ${fmtDate(iso)}`} onClick={() => openNew(iso)}>+</button>}
+                  <button className="cal-add" title={`Add an entry on ${fmtDate(iso)}`} onClick={() => openNew(iso)}>+</button>
                 </div>
                 {shown.map((e) => (
-                  <button key={e.id} className={`cal-event type-${e.type || "other"} ${e.done ? "is-done" : "is-todo"}`} title={`${e.done ? "Done" : "Not done"} · ${WH_PARTY_LABEL[e.party] || "Customer or supplier not set"} · ${WH_TYPE_LABEL[e.type] || "Other"}${e.refNo ? ` · ${e.refNo}` : ""}${e.note ? `\n${e.note}` : ""}`} onClick={() => openEdit(e)}>
-                    <span className="cal-dot" />{!readOnly && <span className={`cal-party ${WH_PARTY_LABEL[e.party] ? "" : "unset"}`}>{e.party === "customer" ? "C" : e.party === "supplier" ? "S" : "?"}</span>}<span className="cal-text">{e.title}</span>
+                  <button key={e.id} className={`cal-event type-${e.type || "other"} ${e.done ? "is-done" : "is-todo"}`} title={`${e.done ? "Done" : "Not done"} · ${WH_PARTY_LABEL[e.party] || "Customer or supplier not set"}${!isRep && e.party === "customer" ? ` · ${repName(e.saleId) ? `${repName(e.saleId)}'s customer` : "no sale rep"}` : ""} · ${WH_TYPE_LABEL[e.type] || "Other"}${e.refNo ? ` · ${e.refNo}` : ""}${e.note ? `\n${e.note}` : ""}`} onClick={() => openEdit(e)}>
+                    <span className="cal-dot" />{!isRep && <span className={`cal-party ${WH_PARTY_LABEL[e.party] ? "" : "unset"}`}>{e.party === "customer" ? "C" : e.party === "supplier" ? "S" : "?"}</span>}<span className="cal-text">{e.title}</span>
                   </button>
                 ))}
                 {!expanded && dayEvents.length > MAX_VISIBLE_EVENTS && (
@@ -4287,7 +4292,7 @@ function WarehouseTab({ events, actions, userName, readOnly = false }) {
         </div>
       </div>
 
-      {editing && readOnly && (
+      {viewing && (
         <Modal title={editing.title} subtitle={`${fmtDate(editing.date)} · ${WH_TYPE_LABEL[editing.type] || "Other"} · view only`} onClose={() => setEditing(null)}>
           <div className="booking-grid wh-view" style={{ marginBottom: 6 }}>
             <div className="mini-field"><label>Date</label><div className="booking-value">{fmtDate(editing.date) || "—"}</div></div>
@@ -4299,10 +4304,10 @@ function WarehouseTab({ events, actions, userName, readOnly = false }) {
         </Modal>
       )}
 
-      {editing && !readOnly && (
+      {editing && !viewing && (
         <Modal
           title={editing.id ? "Entry" : "New entry"}
-          subtitle={`${fmtDate(editing.date) || "no date"}${editing.id ? "" : " · double-click a day to add there"}`}
+          subtitle={`${fmtDate(editing.date) || "no date"}${editing.id ? "" : " · double-click a day to add there"}${isRep ? " · for one of your customers" : ""}`}
           deleteLabel={editing.id ? "Delete entry" : undefined}
           onDelete={editing.id ? removeEntry : undefined}
           onClose={() => setEditing(null)}
@@ -4313,13 +4318,24 @@ function WarehouseTab({ events, actions, userName, readOnly = false }) {
               <input autoFocus placeholder="e.g. Siam PO 2424 · 2 pallets" value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); saveEntry(); } }} />
             </div>
             <div className="mini-field"><label>Date</label><DateField value={editing.date} onChange={(v) => setEditing({ ...editing, date: v })} /></div>
-            <div className="mini-field">
-              <label>Customer / Supplier</label>
-              <select className={`wh-party ${editing.party ? "" : "unset"}`} aria-label="Customer or supplier" value={editing.party} onChange={(e) => setEditing({ ...editing, party: e.target.value })}>
-                <option value="">Choose…</option>
-                {WH_PARTIES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-              </select>
-            </div>
+            {!isRep && (
+              <div className="mini-field">
+                <label>Customer / Supplier</label>
+                <select className={`wh-party ${editing.party ? "" : "unset"}`} aria-label="Customer or supplier" value={editing.party} onChange={(e) => setEditing({ ...editing, party: e.target.value })}>
+                  <option value="">Choose…</option>
+                  {WH_PARTIES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </div>
+            )}
+            {!isRep && editing.party === "customer" && (
+              <div className="mini-field">
+                <label>Sale rep</label>
+                <select aria-label="Sale rep" value={editing.saleId} onChange={(e) => setEditing({ ...editing, saleId: e.target.value })}>
+                  <option value="">No rep — Admin, Buyer, Warehouse only</option>
+                  {reps.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                </select>
+              </div>
+            )}
             <div className="mini-field">
               <label>Type</label>
               <select aria-label="Type" value={editing.type} onChange={(e) => setEditing({ ...editing, type: e.target.value })}>
@@ -4327,21 +4343,24 @@ function WarehouseTab({ events, actions, userName, readOnly = false }) {
               </select>
             </div>
             <div className="mini-field"><label>PO / PFI no.</label><input placeholder="2424" value={editing.refNo} onChange={(e) => setEditing({ ...editing, refNo: e.target.value })} /></div>
-            <div className="mini-field">
-              <label>Status</label>
-              <label className={`done-tick ${editing.done ? "on" : ""}`}>
-                <input type="checkbox" checked={editing.done} onChange={(e) => setEditing({ ...editing, done: e.target.checked })} /> Done
-              </label>
-            </div>
+            {!isRep && (
+              <div className="mini-field">
+                <label>Status</label>
+                <label className={`done-tick ${editing.done ? "on" : ""}`}>
+                  <input type="checkbox" checked={editing.done} onChange={(e) => setEditing({ ...editing, done: e.target.checked })} /> Done
+                </label>
+              </div>
+            )}
             <div className="mini-field" style={{ gridColumn: "1 / -1" }}><label>Note</label><textarea className="wh-note" rows={7} placeholder="Pallets, time window, driver…" value={editing.note} onChange={(e) => setEditing({ ...editing, note: e.target.value })} /></div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <button className="btn btn-accent" disabled={!canSave} onClick={saveEntry}><Save size={14} /> Save entry</button>
             <button className="btn btn-ghost" onClick={() => setEditing(null)}>Cancel</button>
             <span className="muted" style={{ fontSize: 12 }}>
-              {editing.party === "customer" ? "Sale reps can see this entry (view only)."
-                : editing.party === "supplier" ? "Hidden from Sale reps."
-                  : editing.id ? "Customer or supplier not chosen yet: hidden from Sale reps until it is." : "Choose Customer or Supplier to save. Sale reps see customer entries only."}
+              {isRep ? "Seen by Admin, Buyer and Warehouse, and by you. Ask them to change or remove it later."
+                : editing.party === "customer" ? (editing.saleId ? `${repName(editing.saleId) || "That rep"} sees this entry too (view only).` : "No sale rep sees this entry; choose the rep whose customer it is.")
+                  : editing.party === "supplier" ? "Hidden from Sale reps."
+                    : editing.id ? "Customer or supplier not chosen yet: hidden from Sale reps until it is." : "Choose Customer or Supplier to save. A sale rep sees the customer entries marked as theirs."}
             </span>
           </div>
         </Modal>
@@ -4353,7 +4372,7 @@ function WarehouseTab({ events, actions, userName, readOnly = false }) {
 /* ---------------- AI agent link (Admin, Sale, Buyer): connect Claude / ChatGPT through MCP ---------------- */
 
 const AGENT_TOOLS = {
-  sale: ["list_customers", "list_pfis", "get_pfi", "create_pfi", "add_pfi_lines"],
+  sale: ["list_customers", "list_pfis", "get_pfi", "create_pfi", "add_pfi_lines", "list_warehouse_events", "add_warehouse_event"],
   buyer: ["list_customers", "list_pfis", "get_pfi", "create_pfi", "add_pfi_lines", "list_pos", "get_po", "add_po_lines", "list_jobs", "add_job", "add_job_note", "list_warehouse_events", "add_warehouse_event"],
   admin: ["list_customers", "list_pfis", "get_pfi", "create_pfi", "add_pfi_lines", "list_pos", "get_po", "add_po_lines", "list_tasks", "add_task", "list_jobs", "add_job", "add_job_note", "list_warehouse_events", "add_warehouse_event"],
 };
@@ -4911,10 +4930,10 @@ function Shell({ user, onLogout, store }) {
               <div className="page-header">
                 <div>
                   <div className="page-title sm-display">Warehouse's Space</div>
-                  <div className="page-sub">{isSale ? "Deliveries and collections for customers — view only" : "Delivery / collection calendar — shared by Admin, Buyer and Warehouse; Sale sees the customer entries only"}</div>
+                  <div className="page-sub">{isSale ? "Deliveries and collections for your customers — add an entry; Admin, Buyer and Warehouse change or remove them" : "Delivery / collection calendar — shared by Admin, Buyer and Warehouse; a sale rep sees the customer entries marked as theirs"}</div>
                 </div>
               </div>
-              <WarehouseTab events={store.warehouseEvents} actions={store} userName={user.name} readOnly={isSale} />
+              <WarehouseTab events={store.warehouseEvents} actions={store} userName={user.name} me={user} reps={salesReps} />
             </>
           )}
 
@@ -5072,7 +5091,7 @@ export default function App() {
 
   /* Warehouse's Space (admin + buyer + warehouse): delivery / collection calendar */
   const addWarehouseEvent = (data) => {
-    const ev = { id: uid("wh"), date: data.date, title: (data.title || "").trim(), type: data.type || "delivery", refNo: data.refNo || "", note: data.note || "", done: !!data.done, party: WH_PARTY_LABEL[data.party] ? data.party : "", createdBy: data.createdBy || "", createdAt: new Date().toISOString() };
+    const ev = { id: uid("wh"), date: data.date, title: (data.title || "").trim(), type: data.type || "delivery", refNo: data.refNo || "", note: data.note || "", done: !!data.done, party: WH_PARTY_LABEL[data.party] ? data.party : "", saleId: data.party === "customer" ? data.saleId || "" : "", createdBy: data.createdBy || "", createdAt: new Date().toISOString() };
     setWarehouseEvents((prev) => [...(prev || []), ev]);
     return ev.id;
   };

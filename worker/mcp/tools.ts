@@ -3,7 +3,7 @@ import { z } from "zod";
 import { normalise } from "../ai/validate";
 import type { Bindings, User } from "../types";
 import { commit, findByNumber, makeLine, nowIso, rowsOfKind, scopeSaleId, uid, upsert } from "./data";
-import { kindAllowed } from "../records";
+import { kindAllowed, partlyAllowed, recordReadable } from "../records";
 import { parseDmy } from "../../src/dates.js";
 import { orderTotals } from "../../src/money.js";
 
@@ -178,22 +178,34 @@ export function buildServer(env: Bindings, user: User): McpServer {
   });
   }
 
-  if (kindAllowed("warehouseEvents", user)) {
-  server.tool("list_warehouse_events", "Warehouse's Space calendar entries (admin + buyer).", { month: z.string().optional().describe("yyyy-mm; default all") }, async ({ month }) => {
-    const no = denied("warehouseEvents", "Calendar entries"); if (no) return no;
-    const rows = await rowsOfKind(db, "warehouseEvents");
-    return text(rows.filter((r) => !month || String(r.data.date || "").startsWith(month)).sort((a, b) => String(a.data.date).localeCompare(String(b.data.date))).map((r) => ({ date: r.data.date, title: r.data.title, type: r.data.type, refNo: r.data.refNo, party: r.data.party || "", note: r.data.note, done: !!r.data.done, by: r.data.createdBy })));
+  // The calendar: every entry for admin, buyer and warehouse; a sale rep lists and adds the entries of their own customers only.
+  const isRep = user.role === "sale";
+  if (kindAllowed("warehouseEvents", user) || partlyAllowed("warehouseEvents", user)) {
+  server.tool("list_warehouse_events", isRep ? "Warehouse's Space calendar entries of your customers." : "Warehouse's Space calendar entries (admin + buyer).", { month: z.string().optional().describe("yyyy-mm; default all") }, async ({ month }) => {
+    const reps = new Map((await rowsOfKind(db, "accounts")).map((a) => [a.id, a.data.name]));
+    const rows = (await rowsOfKind(db, "warehouseEvents")).filter((r) => !isRep || recordReadable("warehouseEvents", user, r.data));
+    return text(rows.filter((r) => !month || String(r.data.date || "").startsWith(month)).sort((a, b) => String(a.data.date).localeCompare(String(b.data.date))).map((r) => ({ date: r.data.date, title: r.data.title, type: r.data.type, refNo: r.data.refNo, party: r.data.party || "", saleRep: reps.get(r.data.saleId) || "", note: r.data.note, done: !!r.data.done, by: r.data.createdBy })));
   });
 
-  server.tool("add_warehouse_event", "Add a delivery / collection entry to the Warehouse's Space calendar (admin + buyer). Date accepts dd/mm/yyyy or ISO.", {
+  server.tool("add_warehouse_event", isRep ? "Add a delivery / collection entry for one of your customers to the Warehouse's Space calendar. Date accepts dd/mm/yyyy or ISO." : "Add a delivery / collection entry to the Warehouse's Space calendar (admin + buyer). Date accepts dd/mm/yyyy or ISO.", {
     date: z.string(), title: z.string().min(1), type: z.enum(["delivery", "collection", "other"]).default("delivery"), refNo: z.string().optional().describe("PO / PFI number"), note: z.string().optional(),
-    party: z.enum(["customer", "supplier"]).optional().describe("Whose goods: a customer's or a supplier's. Sale reps see the customer entries only; an entry left unmarked is hidden from them."),
-  }, async ({ date, title, type, refNo, note, party }) => {
-    const no = denied("warehouseEvents", "Calendar entries"); if (no) return no;
+    ...(isRep ? {} : {
+      party: z.enum(["customer", "supplier"]).optional().describe("Whose goods: a customer's or a supplier's. An entry left unmarked is hidden from sale reps."),
+      saleRep: z.string().optional().describe("Customer entries: the name of the sale rep whose customer it is; that rep then sees the entry. Others see every entry."),
+    }),
+  }, async ({ date, title, type, refNo, note, party, saleRep }: { date: string; title: string; type: "delivery" | "collection" | "other"; refNo?: string; note?: string; party?: "customer" | "supplier"; saleRep?: string }) => {
     const iso = parseDmy(date); if (!iso) return fail("date must be dd/mm/yyyy or yyyy-mm-dd");
-    const data = { id: uid("wh"), date: iso, title: title.trim(), type, refNo: refNo || "", note: note || "", done: false, party: party || "", createdBy: user.name, createdAt: nowIso() };
+    let saleId = "";
+    if (isRep) { party = "customer"; saleId = user.id; }
+    else if (saleRep) {
+      if (party !== "customer") return fail("saleRep goes with a customer entry");
+      const rep = (await rowsOfKind(db, "accounts")).find((a) => a.data.role === "sale" && String(a.data.name).trim().toLowerCase() === saleRep.trim().toLowerCase());
+      if (!rep) return fail(`No sale rep named "${saleRep}"`);
+      saleId = rep.id;
+    }
+    const data = { id: uid("wh"), date: iso, title: title.trim(), type, refNo: refNo || "", note: note || "", done: false, party: party || "", saleId, createdBy: user.name, createdAt: nowIso() };
     await commit(db, [upsert("warehouseEvents", data.id, data)], user);
-    return text({ ok: true, date: iso, title: data.title, type, party: data.party });
+    return text({ ok: true, date: iso, title: data.title, type, party: data.party, saleId });
   });
   }
 

@@ -300,68 +300,84 @@ describe("warehouse role", () => {
   });
 });
 
-describe("warehouse calendar: customer and supplier entries", () => {
-  const ev = (id: string, title: string, party?: string) => ({ id, date: "2026-09-29", title, type: "delivery", refNo: "", note: "", done: false, ...(party === undefined ? {} : { party }), createdBy: "Admin", createdAt: "2026-09-29T00:00:00.000Z" });
-  const CUSTOMER = ev("wh-1700000000040-aaaaaa", "Corner Shop collection", "customer");
+describe("warehouse calendar: customer and supplier entries, and what a sale rep reaches", () => {
+  const REP = "sale-1700000000040-dddddd"; const OTHER = "sale-1700000000040-hhhhhh";
+  const ev = (id: string, title: string, party?: string, saleId = "") => ({ id, date: "2026-09-29", title, type: "delivery", refNo: "", note: "", done: false, ...(party === undefined ? {} : { party }), saleId, createdBy: "Admin", createdAt: "2026-09-29T00:00:00.000Z" });
+  const MINE = ev("wh-1700000000040-aaaaaa", "Corner Shop collection", "customer", REP);
+  const OTHERS = ev("wh-1700000000040-iiiiii", "Village Store delivery", "customer", OTHER);
+  const NOBODYS = ev("wh-1700000000040-jjjjjj", "Walk-in customer collection", "customer");
   const SUPPLIER = ev("wh-1700000000040-bbbbbb", "Sample Foods delivery", "supplier");
   const UNMARKED = ev("wh-1700000000040-cccccc", "Entered before the choice existed");
+  const ALL = [MINE, OTHERS, NOBODYS, SUPPLIER, UNMARKED];
   const titles = async (cookie: string) => ((await (await call(cookie, "/state")).json()).slices.warehouseEvents as any[]).map((e) => e.title).sort();
 
   async function setup() {
     const { cookie: admin } = await login();
     const accounts = [
-      { id: "sale-1700000000040-dddddd", role: "sale", name: "Rep Cal", username: "repcal", password: "pw-sale-test", createdAt: "2026-09-20T00:00:00.000Z" },
+      { id: REP, role: "sale", name: "Rep Cal", username: "repcal", password: "pw-sale-test", createdAt: "2026-09-20T00:00:00.000Z" },
+      { id: OTHER, role: "sale", name: "Other Rep", username: "othercal", password: "pw-sale-test", createdAt: "2026-09-20T00:00:00.000Z" },
       { id: "buyer-1700000000040-eeeeee", role: "buyer", name: "Buyer Cal", username: "buyercal", password: "pw-buyer-test", createdAt: "2026-09-20T00:00:00.000Z" },
       { id: "warehouse-1700000000040-ffffff", role: "warehouse", name: "WH Cal", username: "whcal", password: "pw-wh-test", createdAt: "2026-09-20T00:00:00.000Z" },
     ];
     await post(admin, "/sync", { changes: [
       ...accounts.map((a) => ({ kind: "accounts", id: a.id, createdAt: a.createdAt, data: a })),
-      ...[CUSTOMER, SUPPLIER, UNMARKED].map((e) => ({ kind: "warehouseEvents", id: e.id, createdAt: e.createdAt, data: e })),
+      ...ALL.map((e) => ({ kind: "warehouseEvents", id: e.id, createdAt: e.createdAt, data: e })),
+      { kind: "warehouseEvents", id: "wh-1700000000040-gggggg", deleted: true }, // the tests share one database: what an earlier one added goes
     ] });
-    return { admin, sale: (await login("repcal", "pw-sale-test")).cookie, buyer: (await login("buyercal", "pw-buyer-test")).cookie, wh: (await login("whcal", "pw-wh-test")).cookie };
+    return { admin, sale: (await login("repcal", "pw-sale-test")).cookie, other: (await login("othercal", "pw-sale-test")).cookie, buyer: (await login("buyercal", "pw-buyer-test")).cookie, wh: (await login("whcal", "pw-wh-test")).cookie };
   }
 
   it("admin, buyer and warehouse see every entry", async () => {
     const { admin, buyer, wh } = await setup();
     for (const cookie of [admin, buyer, wh]) {
       const seen = await titles(cookie);
-      for (const e of [CUSTOMER, SUPPLIER, UNMARKED]) expect(seen).toContain(e.title);
+      for (const e of ALL) expect(seen).toContain(e.title);
     }
   });
 
-  it("a sale rep receives the customer entries only: no supplier entry, and none that is not marked yet", async () => {
-    const { sale } = await setup();
+  it("a sale rep receives the customer entries marked as theirs only: not another rep's, not one without a rep, no supplier entry, none unmarked", async () => {
+    const { sale, other } = await setup();
     const { slices } = await (await call(sale, "/state")).json();
-    expect(slices.warehouseEvents.map((e: any) => e.title)).toEqual([CUSTOMER.title]);
-    expect(JSON.stringify(slices)).not.toContain("Sample Foods");
-    expect(JSON.stringify(slices)).not.toContain("Entered before the choice existed");
+    expect(slices.warehouseEvents.map((e: any) => e.title)).toEqual([MINE.title]);
+    for (const e of ALL) if (e !== MINE) expect(JSON.stringify(slices)).not.toContain(e.title);
+    expect(await titles(other)).toEqual([OTHERS.title]);
   });
 
-  it("a sale rep cannot add, change or delete an entry, customer or not", async () => {
+  it("a sale rep adds an entry of their own customers, and nothing else", async () => {
     const { admin, sale } = await setup();
     const before = await titles(admin);
+    const added = ev("wh-1700000000040-gggggg", "Corner Shop delivery 2 pallets", "customer", REP);
+    expect((await post(sale, "/sync", { changes: [{ kind: "warehouseEvents", id: added.id, createdAt: added.createdAt, data: added }] })).status).toBe(200);
+    expect(await titles(sale)).toEqual([MINE.title, added.title].sort());
+    expect(await titles(admin)).toEqual([...before, added.title].sort());
     for (const change of [
-      { kind: "warehouseEvents", id: "wh-1700000000040-gggggg", data: ev("wh-1700000000040-gggggg", "from a rep", "customer") },
-      { kind: "warehouseEvents", id: CUSTOMER.id, data: { ...CUSTOMER, title: "renamed by a rep" } },
-      { kind: "warehouseEvents", id: CUSTOMER.id, data: { ...CUSTOMER, party: "supplier" } },
-      { kind: "warehouseEvents", id: SUPPLIER.id, data: { ...SUPPLIER, party: "customer" } }, // cannot make a supplier entry visible to itself
-      { kind: "warehouseEvents", id: CUSTOMER.id, deleted: true },
+      { kind: "warehouseEvents", id: "wh-1700000000040-kkkkkk", data: ev("wh-1700000000040-kkkkkk", "for another rep", "customer", OTHER) },
+      { kind: "warehouseEvents", id: "wh-1700000000040-llllll", data: ev("wh-1700000000040-llllll", "for nobody", "customer") },
+      { kind: "warehouseEvents", id: "wh-1700000000040-mmmmmm", data: ev("wh-1700000000040-mmmmmm", "a supplier's", "supplier", REP) },
+      { kind: "warehouseEvents", id: "wh-1700000000040-nnnnnn", data: ev("wh-1700000000040-nnnnnn", "unmarked", undefined, REP) },
+      { kind: "warehouseEvents", id: OTHERS.id, data: { ...OTHERS, saleId: REP } }, // cannot take another rep's entry
+      { kind: "warehouseEvents", id: SUPPLIER.id, data: { ...SUPPLIER, party: "customer", saleId: REP } }, // nor make a supplier entry visible to itself
+      { kind: "warehouseEvents", id: MINE.id, data: { ...MINE, saleId: OTHER } }, // nor hand its own to another rep
+      { kind: "warehouseEvents", id: OTHERS.id, deleted: true },
+      { kind: "warehouseEvents", id: UNMARKED.id, deleted: true },
     ]) expect((await post(sale, "/sync", { changes: [change] })).status).toBe(403);
-    expect(await titles(admin)).toEqual(before);
+    expect(await titles(admin)).toEqual([...before, added.title].sort());
   });
 
-  it("follows the choice when it changes", async () => {
+  it("follows the choice and the rep when they change", async () => {
     const { admin, buyer, sale } = await setup();
-    expect((await post(buyer, "/sync", { changes: [{ kind: "warehouseEvents", id: UNMARKED.id, createdAt: UNMARKED.createdAt, data: { ...UNMARKED, party: "customer" } }] })).status).toBe(200);
-    expect(await titles(sale)).toEqual([UNMARKED.title, CUSTOMER.title].sort());
-    expect((await post(admin, "/sync", { changes: [{ kind: "warehouseEvents", id: CUSTOMER.id, createdAt: CUSTOMER.createdAt, data: { ...CUSTOMER, party: "supplier" } }] })).status).toBe(200);
+    expect((await post(buyer, "/sync", { changes: [{ kind: "warehouseEvents", id: UNMARKED.id, createdAt: UNMARKED.createdAt, data: { ...UNMARKED, party: "customer", saleId: REP } }] })).status).toBe(200);
+    expect(await titles(sale)).toEqual([UNMARKED.title, MINE.title].sort());
+    expect((await post(admin, "/sync", { changes: [{ kind: "warehouseEvents", id: MINE.id, createdAt: MINE.createdAt, data: { ...MINE, saleId: OTHER } }] })).status).toBe(200);
     expect(await titles(sale)).toEqual([UNMARKED.title]);
+    expect((await post(admin, "/sync", { changes: [{ kind: "warehouseEvents", id: UNMARKED.id, createdAt: UNMARKED.createdAt, data: { ...UNMARKED, party: "supplier", saleId: REP } }] })).status).toBe(200);
+    expect(await titles(sale)).toEqual([]);
   });
 
   it("takes nothing but the word customer as a customer entry", async () => {
     const { admin, sale } = await setup();
-    const odd = ["Customer", "CUSTOMER", " customer", "customers", "", null, true, 1].map((party, i) => ({ ...ev(`wh-1700000000041-${String(i).padStart(6, "0")}`, `odd ${i}`), party }));
+    const odd = ["Customer", "CUSTOMER", " customer", "customers", "", null, true, 1].map((party, i) => ({ ...ev(`wh-1700000000041-${String(i).padStart(6, "0")}`, `odd ${i}`, undefined, REP), party }));
     await post(admin, "/sync", { changes: odd.map((e) => ({ kind: "warehouseEvents", id: e.id, createdAt: e.createdAt, data: e })) });
-    expect(await titles(sale)).toEqual([CUSTOMER.title]);
+    expect(await titles(sale)).toEqual([MINE.title]);
   });
 });

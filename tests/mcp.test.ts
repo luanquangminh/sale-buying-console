@@ -125,7 +125,7 @@ describe("MCP tools for the extension tabs", () => {
     const list = toolResult(await rpc("tools/call", { name: "list_tasks", arguments: {} }));
     expect(list.map((t: any) => t.task)).toEqual(["Chase COO for PFI 3200"]);
     const repTools = (await rpc("tools/list", {}, "rep:pw-sale-test")).json.result.tools.map((t: any) => t.name).sort();
-    expect(repTools).toEqual(["add_pfi_lines", "create_pfi", "get_pfi", "list_customers", "list_pfis"]); // a rep is not offered tools it cannot use
+    expect(repTools).toEqual(["add_pfi_lines", "add_warehouse_event", "create_pfi", "get_pfi", "list_customers", "list_pfis", "list_warehouse_events"]); // a rep is not offered tools it cannot use; the calendar tools reach their own customers' entries
     const buyerTools = (await rpc("tools/list", {}, "buyerx:pw-buyer-test")).json.result.tools.map((t: any) => t.name);
     expect(buyerTools).toHaveLength(13);
     expect(buyerTools).not.toContain("add_task");
@@ -140,7 +140,16 @@ describe("MCP tools for the extension tabs", () => {
     expect(jobs[0].notes[0]).toMatchObject({ by: "Buyer Team", status: "pending", text: "Asked Maersk" });
     expect(toolResult(await rpc("tools/call", { name: "add_warehouse_event", arguments: { date: "25/09/2026", title: "Siam PO 2424", type: "collection", refNo: "2424" } }, key))).toMatchObject({ ok: true, date: "2026-09-25" });
     const events = toolResult(await rpc("tools/call", { name: "list_warehouse_events", arguments: { month: "2026-09" } }, key));
-    expect(events).toEqual([{ date: "2026-09-25", title: "Siam PO 2424", type: "collection", refNo: "2424", party: "", note: "", done: false, by: "Buyer Team" }]);
+    expect(events).toEqual([{ date: "2026-09-25", title: "Siam PO 2424", type: "collection", refNo: "2424", party: "", saleRep: "", note: "", done: false, by: "Buyer Team" }]);
+    // a customer entry for a rep's customer: the rep's agent lists it, and adds one of its own; the buyer sees both, the rep never the supplier one
+    expect(toolResult(await rpc("tools/call", { name: "add_warehouse_event", arguments: { date: "26/09/2026", title: "Corner Shop collection", party: "customer", saleRep: "rep" } }, key))).toMatchObject({ ok: true, party: "customer" });
+    expect(toolResult(await rpc("tools/call", { name: "add_warehouse_event", arguments: { date: "26/09/2026", title: "Sample Foods delivery", party: "supplier" } }, key))).toMatchObject({ ok: true, party: "supplier" });
+    expect((await rpc("tools/call", { name: "add_warehouse_event", arguments: { date: "26/09/2026", title: "x", party: "customer", saleRep: "Nobody" } }, key)).json.result.isError).toBe(true);
+    expect(toolResult(await rpc("tools/call", { name: "add_warehouse_event", arguments: { date: "27/09/2026", title: "Corner Shop delivery 2 pallets", type: "delivery" } }, "rep:pw-sale-test"))).toMatchObject({ ok: true, party: "customer" });
+    const repSees = toolResult(await rpc("tools/call", { name: "list_warehouse_events", arguments: {} }, "rep:pw-sale-test"));
+    expect(repSees.map((e: any) => e.title)).toEqual(["Corner Shop collection", "Corner Shop delivery 2 pallets"]);
+    const buyerSees = toolResult(await rpc("tools/call", { name: "list_warehouse_events", arguments: {} }, key));
+    expect(buyerSees.map((e: any) => [e.title, e.party, e.saleRep]).sort()).toEqual([["Corner Shop collection", "customer", "Rep"], ["Corner Shop delivery 2 pallets", "customer", "Rep"], ["Sample Foods delivery", "supplier", ""], ["Siam PO 2424", "", ""]]);
     const bad = await rpc("tools/call", { name: "add_warehouse_event", arguments: { date: "31/02/2026", title: "x" } }, key);
     expect(bad.json.result.isError).toBe(true);
   });

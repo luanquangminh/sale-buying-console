@@ -15,7 +15,7 @@ export const KINDS = {
   accounts: { slice: "accounts", ascending: true },
   maiTasks: { slice: "maiTasks", roles: ["admin"] },
   buyerJobs: { slice: "buyerJobs", roles: ["admin", "buyer"] },
-  warehouseEvents: { slice: "warehouseEvents", roles: ["admin", "buyer", "warehouse"] }, // sale reps read the customer entries only (recordReadable)
+  warehouseEvents: { slice: "warehouseEvents", roles: ["admin", "buyer", "warehouse"] }, // a sale rep reads and adds the customer entries marked as theirs (recordReadable, recordWritable)
   customerMemos: { slice: "customerMemos", roles: ["admin", "sale"] }, // a rep's own notes on a customer: never sent to the buyer
   paymentTracks: { slice: "paymentTracks", roles: ["admin"] }, // Customer Balance tab; add a role here and in the sidebar to open it to others
 } as const;
@@ -30,12 +30,18 @@ export const kindAllowed = (kind: Kind, user: User) => {
   return roles === null || roles.includes(user.role);
 };
 
+/** The kinds a role reaches record by record, not as a whole (see recordReadable / recordWritable). */
+export const partlyAllowed = (kind: Kind, user: User) => kind === "warehouseEvents" && user.role === "sale";
+
 /**
- * What a role may read of a kind it cannot write. The warehouse calendar is shown to sale reps, but only the
- * entries marked as a customer's: supplier entries, and entries not marked yet, never leave the server for them.
+ * What a sale rep may read of the warehouse calendar: the entries marked as a customer's and as theirs. Supplier entries,
+ * entries of another rep's customers, and entries not marked yet never leave the server for them.
  */
 export const recordReadable = (kind: Kind, user: User, rec: any) =>
-  kind === "warehouseEvents" && user.role === "sale" && Boolean(rec) && rec.party === "customer";
+  partlyAllowed(kind, user) && Boolean(rec) && rec.party === "customer" && rec.saleId === user.id;
+
+/** What a sale rep may write to the warehouse calendar: an entry of their own customers, and nothing else. */
+export const recordWritable = (kind: Kind, user: User, rec: any) => recordReadable(kind, user, rec);
 
 type Row = { kind: string; id: string; sale_id: string | null; data: string };
 
@@ -49,7 +55,7 @@ export async function buildSnapshot(db: D1Database, user: User) {
   for (const row of results) {
     if (!isKind(row.kind)) continue;
     const full = kindAllowed(row.kind, user);
-    if (!full && !(row.kind === "warehouseEvents" && user.role === "sale")) continue;
+    if (!full && !partlyAllowed(row.kind, user)) continue;
     const cfg = KINDS[row.kind];
     let rec = JSON.parse(row.data);
     if (!full && !recordReadable(row.kind, user, rec)) continue;
