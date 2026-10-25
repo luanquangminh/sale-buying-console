@@ -6,12 +6,12 @@ import { extractPdfForImport, imageToDataUrl } from "./pdfExtract";
 import { fmtDate, fmtMonth, parseDmy, parseMonth, todayIso } from "./dates";
 import { floorStockOf, keepRemoved, lineReceivedTotal, lineStatusSource, pfiTrackingStatus, rollupStatusLabel, TRACKING_TONE } from "./status";
 import { matchNames, uniqueNames } from "./suggest";
-import { orderTotals, vatOption, VAT_OPTIONS } from "./money";
+import { fmtNumber, numOrNull, orderTotals, vatOption, VAT_OPTIONS } from "./money";
 import { DUE_TONE, dueLabel, dueState, groupByCustomer, PAY_STATUSES, PAY_STATUS_TONE, payStatus } from "./payments";
 import { sortLanesByPod } from "./lanes";
 import { lineCover, pfiLineCover, pfiShortages, poShortages } from "./allocation";
-import { PAY_COMPANIES, diffTone, difference, fmtDiff, forSale, isConfirmed, newestFirst, numOrNull as payNumber, splitExpected, toConfirmCount, unmatched } from "./paymentsReceived";
-import { homeFor, pathFor, stateFor } from "./routes";
+import { PAY_COMPANIES, diffTone, difference, fmtDiff, forSale, isConfirmed, splitExpected, toConfirmCount, unmatched } from "./paymentsReceived";
+import { homeFor, pathFor, sectionAllowed, stateFor } from "./routes";
 import { placePanel } from "./popup";
 import { acknowledged, changeSinceSent, describeChanges, describeWas, lineChange, removedSinceSent, stampSent } from "./sentMark";
 import { groupBySale, hasSaleChange } from "./orderGroups";
@@ -136,10 +136,10 @@ function timeAgo(iso) {
   return `${day}d ago`;
 }
 function formatMoney(amount, currency) {
-  const sym = CURRENCY_SYMBOL[currency] || "";
-  const n = Number(amount || 0);
-  return `${sym}${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `${CURRENCY_SYMBOL[currency] || ""}${fmtNumber(Number(amount || 0))}`;
 }
+/** The name of a rep by id, "" when unknown. */
+const nameOf = (reps, id) => (reps.find((r) => r.id === id) || {}).name || "";
 function computeAmount(qty, rate) {
   const q = parseFloat(qty) || 0;
   const r = parseFloat(rate) || 0;
@@ -183,9 +183,6 @@ function poCode(id) {
 }
 function sameName(a, b) {
   return (a || "").trim().toLowerCase() === (b || "").trim().toLowerCase();
-}
-function numOrNull(v) {
-  return v === "" || v === undefined || v === null ? null : Number(v);
 }
 function receiptPoLabel(r) {
   return r.poNo ? `PO ${r.poNo}` : "Draft PO";
@@ -560,7 +557,7 @@ const GlobalStyle = () => (
     .cal-dot { width:7px; height:7px; border-radius:50%; flex:none; background:#7C8891; }
     .cal-event .cal-dot { display:inline-block; vertical-align:middle; margin:-2px 5px 0 0; }
     .cal-event .cal-party { display:inline-block; vertical-align:middle; margin:-1px 4px 0 0; }
-    .sync-notice { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px; padding:10px 14px; border:1px solid #F2CFCA; border-left:3px solid #C64B4B; border-radius:5px; background:#FFF4F2; color:#5A2A2A; font-size:12.5px; }
+    .sync-notice { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
     .sync-notice .btn { margin-left:auto; }
     .pay-grid > div > label { display:block; }
     .pay-grid .done-tick { margin-top:0; }
@@ -4247,7 +4244,7 @@ function WarehouseTab({ events, actions, userName, me, reps = [] }) {
   const [editing, setEditing] = useState(null); // { id?, date, title, party, saleId, type, refNo, note, done }
   const [showAll, setShowAll] = useState(null); // ISO date whose cell shows every entry
   const today = todayLocalIso();
-  const repName = (id) => (reps.find((r) => r.id === id) || {}).name || "";
+  const repName = (id) => nameOf(reps, id);
   const list = (events || []).filter((e) => !isRep || (e.party === "customer" && e.saleId === me.id)); // a rep's list holds their customers' entries only; checked here as well
   const byDay = {};
   for (const e of list) (byDay[e.date] ||= []).push(e);
@@ -4404,8 +4401,10 @@ function WarehouseTab({ events, actions, userName, me, reps = [] }) {
 
 const EMPTY_EXPECTED = { date: "", company: PAY_COMPANIES[0], currency: CURRENCIES[0], expectedAmount: "", sender: "", customer: "", proof: false, invNo: "" };
 const EMPTY_RECEIVED = { receivedDate: "", company: PAY_COMPANIES[0], currency: CURRENCIES[0], receivedAmount: "", sender: "", customer: "", qb: { date: "", time: "", done: false, addedBy: "" } };
-const fmtAmount = (n) => (n === "" || n === undefined || n === null ? "—" : Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-const amountOk = (v) => v !== "" && v !== undefined && v !== null && Number.isFinite(Number(v)) && Number(v) > 0;
+const fmtAmount = (n) => (numOrNull(n) === null ? "—" : fmtNumber(n));
+const amountOk = (v) => (numOrNull(v) ?? 0) > 0;
+/** A row in the shape of a form: the form's keys, filled from the row. */
+const draftOf = (empty, row) => ({ ...Object.fromEntries(Object.keys(empty).map((k) => [k, row[k] ?? empty[k]])), ...(empty.qb ? { qb: { ...empty.qb, ...(row.qb || {}) } } : {}) });
 
 function ExpectedFields({ value, onChange, onEnter }) {
   const set = (patch) => onChange({ ...value, ...patch });
@@ -4457,53 +4456,73 @@ function ReceivedFields({ value, onChange, expected }) {
 }
 
 /** The delete control of a payment row: one click asks, the second removes. */
+/** The delete control of a payment row: one click asks, the second removes. */
 function PayRemove({ id, label = "Delete", removing, onAsk, onCancel, onRemove }) {
   if (removing !== id) return <button className="btn-icon" title={label} onClick={() => onAsk(id)}><Trash2 size={14} /></button>;
   return <span className="pay-confirm-del"><button className="btn btn-sm btn-danger" onClick={() => onRemove(id)}>Yes, {label.toLowerCase()}</button><button className="btn btn-sm" onClick={onCancel}>Cancel</button></span>;
 }
-const PayDiff = ({ value }) => <span className={`ro pay-diff tone-${diffTone(value)}`}>{value === null || value === undefined ? "—" : fmtDiff(value)}</span>;
-
+const PayDiff = ({ value }) => <span className={`ro pay-diff tone-${diffTone(value)}`}>{fmtDiff(value) || "—"}</span>;
 const qbText = (qb) => {
   if (!qb) return "—";
   const when = [fmtDate(qb.date), qb.time].filter(Boolean).join(" ");
   return `${qb.done ? "Done" : "Not yet"}${when ? ` · ${when}` : ""}${qb.addedBy ? ` · ${qb.addedBy}` : ""}`;
 };
+/** One list of payments: the card, the empty states, the table scaffold; each tab supplies its header cells and a row renderer. */
+function PayTable({ list, rows, emptyText, head, children }) {
+  const empty = (text) => <div className="empty"><CreditCard size={30} /><div style={{ fontWeight: 600 }}>{text}</div></div>;
+  return (
+    <div className="card">
+      {list.length === 0 ? empty(emptyText) : rows.length === 0 ? empty("No payment matches that search") : (
+        <div className="table-scroll">
+          <table className="data-table pay-table" style={{ minWidth: "auto" }}><thead><tr>{head}</tr></thead><tbody>{rows.map(children)}</tbody></table>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actions, userName, reps = [] }) {
   const isRep = mode === "sale";
   const today = todayLocalIso();
+  const freshExpected = (over = {}) => ({ ...EMPTY_EXPECTED, date: today, ...over });
+  const freshReceived = (over = {}) => ({ ...EMPTY_RECEIVED, receivedDate: today, ...over, qb: { ...EMPTY_RECEIVED.qb, addedBy: userName || "", ...(over.qb || {}) } });
   const [tab, setTab] = useState(isRep ? "expected" : "toconfirm");
-  const [form, setForm] = useState(() => ({ ...EMPTY_EXPECTED, date: today }));
-  const [loose, setLoose] = useState(() => ({ ...EMPTY_RECEIVED, receivedDate: today, qb: { ...EMPTY_RECEIVED.qb, addedBy: userName || "" } }));
-  const [editing, setEditing] = useState(null); // { kind: "expected" | "received", row, draft, expected? }
+  const [form, setForm] = useState(freshExpected);
+  const [loose, setLoose] = useState(freshReceived); // the accountant's unannounced money
+  const [editing, setEditing] = useState(null); // { kind: "expected" | "received", row, draft, expected }
   const [confirming, setConfirming] = useState(null); // { expected, draft }
   const [removing, setRemoving] = useState(null); // the id whose delete awaits a second click
   const [find, setFind] = useState("");
-  const repName = (id) => (reps.find((r) => r.id === id) || {}).name || "";
+  const repName = (id) => nameOf(reps, id);
 
-  const mine = isRep ? forSale(expected, saleId) : expected || [];
-  const { pending, confirmed } = splitExpected(mine, received);
-  const unannounced = isRep ? [] : unmatched(received, expected || []); // a receipt whose expected payment is gone shows here too
+  const mine = React.useMemo(() => (isRep ? forSale(expected, saleId) : expected || []), [expected, isRep, saleId]);
+  const { pending, confirmed } = React.useMemo(() => splitExpected(mine, received), [mine, received]);
+  const unannounced = React.useMemo(() => (isRep ? [] : unmatched(received, expected || [])), [isRep, received, expected]); // a receipt whose expected payment is gone shows here too
+  const TABS = isRep
+    ? [["expected", "Expected", pending], ["confirmed", "Confirmed", confirmed]]
+    : [["toconfirm", "To confirm", pending], ["confirmed", "Confirmed", confirmed], ["unmatched", "Unmatched", unannounced]];
+  const list = (TABS.find(([key]) => key === tab) || TABS[0])[2];
   const fq = find.trim().toLowerCase();
-  const matches = (r) => !fq || [r.customer, r.sender, r.invNo, r.saleName, repName(r.saleId), r.expectedAmount, r.receivedAmount, r.confirmation && r.confirmation.sender].some((f) => String(f || "").toLowerCase().includes(fq));
+  const rows = fq ? list.filter((r) => [r.customer, r.sender, r.invNo, r.saleName, repName(r.saleId), r.expectedAmount, r.receivedAmount, r.confirmation && r.confirmation.sender].some((f) => String(f || "").toLowerCase().includes(fq))) : list;
 
   const addExpected = () => {
     if (!amountOk(form.expectedAmount) || !form.customer.trim()) return;
     actions.addExpectedPayment({ ...form, saleId, saleName, createdBy: userName });
-    setForm({ ...EMPTY_EXPECTED, date: today, company: form.company, currency: form.currency });
+    setForm(freshExpected({ company: form.company, currency: form.currency }));
   };
   const addLoose = () => {
     if (!amountOk(loose.receivedAmount)) return;
     actions.addReceivedPayment({ ...loose, expectedId: "", confirmedBy: userName });
-    setLoose({ ...EMPTY_RECEIVED, receivedDate: today, company: loose.company, currency: loose.currency, qb: { ...EMPTY_RECEIVED.qb, addedBy: userName || "" } });
+    setLoose(freshReceived({ company: loose.company, currency: loose.currency }));
   };
-  const openConfirm = (e) => setConfirming({ expected: e, draft: { ...EMPTY_RECEIVED, receivedDate: today, company: e.company, currency: e.currency, receivedAmount: e.expectedAmount, sender: e.sender || "", qb: { ...EMPTY_RECEIVED.qb, addedBy: userName || "" } } });
+  const openConfirm = (e) => setConfirming({ expected: e, draft: freshReceived({ company: e.company, currency: e.currency, receivedAmount: e.expectedAmount, sender: e.sender || "" }) });
   const saveConfirm = () => {
     if (!confirming || !amountOk(confirming.draft.receivedAmount)) return;
-    actions.addReceivedPayment({ ...confirming.draft, expectedId: confirming.expected.id, customer: confirming.expected.customer, confirmedBy: userName });
+    actions.addReceivedPayment({ ...confirming.draft, expectedId: confirming.expected.id, saleId: confirming.expected.saleId, customer: confirming.expected.customer, confirmedBy: userName });
     setConfirming(null);
     setTab("confirmed");
   };
+  const openEdit = (kind, row, exp = null) => setEditing({ kind, row, expected: exp, draft: draftOf(kind === "expected" ? EMPTY_EXPECTED : EMPTY_RECEIVED, row) });
   const saveEdit = () => {
     if (!editing) return;
     if (editing.kind === "expected") {
@@ -4515,26 +4534,13 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
   };
   const removeExpected = (id) => { actions.deleteExpectedPayment(id); setRemoving(null); };
   const removeReceived = (id) => { actions.deleteReceivedPayment(id); setRemoving(null); };
-  const askRemove = (id) => setRemoving(id); const cancelRemove = () => setRemoving(null);
-  const empty = (text) => <div className="empty"><CreditCard size={30} /><div style={{ fontWeight: 600 }}>{text}</div></div>;
-
-  const pendingRows = pending.filter(matches); const confirmedRows = confirmed.filter(matches); const looseRows = unannounced.filter(matches);
+  const remover = (onRemove, label) => (id) => <PayRemove id={id} label={label} removing={removing} onAsk={setRemoving} onCancel={() => setRemoving(null)} onRemove={onRemove} />;
+  const removeExpectedCtl = remover(removeExpected); const removeReceivedCtl = remover(removeReceived); const undoCtl = remover(removeReceived, "Undo confirmation");
 
   return (
     <div>
       <div className="pill-tabs">
-        {isRep ? (
-          <>
-            <div className={`pill ${tab === "expected" ? "active" : ""}`} onClick={() => setTab("expected")}>Expected {pending.length > 0 && <span className="pill-count">{pending.length}</span>}</div>
-            <div className={`pill ${tab === "confirmed" ? "active" : ""}`} onClick={() => setTab("confirmed")}>Confirmed {confirmed.length > 0 && <span className="pill-count">{confirmed.length}</span>}</div>
-          </>
-        ) : (
-          <>
-            <div className={`pill ${tab === "toconfirm" ? "active" : ""}`} onClick={() => setTab("toconfirm")}>To confirm {pending.length > 0 && <span className="pill-count">{pending.length}</span>}</div>
-            <div className={`pill ${tab === "confirmed" ? "active" : ""}`} onClick={() => setTab("confirmed")}>Confirmed {confirmed.length > 0 && <span className="pill-count">{confirmed.length}</span>}</div>
-            <div className={`pill ${tab === "unmatched" ? "active" : ""}`} onClick={() => setTab("unmatched")}>Unmatched {unannounced.length > 0 && <span className="pill-count">{unannounced.length}</span>}</div>
-          </>
-        )}
+        {TABS.map(([key, label, l]) => <div key={key} className={`pill ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>{label} {l.length > 0 && <span className="pill-count">{l.length}</span>}</div>)}
       </div>
 
       {isRep && tab === "expected" && (
@@ -4561,109 +4567,72 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
       )}
 
       <div className="overview-bar">
-        <FindBar value={find} onChange={setFind} placeholder="Find by customer, sender, INV or rep…" total={tab === "confirmed" ? confirmed.length : tab === "unmatched" ? unannounced.length : pending.length} shown={tab === "confirmed" ? confirmedRows.length : tab === "unmatched" ? looseRows.length : pendingRows.length} />
+        <FindBar value={find} onChange={setFind} placeholder="Find by customer, sender, INV or rep…" total={list.length} shown={rows.length} />
       </div>
 
       {(tab === "expected" || tab === "toconfirm") && (
-        <div className="card">
-          {pending.length === 0 ? empty(isRep ? "Nothing expected right now" : "Nothing to confirm") : pendingRows.length === 0 ? empty("No payment matches that search") : (
-            <div className="table-scroll">
-              <table className="data-table pay-table" style={{ minWidth: "auto" }}>
-                <thead><tr><th>Date</th>{!isRep && <th>Sale rep</th>}<th>Customer</th><th>Company</th><th>Currency</th><th className="num">Expected</th><th>Sender</th><th>Proof</th><th>INV</th><th /></tr></thead>
-                <tbody>
-                  {pendingRows.map((e) => (
-                    <tr key={e.id} className="pay-row pending">
-                      <td className="ro">{fmtDate(e.date) || "—"}</td>
-                      {!isRep && <td className="ro">{e.saleName || repName(e.saleId) || "—"}</td>}
-                      <td className="ro" style={{ fontWeight: 600 }}>{e.customer || "—"}</td>
-                      <td className="ro">{e.company}</td>
-                      <td className="ro">{e.currency}</td>
-                      <td className="ro num sm-mono">{fmtAmount(e.expectedAmount)}</td>
-                      <td className="ro">{e.sender || "—"}</td>
-                      <td><span className={`chip ${e.proof ? "green" : "gray"}`}>{e.proof ? "Yes" : "No"}</span></td>
-                      <td className="ro">{e.invNo || "—"}</td>
-                      <td style={{ whiteSpace: "nowrap" }}>
-                        {isRep ? (
-                          <>
-                            <button className="btn btn-sm" onClick={() => setEditing({ kind: "expected", row: e, draft: { date: e.date, company: e.company, currency: e.currency, expectedAmount: e.expectedAmount, sender: e.sender || "", customer: e.customer || "", proof: !!e.proof, invNo: e.invNo || "" } })}>Edit</button>{" "}
-                            <PayRemove id={e.id} removing={removing} onAsk={askRemove} onCancel={cancelRemove} onRemove={removeExpected} />
-                          </>
-                        ) : (
-                          <button className="btn btn-sm btn-accent" onClick={() => openConfirm(e)}>Confirm</button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+        <PayTable list={list} rows={rows} emptyText={isRep ? "Nothing expected right now" : "Nothing to confirm"}
+          head={<><th>Date</th>{!isRep && <th>Sale rep</th>}<th>Customer</th><th>Company</th><th>Currency</th><th className="num">Expected</th><th>Sender</th><th>Proof</th><th>INV</th><th /></>}>
+          {(e) => (
+            <tr key={e.id} className="pay-row pending">
+              <td className="ro">{fmtDate(e.date) || "—"}</td>
+              {!isRep && <td className="ro">{e.saleName || repName(e.saleId) || "—"}</td>}
+              <td className="ro" style={{ fontWeight: 600 }}>{e.customer || "—"}</td>
+              <td className="ro">{e.company}</td>
+              <td className="ro">{e.currency}</td>
+              <td className="ro num sm-mono">{fmtAmount(e.expectedAmount)}</td>
+              <td className="ro">{e.sender || "—"}</td>
+              <td><span className={`chip ${e.proof ? "green" : "gray"}`}>{e.proof ? "Yes" : "No"}</span></td>
+              <td className="ro">{e.invNo || "—"}</td>
+              <td style={{ whiteSpace: "nowrap" }}>
+                {isRep
+                  ? <><button className="btn btn-sm" onClick={() => openEdit("expected", e)}>Edit</button>{" "}{removeExpectedCtl(e.id)}</>
+                  : <button className="btn btn-sm btn-accent" onClick={() => openConfirm(e)}>Confirm</button>}
+              </td>
+            </tr>
           )}
-        </div>
+        </PayTable>
       )}
 
       {tab === "confirmed" && (
-        <div className="card">
-          {confirmed.length === 0 ? empty("Nothing confirmed yet") : confirmedRows.length === 0 ? empty("No payment matches that search") : (
-            <div className="table-scroll">
-              <table className="data-table pay-table" style={{ minWidth: "auto" }}>
-                <thead><tr><th>Date received</th>{!isRep && <th>Sale rep</th>}<th>Customer</th><th>Company</th><th>Currency</th><th className="num">Expected</th><th className="num">Received</th><th className="num">Difference</th><th>Sender (bank)</th><th>QuickBooks</th><th>Confirmed by</th>{!isRep && <th />}</tr></thead>
-                <tbody>
-                  {confirmedRows.map((e) => (
-                    <tr key={e.id} className="pay-row confirmed">
-                      <td className="ro">{fmtDate(e.confirmation.receivedDate) || "—"}</td>
-                      {!isRep && <td className="ro">{e.saleName || repName(e.saleId) || "—"}</td>}
-                      <td className="ro" style={{ fontWeight: 600 }}>{e.customer || "—"}<div className="muted" style={{ fontSize: 11 }}>expected {fmtDate(e.date)}{e.invNo ? ` · INV ${e.invNo}` : ""}</div></td>
-                      <td className="ro">{e.confirmation.company}</td>
-                      <td className="ro">{e.confirmation.currency}</td>
-                      <td className="ro num sm-mono">{fmtAmount(e.expectedAmount)}</td>
-                      <td className="ro num sm-mono">{fmtAmount(e.confirmation.receivedAmount)}</td>
-                      <td className="num"><PayDiff value={e.diff} /></td>
-                      <td className="ro">{e.confirmation.sender || "—"}</td>
-                      <td className="ro qb-cell">{qbText(e.confirmation.qb)}</td>
-                      <td className="ro">{e.confirmation.confirmedBy || "—"}</td>
-                      {!isRep && (
-                        <td style={{ whiteSpace: "nowrap" }}>
-                          <button className="btn btn-sm" onClick={() => setEditing({ kind: "received", row: e.confirmation, expected: e, draft: { receivedDate: e.confirmation.receivedDate, company: e.confirmation.company, currency: e.confirmation.currency, receivedAmount: e.confirmation.receivedAmount, sender: e.confirmation.sender || "", customer: e.confirmation.customer || "", qb: { ...EMPTY_RECEIVED.qb, ...(e.confirmation.qb || {}) } } })}>Edit</button>{" "}
-                          <PayRemove id={e.confirmation.id} label="Undo confirmation" removing={removing} onAsk={askRemove} onCancel={cancelRemove} onRemove={removeReceived} />
-                        </td>
-                      )}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+        <PayTable list={list} rows={rows} emptyText="Nothing confirmed yet"
+          head={<><th>Date received</th>{!isRep && <th>Sale rep</th>}<th>Customer</th><th>Company</th><th>Currency</th><th className="num">Expected</th><th className="num">Received</th><th className="num">Difference</th><th>Sender (bank)</th><th>QuickBooks</th><th>Confirmed by</th>{!isRep && <th />}</>}>
+          {(e) => (
+            <tr key={e.id} className="pay-row confirmed">
+              <td className="ro">{fmtDate(e.confirmation.receivedDate) || "—"}</td>
+              {!isRep && <td className="ro">{e.saleName || repName(e.saleId) || "—"}</td>}
+              <td className="ro" style={{ fontWeight: 600 }}>{e.customer || "—"}<div className="muted" style={{ fontSize: 11 }}>expected {fmtDate(e.date)}{e.invNo ? ` · INV ${e.invNo}` : ""}</div></td>
+              <td className="ro">{e.confirmation.company}</td>
+              <td className="ro">{e.confirmation.currency}</td>
+              <td className="ro num sm-mono">{fmtAmount(e.expectedAmount)}</td>
+              <td className="ro num sm-mono">{fmtAmount(e.confirmation.receivedAmount)}</td>
+              <td className="num"><PayDiff value={e.diff} /></td>
+              <td className="ro">{e.confirmation.sender || "—"}</td>
+              <td className="ro qb-cell">{qbText(e.confirmation.qb)}</td>
+              <td className="ro">{e.confirmation.confirmedBy || "—"}</td>
+              {!isRep && <td style={{ whiteSpace: "nowrap" }}><button className="btn btn-sm" onClick={() => openEdit("received", e.confirmation, e)}>Edit</button>{" "}{undoCtl(e.confirmation.id)}</td>}
+            </tr>
           )}
-        </div>
+        </PayTable>
       )}
 
       {!isRep && tab === "unmatched" && (
-        <div className="card">
-          {unannounced.length === 0 ? empty("No unannounced money") : looseRows.length === 0 ? empty("No payment matches that search") : (
-            <div className="table-scroll">
-              <table className="data-table pay-table" style={{ minWidth: "auto" }}>
-                <thead><tr><th>Date received</th><th>Customer</th><th>Company</th><th>Currency</th><th className="num">Received</th><th>Sender (bank)</th><th>QuickBooks</th><th>Entered by</th><th /></tr></thead>
-                <tbody>
-                  {looseRows.map((r) => (
-                    <tr key={r.id} className="pay-row loose">
-                      <td className="ro">{fmtDate(r.receivedDate) || "—"}</td>
-                      <td className="ro" style={{ fontWeight: 600 }}>{r.customer || "—"}</td>
-                      <td className="ro">{r.company}</td>
-                      <td className="ro">{r.currency}</td>
-                      <td className="ro num sm-mono">{fmtAmount(r.receivedAmount)}</td>
-                      <td className="ro">{r.sender || "—"}</td>
-                      <td className="ro qb-cell">{qbText(r.qb)}</td>
-                      <td className="ro">{r.confirmedBy || "—"}</td>
-                      <td style={{ whiteSpace: "nowrap" }}>
-                        <button className="btn btn-sm" onClick={() => setEditing({ kind: "received", row: r, expected: null, draft: { receivedDate: r.receivedDate, company: r.company, currency: r.currency, receivedAmount: r.receivedAmount, sender: r.sender || "", customer: r.customer || "", qb: { ...EMPTY_RECEIVED.qb, ...(r.qb || {}) } } })}>Edit</button>{" "}
-                        <PayRemove id={r.id} removing={removing} onAsk={askRemove} onCancel={cancelRemove} onRemove={removeReceived} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+        <PayTable list={list} rows={rows} emptyText="No unannounced money"
+          head={<><th>Date received</th><th>Customer</th><th>Company</th><th>Currency</th><th className="num">Received</th><th>Sender (bank)</th><th>QuickBooks</th><th>Entered by</th><th /></>}>
+          {(r) => (
+            <tr key={r.id} className="pay-row loose">
+              <td className="ro">{fmtDate(r.receivedDate) || "—"}</td>
+              <td className="ro" style={{ fontWeight: 600 }}>{r.customer || "—"}</td>
+              <td className="ro">{r.company}</td>
+              <td className="ro">{r.currency}</td>
+              <td className="ro num sm-mono">{fmtAmount(r.receivedAmount)}</td>
+              <td className="ro">{r.sender || "—"}</td>
+              <td className="ro qb-cell">{qbText(r.qb)}</td>
+              <td className="ro">{r.confirmedBy || "—"}</td>
+              <td style={{ whiteSpace: "nowrap" }}><button className="btn btn-sm" onClick={() => openEdit("received", r)}>Edit</button>{" "}{removeReceivedCtl(r.id)}</td>
+            </tr>
           )}
-        </div>
+        </PayTable>
       )}
 
       {confirming && (
@@ -5001,6 +4970,7 @@ function Shell({ user, onLogout, store }) {
   const isBuyer = user.role === "buyer";
   const isWarehouse = user.role === "warehouse";
   const isAccountant = user.role === "accountant";
+  const can = (section) => sectionAllowed(section, user.role); // the same table the addresses use (routes.js)
 
   const salesReps = store.accounts.filter((a) => a.role === "sale");
   // The address names the screen (routes.js): read it once on load; a page this role may not open sends it home.
@@ -5066,7 +5036,7 @@ function Shell({ user, onLogout, store }) {
     : 0;
   const fulfillmentUnseenCount = store.feedBuyerPfi.filter((f) => !f.seenByBuyer).length;
   const openReorderCount = store.reorders.filter((r) => !r.handled).length;
-  const toConfirmCountAll = toConfirmCount(store.expectedPayments, store.receivedPayments);
+  const toConfirmCountAll = can("paymentsReceived") ? toConfirmCount(store.expectedPayments, store.receivedPayments) : 0;
 
   const openPfiFromCustomer = (pfiId) => {
     setTopSection("customer");
@@ -5108,16 +5078,11 @@ function Shell({ user, onLogout, store }) {
               <div className={`side-item ${topSection === "payments" ? "active" : ""}`} onClick={() => setTopSection("payments")}>
                 <CreditCard size={14} /> Customer Balance
               </div>
-              <div className={`side-item ${topSection === "paymentsReceived" ? "active" : ""}`} onClick={() => setTopSection("paymentsReceived")}>
-                <CreditCard size={14} /> Payments Received
-                {toConfirmCountAll > 0 && <span className="badge-mini">{toConfirmCountAll}</span>}
-              </div>
             </>
           )}
-
-          {isAccountant && (
+          {can("paymentsReceived") && (
             <>
-              <div className="side-section-label">Accountant</div>
+              {isAccountant && <div className="side-section-label">Accountant</div>}
               <div className={`side-item ${topSection === "paymentsReceived" ? "active" : ""}`} onClick={() => setTopSection("paymentsReceived")}>
                 <CreditCard size={14} /> Payments Received
                 {toConfirmCountAll > 0 && <span className="badge-mini">{toConfirmCountAll}</span>}
@@ -5170,7 +5135,7 @@ function Shell({ user, onLogout, store }) {
               </div>
             </>
           )}
-          {!isWarehouse && !isAccountant && (
+          {can("delivery") && (
             <>
               <div className="side-section-label">Shared</div>
               <div className={`side-item ${topSection === "delivery" ? "active" : ""}`} onClick={() => setTopSection("delivery")}>
@@ -5178,17 +5143,17 @@ function Shell({ user, onLogout, store }) {
               </div>
             </>
           )}
-          {(isAdmin || isBuyer || isSale) && (
+          {can("warehouse") && !isWarehouse && (
             <div className={`side-item ${topSection === "warehouse" ? "active" : ""}`} onClick={() => setTopSection("warehouse")}>
               <Warehouse size={14} /> Warehouse's Space
             </div>
           )}
-          {!isWarehouse && !isAccountant && (
+          {can("agent") && (
             <div className={`side-item ${topSection === "agent" ? "active" : ""}`} onClick={() => setTopSection("agent")}>
               <Bot size={14} /> AI agent link
             </div>
           )}
-          {(isAdmin || isBuyer) && (
+          {can("booking") && (
             <div className={`side-item ${topSection === "booking" ? "active" : ""}`} onClick={() => setTopSection("booking")}>
               <Truck size={14} /> Delivery Booking
             </div>
@@ -5211,12 +5176,12 @@ function Shell({ user, onLogout, store }) {
 
         <div className="main">
           {store.syncNotice && (
-            <div className="sync-notice" role="alert">
+            <div className="short-warning sync-notice" role="alert">
               <AlertTriangle size={14} /> <strong>Your last change was not saved</strong> — {store.syncNotice.text}. The screen now shows what is on the server.
               <button className="btn btn-sm" onClick={store.dismissSyncNotice}>OK</button>
             </div>
           )}
-          {(isAdmin || isSale) && topSection === "customer" && (
+          {can("customer") && topSection === "customer" && (
             <>
               <div className="page-header">
                 <div>
@@ -5276,7 +5241,7 @@ function Shell({ user, onLogout, store }) {
             </>
           )}
 
-          {topSection === "delivery" && (
+          {topSection === "delivery" && can("delivery") && (
             <>
               <div className="page-header">
                 <div>
@@ -5288,7 +5253,7 @@ function Shell({ user, onLogout, store }) {
             </>
           )}
 
-          {topSection === "booking" && (isAdmin || isBuyer) && (
+          {topSection === "booking" && can("booking") && (
             <>
               <div className="page-header">
                 <div>
@@ -5300,7 +5265,7 @@ function Shell({ user, onLogout, store }) {
             </>
           )}
 
-          {topSection === "warehouse" && (isAdmin || isBuyer || isWarehouse || isSale) && (
+          {topSection === "warehouse" && can("warehouse") && (
             <>
               <div className="page-header">
                 <div>
@@ -5312,7 +5277,7 @@ function Shell({ user, onLogout, store }) {
             </>
           )}
 
-          {topSection === "agent" && !isWarehouse && (
+          {topSection === "agent" && can("agent") && (
             <>
               <div className="page-header">
                 <div>
@@ -5324,7 +5289,7 @@ function Shell({ user, onLogout, store }) {
             </>
           )}
 
-          {topSection === "mai" && isAdmin && (
+          {topSection === "mai" && can("mai") && (
             <>
               <div className="page-header">
                 <div>
@@ -5336,7 +5301,7 @@ function Shell({ user, onLogout, store }) {
             </>
           )}
 
-          {topSection === "payments" && isAdmin && (
+          {topSection === "payments" && can("payments") && (
             <>
               <div className="page-header">
                 <div>
@@ -5353,7 +5318,7 @@ function Shell({ user, onLogout, store }) {
             </>
           )}
 
-          {topSection === "paymentsReceived" && (isAdmin || isAccountant) && (
+          {topSection === "paymentsReceived" && can("paymentsReceived") && (
             <>
               <div className="page-header">
                 <div>
@@ -5372,7 +5337,7 @@ function Shell({ user, onLogout, store }) {
             </>
           )}
 
-          {topSection === "accounts" && isAdmin && (
+          {topSection === "accounts" && can("accounts") && (
             <>
               <div className="page-header">
                 <div>
@@ -5384,7 +5349,7 @@ function Shell({ user, onLogout, store }) {
             </>
           )}
 
-          {topSection === "buyerspace" && (isBuyer || isAdmin) && (
+          {topSection === "buyerspace" && can("buyerspace") && (
             <>
               <div className="page-header">
                 <div>
@@ -5444,7 +5409,7 @@ export default function App() {
   const [receivedPayments, setReceivedPayments] = slice("receivedPayments");
 
   /* Payments Received Tracking: a rep announces a payment; the accountant records what the bank showed. Adds and edits are read the same way. */
-  const money = (v) => { const n = payNumber(v); return n === null ? "" : n; };
+  const money = (v) => { const n = numOrNull(v); return n === null ? "" : n; };
   const text = (v) => (v || "").trim();
   const expectedFields = (d) => ({
     date: d.date || todayLocalIso(), company: PAY_COMPANIES.includes(d.company) ? d.company : PAY_COMPANIES[0], currency: CURRENCIES.includes(d.currency) ? d.currency : CURRENCIES[0],
@@ -5465,7 +5430,7 @@ export default function App() {
   const deleteExpectedPayment = (id) => setExpectedPayments((prev) => (prev || []).filter((r) => r.id !== id));
   const addReceivedPayment = (data) => {
     const now = new Date().toISOString();
-    const row = { id: uid("rpay"), expectedId: data.expectedId || "", ...receivedFields(data), confirmedBy: data.confirmedBy || "", createdAt: now, updatedAt: now };
+    const row = { id: uid("rpay"), expectedId: data.expectedId || "", saleId: data.expectedId ? data.saleId || "" : "", ...receivedFields(data), confirmedBy: data.confirmedBy || "", createdAt: now, updatedAt: now };
     setReceivedPayments((prev) => [row, ...(prev || [])]);
     return row.id;
   };

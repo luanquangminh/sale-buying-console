@@ -57,11 +57,17 @@ describe("stateFor: an address back to the screen, for the role", () => {
     expect(sectionAllowed("accounts", "admin")).toBe(true);
     expect(sectionAllowed("accounts", "sale")).toBe(false);
   });
-  it("lists every address once in the site map, and each one parses for a role named on it", () => {
-    expect(new Set(SITE_MAP.map(([p]) => p)).size).toBe(SITE_MAP.length);
-    for (const [path, who] of SITE_MAP) {
-      const role = who.split(",")[0].trim().replace("everyone but the accountant", "sale");
-      expect(stateFor(path.replace("<rep id>", "sale-1"), role, { reps })).not.toBe(null);
+  it("lists every address once in the site map, and each one parses for every role named on it and for no other", () => {
+    expect(new Set(SITE_MAP.map((r) => r.path)).size).toBe(SITE_MAP.length);
+    expect(SITE_MAP.length).toBe(18);
+    for (const { path, roles } of SITE_MAP) {
+      expect(roles.length).toBeGreaterThan(0);
+      for (const role of ["admin", "sale", "buyer", "warehouse", "accountant"]) {
+        const opens = stateFor(path.replace("<rep id>", "sale-1"), role, { reps }) !== null;
+        expect([path, role, opens]).toEqual([path, role, roles.includes(role)]);
+      }
     }
+    expect(SITE_MAP.find((r) => r.path === "/accounting/payments-received")!.roles).toEqual(["admin", "accountant"]);
+    expect(SITE_MAP.find((r) => r.path === "/warehouse")!.roles).toEqual(["admin", "sale", "buyer", "warehouse"]);
   });
 });

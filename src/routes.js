@@ -29,8 +29,8 @@ const ALLOWED = {
 };
 export const sectionAllowed = (topSection, role) => { const a = ALLOWED[role]; return a === null || (Array.isArray(a) && a.includes(topSection)); };
 
-/** Where a role lands after signing in. */
-export const homeFor = (role) => (role === "warehouse" ? "warehouse" : role === "accountant" ? "paymentsReceived" : role === "buyer" ? "buyerspace" : "customer");
+/** Where a role lands after signing in: the first section it may open. */
+export const homeFor = (role) => (ALLOWED[role] || ["customer"])[0];
 
 /** The address of the shell's state. An admin's rep pages name the rep: /reps/<id>/orders. */
 export function pathFor(state, role) {
@@ -64,12 +64,11 @@ export function stateFor(path, role, { hash = "", reps = [] } = {}) {
   return state;
 }
 
-/** Every address, for the site map: path, who may open it, what it shows. */
+/** Every address, for the site map: derived from the tables above, with the roles that may open it. */
+const rolesFor = (section) => Object.keys(ALLOWED).filter((role) => sectionAllowed(section, role));
 export const SITE_MAP = [
-  ["/customers", "sale", "Customer"], ["/orders", "sale", "Order Tracking"], ["/payments-received", "sale", "Payments Received (the rep's)"],
-  ["/reps/<rep id>/customers", "admin", "A rep's Customer page"], ["/reps/<rep id>/orders", "admin", "A rep's Order Tracking"], ["/reps/<rep id>/payments-received", "admin", "A rep's Payments Received"],
-  ["/buyer/inbox", "buyer, admin", "Inbox"], ["/buyer/orders-to-update", "buyer, admin", "Orders to update"], ["/buyer/po-tracking", "buyer, admin", "PO Tracking"], ["/buyer/jobs", "buyer, admin", "Jobs"],
-  ["/admin/mai", "admin", "Mai"], ["/admin/customer-balance", "admin", "Customer Balance"], ["/admin/accounts", "admin", "Accounts"],
-  ["/accounting/payments-received", "accountant, admin", "Payments Received Tracking"],
-  ["/container-rate", "sale, buyer, admin", "Container Rate"], ["/warehouse", "everyone but the accountant", "Warehouse's Space"], ["/delivery-booking", "buyer, admin", "Delivery Booking"], ["/agent", "sale, buyer, admin", "AI agent link"],
+  ...Object.values(SALE_PAGES).map((p) => ({ path: `/${p}`, section: "customer", roles: rolesFor("customer") })), // an admin opens them for the rep they have picked
+  ...Object.values(SALE_PAGES).map((p) => ({ path: `/reps/<rep id>/${p}`, section: "customer", roles: ["admin"] })),
+  ...Object.values(BUYER_PAGES).map((p) => ({ path: `/buyer/${p}`, section: "buyerspace", roles: rolesFor("buyerspace") })),
+  ...Object.entries(SINGLE_PAGES).map(([section, path]) => ({ path, section, roles: rolesFor(section) })),
 ];
