@@ -1961,6 +1961,156 @@ test("floor stock and reorder: a line is judged on what the order needs against 
   await removeDoc(pfiRow, "Delete PFI");
 });
 
+test("payments received: a rep announces a payment, the accountant confirms it with the bank's figure, each side sees its own lists", async ({ page }) => {
+  const JUARA = "E2E Pay Juara Trade"; const SHALUXE = "E2E Pay Shaluxe"; const WALKIN = "E2E Pay Walk-in";
+  const pillTab = (text: string) => page.locator(".pill-tabs .pill", { hasText: text });
+  const row = (text: string) => page.locator(".pay-row", { hasText: text });
+  const field = (label: string) => page.locator(`[aria-label="${label}"]`).last(); // the add form, or the open dialog
+  const removeRow = async (r: ReturnType<Page["locator"]>) => { await r.locator(".btn-icon").last().click(); await r.getByRole("button", { name: /^Yes, / }).click(); };
+  const cleanAccountant = async () => {
+    await signIn(page, A.accountant.username, A.accountant.password);
+    await pillTab("Confirmed").click();
+    for (const t of [JUARA, SHALUXE]) while (await row(t).count()) await removeRow(row(t).first());
+    await pillTab("Unmatched").click();
+    while (await row(WALKIN).count()) await removeRow(row(WALKIN).first());
+    await settled(page);
+  };
+  const cleanRep = async () => {
+    await signIn(page, A.sale.username, A.sale.password);
+    await side(page, "Payments Received").click();
+    for (const t of [JUARA, SHALUXE]) while (await row(t).count()) await removeRow(row(t).first());
+    await settled(page);
+  };
+
+  // The accountant login, made by the admin like any other.
+  await signIn(page, A.admin.username, A.admin.password);
+  await side(page, "Accounts").click();
+  const rows = page.locator(".account-row");
+  if (!(await rows.filter({ has: page.locator(`input[value="${A.accountant.username}"]`) }).count())) {
+    const form = page.locator(".add-form").first();
+    await form.locator("select").selectOption("accountant");
+    await form.locator("input").nth(0).fill(A.accountant.name || "Accountant"); await form.locator("input").nth(1).fill(A.accountant.username); await form.locator("input").nth(2).fill(A.accountant.password);
+    await page.getByRole("button", { name: "Create account" }).click();
+    await expect(rows.filter({ has: page.locator(`input[value="${A.accountant.username}"]`) })).toHaveCount(1);
+  }
+  await settled(page);
+  await cleanAccountant();
+  await cleanRep();
+
+  // The rep announces two payments; the second is corrected before the accountant sees it.
+  await expect(pillTab("Expected")).toHaveClass(/active/);
+  await field("Company").selectOption("LLC");
+  await field("Currency").selectOption("USD");
+  await field("Expected amount").fill("13560");
+  await field("Sender name").fill("JUARA TRADE - FZCO");
+  await field("Customer name").fill(JUARA);
+  await field("Payment proof").check();
+  await page.getByRole("button", { name: "Add expected payment" }).click();
+  await expect(row(JUARA)).toHaveCount(1);
+  await expect(row(JUARA)).toContainText("LLC");
+  await expect(row(JUARA)).toContainText("USD");
+  await expect(row(JUARA)).toContainText("13,560.00");
+  await expect(row(JUARA).locator(".chip")).toHaveText("Yes");
+  await field("Company").selectOption("LTD");
+  await field("Currency").selectOption("GBP");
+  await field("Expected amount").fill("2353.32");
+  await field("Sender name").fill("AGNES AKU ADU ETSEY");
+  await field("Customer name").fill(SHALUXE);
+  await field("INV no.").fill("3194");
+  await page.getByRole("button", { name: "Add expected payment" }).click();
+  await expect(row(SHALUXE)).toContainText("2,353.32");
+  await expect(row(SHALUXE).locator(".chip")).toHaveText("No");
+  await row(SHALUXE).getByRole("button", { name: "Edit" }).click();
+  await page.locator(".modal-panel").waitFor();
+  await page.locator('.modal-panel [aria-label="Expected amount"]').fill("2400");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(row(SHALUXE)).toContainText("2,400.00");
+  await expect(pillTab("Expected").locator(".pill-count")).toHaveText("2");
+  await settled(page);
+
+  // The buyer has no such page.
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await expect(side(page, "Payments Received")).toHaveCount(0);
+
+  // The accountant: only this page; both payments wait, with the rep's name; the first is confirmed at the bank's figure.
+  await signIn(page, A.accountant.username, A.accountant.password);
+  await expect(page.locator(".side-item")).toHaveCount(1);
+  await expect(page.locator(".side-item").first()).toContainText("Payments Received");
+  await expect(page.locator(".page-title")).toContainText("Payments Received Tracking");
+  await expect(pillTab("To confirm")).toHaveClass(/active/);
+  await expect(row(JUARA)).toContainText(A.sale.name);
+  await expect(row(SHALUXE)).toContainText("2,400.00");
+  await row(JUARA).getByRole("button", { name: "Confirm" }).click();
+  await page.locator(".modal-panel").waitFor();
+  await expect(page.locator(".modal-title")).toContainText(JUARA);
+  await expect(page.locator('.modal-panel [aria-label="Company"]')).toHaveValue("LLC");
+  await expect(page.locator('.modal-panel [aria-label="Currency"]')).toHaveValue("USD");
+  await expect(page.locator('.modal-panel [aria-label="Received amount"]')).toHaveValue("13560");
+  await expect(page.locator(".modal-panel .pay-diff")).toContainText("0.00");
+  await page.locator('.modal-panel [aria-label="Received amount"]').fill("13510.36");
+  await expect(page.locator(".modal-panel .pay-diff")).toContainText("−49.64");
+  await expect(page.locator(".modal-panel .pay-diff")).toHaveClass(/tone-red/);
+  await page.locator('.modal-panel [aria-label="Sender name"]').fill("JUARA TRADE FZCO");
+  await page.locator('.modal-panel [aria-label="Added to QuickBooks"]').check();
+  await expect(page.locator('.modal-panel [aria-label="Added by"]')).toHaveValue(A.accountant.name || "");
+  await page.getByRole("button", { name: "Confirm payment" }).click();
+  await expect(pillTab("Confirmed")).toHaveClass(/active/);
+  await expect(row(JUARA)).toContainText("13,560.00");
+  await expect(row(JUARA)).toContainText("13,510.36");
+  await expect(row(JUARA).locator(".pay-diff")).toHaveText("−49.64");
+  await expect(row(JUARA)).toContainText("Done");
+  await expect(row(JUARA)).toContainText(A.accountant.name || "");
+  await pillTab("To confirm").click();
+  await expect(row(JUARA)).toHaveCount(0);
+  await expect(row(SHALUXE)).toHaveCount(1);
+  // Money nobody announced.
+  await pillTab("Unmatched").click();
+  await field("Received amount").fill("592");
+  await field("Sender name").fill("Akoto V B Sprout");
+  await field("Customer name").fill(WALKIN);
+  await page.getByRole("button", { name: "Add received payment" }).click();
+  await expect(row(WALKIN)).toContainText("592.00");
+  await expect(row(WALKIN)).toContainText("Not yet");
+  await settled(page);
+
+  // The rep: the confirmed one has moved, with the bank's figure and the difference; it can no longer be changed.
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Payments Received").click();
+  await expect(row(JUARA)).toHaveCount(0);
+  await expect(row(SHALUXE)).toHaveCount(1);
+  await expect(pillTab("Expected").locator(".pill-count")).toHaveText("1");
+  await pillTab("Confirmed").click();
+  await expect(row(JUARA)).toContainText("13,510.36");
+  await expect(row(JUARA).locator(".pay-diff")).toHaveText("−49.64");
+  await expect(row(JUARA)).toContainText("Done");
+  await expect(row(JUARA).getByRole("button")).toHaveCount(0);
+  await expect(row(WALKIN)).toHaveCount(0); // the unannounced money is the accountant's business
+  const state = await page.evaluate(async () => (await fetch("/api/state")).json());
+  const mine = state.slices.expectedPayments.find((e: any) => e.customer === "E2E Pay Juara Trade");
+  const refused = await page.evaluate(async (e) => (await fetch("/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes: [{ kind: "expectedPayments", id: e.id, createdAt: e.createdAt, data: { ...e, expectedAmount: 1 } }] }) })).status, mine);
+  expect(refused).toBe(403);
+  expect(JSON.stringify(state)).not.toContain("E2E Pay Walk-in");
+
+  // The admin: the accountant's page, and the rep's page inside the rep's workspace.
+  await signIn(page, A.admin.username, A.admin.password);
+  await side(page, "Payments Received").click();
+  await expect(row(SHALUXE)).toHaveCount(1);
+  await pillTab("Confirmed").click();
+  await expect(row(JUARA).locator(".pay-diff")).toHaveText("−49.64");
+  await pillTab("Unmatched").click();
+  await expect(row(WALKIN)).toHaveCount(1);
+  await side(page, A.sale.name).click();
+  await pillTab("Payments Received").click();
+  await expect(row(SHALUXE)).toHaveCount(1);
+  await expect(row(SHALUXE).getByRole("button", { name: "Edit" })).toHaveCount(1);
+
+  await cleanAccountant();
+  for (const t of [JUARA, SHALUXE, WALKIN]) await expect(row(t)).toHaveCount(0);
+  await cleanRep();
+  await expect(row(JUARA)).toHaveCount(0);
+  await expect(row(SHALUXE)).toHaveCount(0);
+});
+
 test("drop-down panels open upwards when their button sits at the bottom of the window", async ({ page }) => {
   const viewport = page.viewportSize()!;
   // Button and panel are measured in one go, so a scroll in between cannot skew the comparison.

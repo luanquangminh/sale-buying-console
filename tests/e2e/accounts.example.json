@@ -18,5 +18,10 @@
     "username": "warehouse-username",
     "password": "warehouse-password",
     "name": "Warehouse Name"
+  },
+  "accountant": {
+    "username": "accountant-username",
+    "password": "accountant-password",
+    "name": "Accountant Name"
   }
 }
