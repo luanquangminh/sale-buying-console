@@ -13,7 +13,7 @@ import { lineCover, pfiLineCover, pfiShortages, poShortages } from "./allocation
 import { PAY_COMPANIES, diffTone, difference, fmtDiff, forSale, isConfirmed, splitExpected, toConfirmCount, unmatched } from "./paymentsReceived";
 import { homeFor, pathFor, sectionAllowed, stateFor } from "./routes";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZES, needsPager, pageLabel, pageOf } from "./pager";
-import { BOOKING_STATUSES, BOOKING_STATUS_LABEL, BOOKING_STATUS_TONE, LOADING_METHODS, SHIPMENT_MODES, SHIPMENT_SUBTYPES, bookingFromPfi, bookingOf, bookingStatus, emptyBooking, etaSoon, etaSoonText, loadedForDelivery } from "./booking";
+import { BOOKING_STATUSES, BOOKING_STATUS_LABEL, BOOKING_STATUS_TONE, LOADING_METHODS, SHIPMENT_MODES, SHIPMENT_SUBTYPES, VEHICLE_SUBTYPES, bookingFromPfi, bookingOf, bookingStatus, emptyBooking, emptyPfiDelivery, etaSoon, etaSoonText, loadedForDelivery } from "./booking";
 import { placePanel } from "./popup";
 import { acknowledged, changeSinceSent, describeChanges, describeWas, lineChange, removedSinceSent, stampSent } from "./sentMark";
 import { groupBySale, hasSaleChange } from "./orderGroups";
@@ -72,18 +72,6 @@ const PO_VEHICLE_TYPES = [
 ];
 const PO_SUBTYPES = ["20ft Dry", "20ft Reefer", "40ft Dry", "40ft Reefer", "Air Freight", "Collection"];
 const CONTAINER_TYPES = ["20ft Dry", "20ft Reefer", "40ft Dry", "40ft Reefer", "40ft HC Dry"];
-const VEHICLE_TYPES = [
-  { value: "container", label: "Container" },
-  { value: "truck", label: "Truck" },
-  { value: "uk_delivery", label: "UK Delivery" },
-  { value: "air_freight", label: "Air Freight" },
-];
-const VEHICLE_SUBTYPES = {
-  container: ["20ft Dry", "20ft Reefer", "40ft Dry", "40ft HC Dry", "40ft Reefer"],
-  truck: ["Dry", "Temperature Controlled"],
-  uk_delivery: ["Dry", "Temperature Controlled"],
-  air_freight: ["General Cargo", "Temperature Controlled"],
-};
 const DOC_TYPES = ["COO", "HC", "BL", "SWB", "Free Sale", "PL", "INV", "EUR1"];
 const DOC_STATUSES = [
   { value: "not_applied", label: "Have not applied" },
@@ -139,16 +127,6 @@ function paymentStatus(total, paid) {
 }
 function paymentStatusLabel(status) {
   return status === "red" ? "Unpaid" : status === "amber" ? "Partial" : "Paid";
-}
-function emptyPfiDelivery() {
-  return {
-    type: "delivery", bookedStatus: "not_booked", loaded: "not_loaded",
-    vehicleType: "container", subType: VEHICLE_SUBTYPES.container[0],
-    loadingDate: "", loadingTime: "",
-    collectionDate: "", collectionTime: "",
-    etd: "", eta: "",
-    pod: "", loadingAddress: "",
-  };
 }
 function pfiLabel(pfi) {
   return pfi.pfiNo ? `PFI ${pfi.pfiNo}` : poCode(pfi.id);
@@ -2193,7 +2171,7 @@ function PfiDeliverySection({ delivery, role, onChange }) {
               <div className="mini-field">
                 <label>Vehicle</label>
                 <select value={delivery.vehicleType} onChange={(e) => onChange({ vehicleType: e.target.value, subType: VEHICLE_SUBTYPES[e.target.value][0] })}>
-                  {VEHICLE_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                  {SHIPMENT_MODES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
               </div>
               <div className="mini-field">
@@ -2425,15 +2403,16 @@ function exportPfiWorkbook(pfi) {
 }
 
 /**
- * Page state for a list screen. The page goes back to 1 when the filter text or the page size changes; a row opened
- * from elsewhere (ensureIndex: its position in the list) pulls its page into view.
+ * Page state for a list screen. A new filter text or page size starts on page 1; a row opened from elsewhere
+ * (ensureIndex: its position in the list) pulls its page into view.
  */
 function usePager(list, { resetKey = "", ensureIndex = -1 } = {}) {
-  const [page, setPage] = useState(1);
-  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
-  React.useEffect(() => { setPage(1); }, [resetKey, size]);
-  const current = pageOf(list, page, size);
-  const wanted = ensureIndex >= 0 ? Math.floor(ensureIndex / current.size) + 1 : 0;
+  const [at, setAt] = useState({ page: 1, key: resetKey, size: DEFAULT_PAGE_SIZE });
+  if (at.key !== resetKey) setAt({ ...at, page: 1, key: resetKey }); // set during render: React re-renders before anything is painted
+  const current = pageOf(list, at.page, at.size);
+  const setPage = (page) => setAt({ ...at, page });
+  const setSize = (size) => setAt({ ...at, page: 1, size });
+  const wanted = ensureIndex >= 0 ? Math.floor(ensureIndex / at.size) + 1 : 0;
   React.useEffect(() => { if (wanted && wanted !== current.page) setPage(wanted); }, [wanted]); // eslint-disable-line react-hooks/exhaustive-deps
   return { ...current, setPage, setSize };
 }

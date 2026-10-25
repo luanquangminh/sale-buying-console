@@ -1,6 +1,7 @@
 import { expect, request, test, type Page } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 import * as XLSX from "xlsx";
+import { emptyBooking } from "../../src/booking.js";
 import { A } from "./accounts";
 
 /*
@@ -68,6 +69,7 @@ async function signIn(page: Page, username: string, password: string) {
 
 const side = (page: Page, text: string) => page.locator(".side-item", { hasText: new RegExp(`^\\s*${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*(\\d+)?\\s*$`) }); // whole label, badge count allowed
 const pill = (page: Page, text: string | RegExp) => page.locator(".pill", { hasText: text });
+const isoDay = (offset: number) => { const d = new Date(); d.setDate(d.getDate() + offset); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }; // today ± days, local, as the date inputs take it
 const openDetail = async (page: Page, row: ReturnType<Page["locator"]>) => { await row.click(); await page.locator(".detail-body").waitFor(); };
 const save = async (page: Page) => {
   const btn = page.getByRole("button", { name: "Save changes" });
@@ -84,17 +86,23 @@ const close = (page: Page) => page.getByRole("button", { name: "Close" }).click(
 const payRow = (page: Page, text: string) => page.locator(".pay-row", { hasText: text });
 const payField = (page: Page, label: string) => page.locator(`[aria-label="${label}"]`).last(); // the add form, or the open dialog
 const removePayRow = async (page: Page, row: ReturnType<Page["locator"]>) => { await row.locator(".btn-icon").last().click(); await row.getByRole("button", { name: /^Yes, / }).click(); };
-const wipePayments = async (baseURL: string, names: string[]) => {
+/** Rows wiped through the API as the admin, in one session: `pick` names them from the state, kind by kind, in the order they must go. */
+const wipeRows = async (baseURL: string, pick: (slices: any) => [string, any[]][]) => {
   const api = await request.newContext({ baseURL });
   await api.post("/api/auth/login", { data: { username: A.admin.username, password: A.admin.password } });
   const { slices } = await (await api.get("/api/state")).json();
-  const hit = (r: any) => names.some((n) => String(r.customer || "").includes(n));
-  const expected = slices.expectedPayments.filter(hit); const ids = new Set(expected.map((e: any) => e.id));
-  const received = slices.receivedPayments.filter((r: any) => hit(r) || ids.has(r.expectedId));
-  if (received.length) await api.post("/api/sync", { data: { changes: received.map((r: any) => ({ kind: "receivedPayments", id: r.id, deleted: true })) } }); // receipts first: a confirmed payment cannot be removed
-  if (expected.length) await api.post("/api/sync", { data: { changes: expected.map((e: any) => ({ kind: "expectedPayments", id: e.id, deleted: true })) } });
+  for (const [kind, rows] of pick(slices)) {
+    if (rows.length) expect((await api.post("/api/sync", { data: { changes: rows.map((r: any) => ({ kind, id: r.id, deleted: true })) } })).ok()).toBe(true);
+  }
   await api.post("/api/auth/logout"); await api.dispose();
 };
+const wipePayments = (baseURL: string, names: string[]) => wipeRows(baseURL, (slices) => {
+  const hit = (r: any) => names.some((n) => String(r.customer || "").includes(n));
+  const expected = slices.expectedPayments.filter(hit); const ids = new Set(expected.map((e: any) => e.id));
+  return [["receivedPayments", slices.receivedPayments.filter((r: any) => hit(r) || ids.has(r.expectedId))], ["expectedPayments", expected]]; // receipts first: a confirmed payment cannot be removed
+});
+/** Delivery Booking rows whose customer carries this text: left by an earlier run, or by an earlier step of this one. */
+const wipeBookings = (baseURL: string, customer: string) => wipeRows(baseURL, (slices) => [["bookings", slices.bookings.filter((b: any) => String(b.customerName || "").includes(customer))]]);
 /** The admin makes a login of this role from the accounts file, unless it is there already. */
 const ensureAccount = async (page: Page, role: "warehouse" | "accountant") => {
   const who = A[role];
@@ -323,11 +331,10 @@ test("admin: rep workspace, bookings with second-tab sync, accounts", async ({ p
   await expect(rows.nth(0).locator(".btn-icon")).toBeDisabled();
 });
 
-test("dates: typed as dd/mm/yyyy, stored as ISO, shown as dd/mm/yyyy", async ({ page }) => {
+test("dates: typed as dd/mm/yyyy, stored as ISO, shown as dd/mm/yyyy", async ({ page, baseURL }) => {
+  await wipeBookings(baseURL!, "E2E Dates Ltd");
   await signIn(page, A.admin.username, A.admin.password);
   await side(page, "Delivery Booking").click();
-  const leftovers = page.locator(".booking-row", { hasText: "E2E Dates Ltd" });
-  while (await leftovers.count()) { await leftovers.first().click(); await page.locator(".lane-detail").getByRole("button", { name: "Delete" }).click(); }
   await page.getByRole("button", { name: "Add booking" }).click();
   const grid = page.locator(".booking-grid").first();
   await grid.locator("input").nth(0).fill("E2E Dates Ltd");
@@ -353,11 +360,10 @@ test("dates: typed as dd/mm/yyyy, stored as ISO, shown as dd/mm/yyyy", async ({ 
   await expect(page.locator(".booking-row", { hasText: "E2E Dates Ltd" })).toHaveCount(0);
 });
 
-test("buyer can open Delivery Booking and record the Sale name", async ({ page }) => {
+test("buyer can open Delivery Booking and record the Sale name", async ({ page, baseURL }) => {
+  await wipeBookings(baseURL!, "E2E Buyer Booking Ltd");
   await signIn(page, A.buyer.username, A.buyer.password);
   await side(page, "Delivery Booking").click();
-  const leftovers = page.locator(".booking-row", { hasText: "E2E Buyer Booking Ltd" });
-  while (await leftovers.count()) { await leftovers.first().click(); await page.locator(".lane-detail").getByRole("button", { name: "Delete" }).click(); }
   await page.getByRole("button", { name: "Add booking" }).click();
   const grid = page.locator(".booking-grid").first();
   await grid.locator("input").nth(0).fill("E2E Buyer Booking Ltd");
@@ -387,13 +393,10 @@ test("order tracking shows a status chip that follows the Loaded flag", async ({
   await expect(row.locator(".chip").last()).not.toHaveText(/^loaded$/i);
 });
 
-test("a delivery saved as Loaded lands in Delivery Booking with its POD and address; the status there follows ETD and ETA", async ({ page }) => {
-  const day = (offset: number) => { const d = new Date(); d.setDate(d.getDate() + offset); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+test("a delivery saved as Loaded lands in Delivery Booking with its POD and address; the status there follows ETD and ETA", async ({ page, baseURL }) => {
+  await wipeBookings(baseURL!, "Acme Foods Ltd"); // left by the sale's Loaded toggle above, or an earlier run
   await signIn(page, A.admin.username, A.admin.password);
-  await side(page, "Delivery Booking").click();
   const acme = page.locator(".booking-row", { hasText: "Acme Foods Ltd" });
-  while (await acme.count()) { await acme.first().click(); await page.locator(".lane-detail").getByRole("button", { name: "Delete" }).click(); } // left by the sale's Loaded toggle above, or an earlier run
-  await settled(page);
 
   await side(page, A.sale.name).click();
   await pill(page, "Order Tracking").click();
@@ -404,8 +407,8 @@ test("a delivery saved as Loaded lands in Delivery Booking with its POD and addr
   await delivery.getByLabel("POD", { exact: true }).fill("Ashdod");
   await delivery.getByLabel("Loading address", { exact: true }).fill("NN5 7UW Northampton");
   const dates = delivery.locator('input[type="date"]'); // loading date, ETD, ETA
-  await dates.nth(1).fill(day(-1));
-  await dates.nth(2).fill(day(1));
+  await dates.nth(1).fill(isoDay(-1));
+  await dates.nth(2).fill(isoDay(1));
   await delivery.locator(".mini-field", { hasText: "Loaded or not" }).locator("select").selectOption("loaded");
   await save(page);
   await close(page);
@@ -423,12 +426,12 @@ test("a delivery saved as Loaded lands in Delivery Booking with its POD and addr
   await expect(detail).toContainText("Ashdod");
   await detail.getByRole("button", { name: /^Edit$/ }).click();
   const bDates = detail.locator('input[type="date"]'); // loading booked, ETD, ETA
-  await bDates.nth(2).fill(day(10));
+  await bDates.nth(2).fill(isoDay(10));
   await expect(acme.locator(".chip")).toHaveText(/in transit/i);
   await expect(acme.locator(".eta-soon")).toHaveCount(0);
-  await bDates.nth(1).fill(day(1));
+  await bDates.nth(1).fill(isoDay(1));
   await expect(acme.locator(".chip")).toHaveText(/^loaded$/i); // ETD not reached
-  await bDates.nth(2).fill(day(-1));
+  await bDates.nth(2).fill(isoDay(-1));
   await expect(acme.locator(".chip")).toHaveText(/arrived/i); // ETA passed
   await detail.getByLabel("Status set by hand").selectOption("pending");
   await expect(acme.locator(".chip")).toHaveText(/pending/i); // not loaded: the dates move nothing
@@ -461,37 +464,20 @@ test("the left menu stays put while the page scrolls", async ({ page }) => {
   await expect(side(page, "AI agent link")).toBeInViewport(); // the item just chosen stays where it was
 });
 
-test("Delivery Booking shows one page of bookings at a time; the find box and the page size change what a page holds", async ({ page }) => {
-  await signIn(page, A.admin.username, A.admin.password);
+test("Delivery Booking shows one page of bookings at a time; the find box and the page size change what a page holds", async ({ page, baseURL }) => {
   const PREFIX = "E2E Page Ltd";
-  // Bookings left by an earlier run go first, through the API: the screen must start from a known set.
-  const wipe = async () => {
-    const ids: string[] = await page.evaluate(async (prefix) => {
-      const state = await (await fetch("/api/state", { credentials: "include" })).json();
-      return (state.slices.bookings || []).filter((b: any) => String(b.customerName || "").startsWith(prefix)).map((b: any) => b.id);
-    }, PREFIX);
-    if (ids.length) {
-      const status = await page.evaluate(async (ids) => (await fetch("/api/sync", {
-        method: "POST", credentials: "include", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ changes: ids.map((id) => ({ kind: "bookings", id, deleted: true })) }),
-      })).status, ids);
-      expect(status).toBe(200);
-    }
-  };
-  await wipe();
+  await wipeBookings(baseURL!, PREFIX); // the screen must start from a known set
+  await signIn(page, A.admin.username, A.admin.password);
 
   // 23 bookings in one push, each a millisecond newer than the last: the server lists newest first, so 23 leads page 1.
   const stamp = Date.now();
-  const created = await page.evaluate(async ({ prefix, stamp }) => {
-    const changes = Array.from({ length: 23 }, (_, i) => {
-      const nn = String(i + 1).padStart(2, "0");
-      const id = `book-e2e-page-${nn}-${stamp}`;
-      const createdAt = new Date(stamp + i).toISOString();
-      const data = { id, pfiId: "", saleId: "", customerName: `${prefix} ${nn}`, saleName: "", docNo: `P${nn}`, pod: "", loadingAddress: "", mode: "container", subType: "20ft Dry", forwarder: "", currency: "USD", rate: "", method: "Palletized", loadingBooked: "", loadingTime: "", etd: "", eta: "", note: "", status: "pending", createdAt };
-      return { kind: "bookings", id, data, createdAt };
-    });
-    return (await fetch("/api/sync", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes }) })).status;
-  }, { prefix: PREFIX, stamp });
+  const changes = Array.from({ length: 23 }, (_, i) => {
+    const nn = String(i + 1).padStart(2, "0");
+    const id = `book-e2e-page-${nn}-${stamp}`;
+    const createdAt = new Date(stamp + i).toISOString();
+    return { kind: "bookings", id, createdAt, data: { ...emptyBooking(id, createdAt), customerName: `${PREFIX} ${nn}`, docNo: `P${nn}` } };
+  });
+  const created = await page.evaluate(async (changes) => (await fetch("/api/sync", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes }) })).status, changes);
   expect(created).toBe(200);
 
   await page.reload(); // the store takes the server's rows
@@ -524,7 +510,7 @@ test("Delivery Booking shows one page of bookings at a time; the find box and th
   await expect(rows).toHaveCount(Math.min(50, total));
   await expect(pager).toContainText(/1–\d+ of \d+/);
 
-  await wipe();
+  await wipeBookings(baseURL!, PREFIX);
   await page.reload();
   await expect(page.getByText("Log out")).toBeVisible(SLOW);
   await side(page, "Delivery Booking").click();
@@ -1615,8 +1601,7 @@ test("suppliers: edit renames the supplier on its POs; delete waits until its PO
 });
 
 test("customer balance: invoices sit under their customer with the outstanding total; each invoice has its status", async ({ page }) => {
-  const iso = (offsetDays: number) => { const d = new Date(); d.setDate(d.getDate() + offsetDays); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
-  const dmy = (offsetDays: number) => { const [y, m, d] = iso(offsetDays).split("-"); return `${d}/${m}/${y}`; };
+  const dmy = (offsetDays: number) => { const [y, m, d] = isoDay(offsetDays).split("-"); return `${d}/${m}/${y}`; };
   const typeDate = async (field: ReturnType<Page["locator"]>, value: string) => { const box = field.locator('.date-field input[type="text"]'); await box.fill(value); await box.press("Enter"); };
 
   for (const who of [A.sale, A.buyer, A.warehouse]) {
@@ -1739,7 +1724,7 @@ test("customer balance: invoices sit under their customer with the outstanding t
     const now = new Date().toISOString();
     const data = { id: "ptrack-e2e-legacy", customer: "E2E Walk-in Trading", inv: "E2E-INV-OLD", loadingDate: "", eta: "", currency: "EUR", amount: 120, dueDate, onHold: false, paid: true, createdBy: "e2e", createdAt: now, updatedAt: now };
     return (await fetch("/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes: [{ kind: "paymentTracks", id: data.id, createdAt: now, data }] }) })).status;
-  }, [iso(-30)]);
+  }, [isoDay(-30)]);
   expect(pushed).toBe(200);
 
   await page.reload(); // everything was saved; the list opens folded

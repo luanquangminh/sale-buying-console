@@ -1,15 +1,35 @@
 /*
  * Delivery Booking: one row per customer shipment. A PFI saved as Loaded for a delivery gets its row here by itself,
  * and every row's status follows its dates: Loaded until the ETD, In Transit from the ETD, Arrived from the ETA.
+ * The delivery block of the PFI itself lives here too, since a booking is made from it.
  */
 import { dayNumber } from "./dates";
 
+/** The ways a shipment goes out: a PFI's Vehicle and its booking's mode are the same list. */
 export const SHIPMENT_MODES = [
   { value: "container", label: "Container" },
   { value: "truck", label: "Truck" },
   { value: "uk_delivery", label: "UK Delivery" },
   { value: "air_freight", label: "Air Freight" },
 ];
+/** The sub-types a PFI's delivery offers per mode; a booking names its own in SHIPMENT_SUBTYPES. */
+export const VEHICLE_SUBTYPES = {
+  container: ["20ft Dry", "20ft Reefer", "40ft Dry", "40ft HC Dry", "40ft Reefer"],
+  truck: ["Dry", "Temperature Controlled"],
+  uk_delivery: ["Dry", "Temperature Controlled"],
+  air_freight: ["General Cargo", "Temperature Controlled"],
+};
+/** The delivery block a new PFI starts with, in the UI and in the MCP tools alike. */
+export function emptyPfiDelivery() {
+  return {
+    type: "delivery", bookedStatus: "not_booked", loaded: "not_loaded",
+    vehicleType: "container", subType: VEHICLE_SUBTYPES.container[0],
+    loadingDate: "", loadingTime: "",
+    collectionDate: "", collectionTime: "",
+    etd: "", eta: "",
+    pod: "", loadingAddress: "",
+  };
+}
 export const SHIPMENT_SUBTYPES = {
   container: ["20ft Dry", "20ft Reefer", "40ft Dry", "40ft Reefer", "40ft HC Dry"],
   truck: ["Dry Truck", "Reefer Truck"],
@@ -67,15 +87,14 @@ export const etaSoonText = (days) => (days <= 0 ? "ETA today" : days === 1 ? "ET
 
 /** A save that turns a customer delivery to Loaded; a collection has no booking, and a PFI already loaded gets no second row. */
 export function loadedForDelivery(before, after) {
-  const d = (after && after.delivery) || {};
-  const was = Boolean(before && before.delivery && before.delivery.loaded === "loaded");
-  return d.type === "delivery" && d.loaded === "loaded" && !was;
+  const d = after.delivery || {};
+  return d.type === "delivery" && d.loaded === "loaded" && before?.delivery?.loaded !== "loaded";
 }
 
 /** The booking that already covers a PFI: made from it, or typed in by hand under its number. */
 export function bookingOf(bookings, pfi) {
   const no = String(pfi.pfiNo || "").trim();
-  return (bookings || []).find((b) => b.pfiId === pfi.id || (no && String(b.docNo || "").trim() === no)) || null;
+  return bookings.find((b) => b.pfiId === pfi.id || (no && String(b.docNo || "").trim() === no)) || null;
 }
 
 /** An empty booking, as the Add button makes it. */
