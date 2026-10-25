@@ -17,3 +17,4 @@ scripts/verify-*.mjs
 scripts/shot-*.mjs
 scripts/check-real-data.mjs
 scripts/live-*.mjs
+plans/
