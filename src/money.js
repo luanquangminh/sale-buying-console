@@ -3,7 +3,11 @@
 export const VAT_OPTIONS = ["0.0% Z", "5.0%", "20.0% S"];
 const OPTION_RATE = { "0.0% Z": 0, "5.0%": 5, "20.0% S": 20 };
 
-const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+export const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+/** A typed amount as a number, or null when blank or not a number. */
+export const numOrNull = (v) => { if (v === "" || v === undefined || v === null) return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+/** Two decimals with thousands separators, the way every amount on screen is written. */
+export const fmtNumber = (n) => Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 /** What a document or a spreadsheet wrote in its VAT column, as a percentage: "20%", 0.2, "20.0% S", "S" → 20. */
 function readRate(vat) {
