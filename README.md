@@ -39,6 +39,20 @@ The **AI agent link** tab inside the app walks each user through connecting thei
 ChatGPT or Claude Code, with a key test against the server. The key is the user's console login,
 `username:password`, sent as `X-API-Key`, `Authorization: Bearer` or `?key=`.
 
+## Pages
+
+Every screen has its own address, so links can be shared and the browser's Back works. A role that opens an
+address it may not use lands on its home page.
+
+| Address | Who | Screen |
+|---------|-----|--------|
+| `/customers`, `/orders`, `/payments-received` | Sale | the rep's own pages |
+| `/reps/<rep id>/customers`, `/reps/<rep id>/orders`, `/reps/<rep id>/payments-received` | Admin | a rep's pages |
+| `/buyer/inbox`, `/buyer/orders-to-update`, `/buyer/po-tracking`, `/buyer/jobs` | Buyer, Admin | Buyer Space |
+| `/admin/mai`, `/admin/customer-balance`, `/admin/accounts` | Admin | |
+| `/accounting/payments-received` | Accountant, Admin | Payments Received Tracking |
+| `/container-rate`, `/warehouse`, `/delivery-booking`, `/agent` | shared, by role | |
+
 ## Layout
 
 | Path | What |

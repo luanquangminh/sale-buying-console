@@ -2111,6 +2111,69 @@ test("payments received: a rep announces a payment, the accountant confirms it w
   await expect(row(SHALUXE)).toHaveCount(0);
 });
 
+test("every screen has its own address: it follows the sidebar, survives a reload, opens from a pasted link, and sends a role home from a page it may not open", async ({ page }) => {
+  const path = () => new URL(page.url()).pathname;
+  // The buyer: the address follows the pages, Back returns, a reload keeps the page.
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await expect.poll(path).toBe("/buyer/inbox");
+  await side(page, "Orders to update").click();
+  await expect.poll(path).toBe("/buyer/orders-to-update");
+  await side(page, "PO Tracking").click();
+  await expect.poll(path).toBe("/buyer/po-tracking");
+  await page.goBack();
+  await expect.poll(path).toBe("/buyer/orders-to-update");
+  await expect(side(page, "Orders to update")).toHaveClass(/active/);
+  await page.reload();
+  await expect(side(page, "Orders to update")).toHaveClass(/active/);
+  await expect(page.locator(".sale-group-head").first()).toBeVisible();
+  await page.goto("/buyer/jobs"); // a pasted link
+  await expect(side(page, "Jobs")).toHaveClass(/active/);
+  await page.goto("/admin/accounts"); // not the buyer's: home
+  await expect.poll(path).toBe("/buyer/inbox");
+  await expect(side(page, "Inbox")).toHaveClass(/active/);
+  await page.goto("/warehouse");
+  await expect(page.locator(".cal-grid")).toBeVisible();
+  await expect.poll(path).toBe("/warehouse");
+
+  // The rep: plain addresses; another rep's address or the buyer's goes home.
+  await signIn(page, A.sale.username, A.sale.password);
+  await expect.poll(path).toBe("/customers");
+  await side(page, "Order Tracking").click();
+  await expect.poll(path).toBe("/orders");
+  await side(page, "Payments Received").click();
+  await expect.poll(path).toBe("/payments-received");
+  await page.goto("/buyer/inbox");
+  await expect.poll(path).toBe("/customers");
+  await page.goto("/#agent"); // the old link still opens the AI agent page, under its new address
+  await expect(page.locator(".page-title")).toContainText("AI agent link");
+  await expect.poll(path).toBe("/agent");
+
+  // The admin: a rep's pages carry the rep's id, and the address picks the rep.
+  await signIn(page, A.admin.username, A.admin.password);
+  await expect.poll(() => /^\/reps\/[^/]+\/customers$/.test(path())).toBe(true);
+  await side(page, A.sale.name).click();
+  const repId = path().split("/")[2];
+  await page.locator(".pill-tabs .pill", { hasText: "Order Tracking" }).click();
+  await expect.poll(path).toBe(`/reps/${repId}/orders`);
+  await side(page, "Payments Received").click();
+  await expect.poll(path).toBe("/accounting/payments-received");
+  await page.goto(`/reps/${repId}/payments-received`);
+  await expect(page.locator(".page-title")).toContainText(A.sale.name);
+  await expect(page.locator(".pill-tabs .pill", { hasText: "Payments Received" })).toHaveClass(/active/);
+  await page.goto("/reps/no-such-rep/orders");
+  await expect.poll(() => /^\/reps\/[^/]+\/customers$/.test(path())).toBe(true);
+  await side(page, "Accounts").click();
+  await expect.poll(path).toBe("/admin/accounts");
+
+  // The accountant and the warehouse login: one page each, at its address.
+  await signIn(page, A.accountant.username, A.accountant.password);
+  await expect.poll(path).toBe("/accounting/payments-received");
+  await page.goto("/orders");
+  await expect.poll(path).toBe("/accounting/payments-received");
+  await signIn(page, A.warehouse.username, A.warehouse.password);
+  await expect.poll(path).toBe("/warehouse");
+});
+
 test("drop-down panels open upwards when their button sits at the bottom of the window", async ({ page }) => {
   const viewport = page.viewportSize()!;
   // Button and panel are measured in one go, so a scroll in between cannot skew the comparison.
