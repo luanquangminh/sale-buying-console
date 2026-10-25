@@ -1,4 +1,5 @@
 /* Customer Balance (the tab first named Payment tracking): invoices to collect, by customer, and where each stands against its due date. */
+import { dayNumber } from "./dates";
 
 export const PAY_STATUSES = [
   { value: "not_paid", label: "Have not paid" },
@@ -16,11 +17,6 @@ export function payStatus(row) {
 
 /** An invoice is outstanding until the money is received; a proof of payment does not settle it. */
 export const isOutstanding = (row) => payStatus(row) !== "received";
-
-const dayNumber = (iso) => {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ""));
-  return m ? Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86400000 : null;
-};
 
 /** received → "paid"; no due date → "open"; due date already passed → "overdue" with the days late; otherwise "due" with the days left (0 = today). */
 export function dueState(row, todayIso) {

@@ -76,7 +76,7 @@ export function buildServer(env: Bindings, user: User): McpServer {
       changes.push(upsert("customers", data.id, data, rep.id));
     }
     const pfi = { id: uid("pfi"), saleId: rep.id, saleName: rep.name, pfiNo, customerId: cust.id, customerName: cust.data.companyName, currency, paymentTerm: paymentTerm || "", incoterm, createdAt: nowIso(),
-      products: [], delivery: { type: "delivery", bookedStatus: "not_booked", vehicleType: "container", subType: "20ft Dry", loadingDate: "", loadingTime: "", collectionDate: "", collectionTime: "", etd: "", eta: "" }, documents: [], payments: [] };
+      products: [], delivery: { type: "delivery", bookedStatus: "not_booked", vehicleType: "container", subType: "20ft Dry", loadingDate: "", loadingTime: "", collectionDate: "", collectionTime: "", etd: "", eta: "", pod: "", loadingAddress: "" }, documents: [], payments: [] };
     changes.push(upsert("pfis", pfi.id, pfi, rep.id));
     const feed = { id: uid("bfeed"), pfiId: pfi.id, saleId: rep.id, saleName: rep.name, customerName: pfi.customerName, message: `Created PFI ${pfiNo} — track order status once products are added.`, createdAt: nowIso(), seenByBuyer: false };
     changes.push(upsert("feedBuyerPfi", feed.id, feed, rep.id));

@@ -12,6 +12,7 @@ import { sortLanesByPod } from "./lanes";
 import { lineCover, pfiLineCover, pfiShortages, poShortages } from "./allocation";
 import { PAY_COMPANIES, diffTone, difference, fmtDiff, forSale, isConfirmed, splitExpected, toConfirmCount, unmatched } from "./paymentsReceived";
 import { homeFor, pathFor, sectionAllowed, stateFor } from "./routes";
+import { BOOKING_STATUSES, BOOKING_STATUS_LABEL, BOOKING_STATUS_TONE, LOADING_METHODS, SHIPMENT_MODES, SHIPMENT_SUBTYPES, bookingFromPfi, bookingOf, bookingStatus, emptyBooking, etaSoon, etaSoonText, loadedForDelivery } from "./booking";
 import { placePanel } from "./popup";
 import { acknowledged, changeSinceSent, describeChanges, describeWas, lineChange, removedSinceSent, stampSent } from "./sentMark";
 import { groupBySale, hasSaleChange } from "./orderGroups";
@@ -35,15 +36,6 @@ const ROLE_OPTIONS = [
   { value: "warehouse", label: "Warehouse" },
   { value: "accountant", label: "Accountant" },
 ];
-const BOOKING_STATUSES = [
-  { value: "pending", label: "Pending" },
-  { value: "loaded", label: "Loaded" },
-  { value: "in_transit", label: "In Transit" },
-  { value: "arrived", label: "Arrived" },
-];
-const BOOKING_STATUS_LABEL = Object.fromEntries(BOOKING_STATUSES.map((s) => [s.value, s.label]));
-const BOOKING_STATUS_TONE = { pending: "grey", loaded: "amber", in_transit: "blue", arrived: "green" };
-
 const CURRENCIES = ["USD", "GBP", "EUR"];
 const CURRENCY_SYMBOL = { USD: "$", GBP: "£", EUR: "€" };
 const INCOTERMS = [
@@ -79,19 +71,6 @@ const PO_VEHICLE_TYPES = [
 ];
 const PO_SUBTYPES = ["20ft Dry", "20ft Reefer", "40ft Dry", "40ft Reefer", "Air Freight", "Collection"];
 const CONTAINER_TYPES = ["20ft Dry", "20ft Reefer", "40ft Dry", "40ft Reefer", "40ft HC Dry"];
-const SHIPMENT_MODES = [
-  { value: "container", label: "Container" },
-  { value: "truck", label: "Truck" },
-  { value: "uk_delivery", label: "UK Delivery" },
-  { value: "air_freight", label: "Air Freight" },
-];
-const SHIPMENT_SUBTYPES = {
-  container: ["20ft Dry", "20ft Reefer", "40ft Dry", "40ft Reefer", "40ft HC Dry"],
-  truck: ["Dry Truck", "Reefer Truck"],
-  uk_delivery: ["Truck", "Van"],
-  air_freight: ["General Cargo", "Temperature Control"],
-};
-const LOADING_METHODS = ["Palletized", "Handload"];
 const VEHICLE_TYPES = [
   { value: "container", label: "Container" },
   { value: "truck", label: "Truck" },
@@ -167,6 +146,7 @@ function emptyPfiDelivery() {
     loadingDate: "", loadingTime: "",
     collectionDate: "", collectionTime: "",
     etd: "", eta: "",
+    pod: "", loadingAddress: "",
   };
 }
 function pfiLabel(pfi) {
@@ -421,6 +401,8 @@ const GlobalStyle = () => (
     .booking-row.open { background:#D7EADD; border-left-color:#2F7A52; border-bottom-color:#BFE3CB; }
     .booking-grid { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:14px; }
     .booking-value { font-size:13px; font-weight:500; padding:6px 0; border-bottom:1px dashed #E0E7E2; min-height:30px; }
+    .booking-status { display:flex; flex-direction:column; align-items:flex-start; gap:3px; }
+    .eta-soon { font-size:10.5px; font-weight:600; color:#B23B3B; white-space:nowrap; }
 
     .account-head-row { display:grid; grid-template-columns:.6fr 1.2fr 1fr 1.2fr 40px; gap:10px; padding:10px 18px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#7C8891; border-bottom:1px solid #E5E9E9; }
     .account-row { display:grid; grid-template-columns:.6fr 1.2fr 1fr 1.2fr 40px; gap:10px; padding:10px 18px; align-items:center; border-bottom:1px solid #EEF0EF; font-size:13px; }
@@ -449,7 +431,7 @@ const GlobalStyle = () => (
     .reorder-qty { font-weight:700; color:#B23B3B; white-space:nowrap; }
     .reorder-main { flex:1; }
 
-    .tone-grey { color:#7C8891; font-weight:600; }
+    .tone-grey, .tone-gray { color:#7C8891; font-weight:600; }
     .tone-amber { color:#A47521; font-weight:600; }
     .tone-blue { color:#2A5FA8; font-weight:600; }
     .tone-green { color:#2E6E48; font-weight:600; }
@@ -2176,6 +2158,7 @@ function PfiDeliverySection({ delivery, role, onChange }) {
             <option value="loaded">Loaded</option>
           </select>
         </div>
+        {isDelivery && <div className="muted" style={{ paddingBottom: 8, fontSize: 12 }}>Saving a delivery as Loaded adds it to Delivery Booking, with the POD, loading address and dates below.</div>}
       </div>
 
       {isDelivery ? (
@@ -2216,10 +2199,12 @@ function PfiDeliverySection({ delivery, role, onChange }) {
           </div>
 
           <div className="delivery-block">
-            <div className="delivery-block-label">Schedule</div>
+            <div className="delivery-block-label">Schedule &amp; places</div>
             <div className="mini-form-row">
               <div className="mini-field"><label>ETD</label><DateField value={delivery.etd} onChange={(v) => onChange({ etd: v })} /></div>
               <div className="mini-field"><label>ETA</label><DateField value={delivery.eta} onChange={(v) => onChange({ eta: v })} /></div>
+              <div className="mini-field"><label>POD</label><input aria-label="POD" placeholder="Port of discharge" value={delivery.pod || ""} onChange={(e) => onChange({ pod: e.target.value })} style={{ width: 170 }} /></div>
+              <div className="mini-field"><label>Loading address</label><input aria-label="Loading address" placeholder="Where the goods are loaded" value={delivery.loadingAddress || ""} onChange={(e) => onChange({ loadingAddress: e.target.value })} style={{ width: 240 }} /></div>
             </div>
           </div>
         </>
@@ -3583,7 +3568,19 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
 
 /* ---------------- Delivery Booking (Admin only) ---------------- */
 
-function BookingDetail({ booking, actions }) {
+/** The status a booking shows (see bookingStatus), with the small red ETA warning under In Transit. */
+function BookingStatusChip({ booking, today }) {
+  const status = bookingStatus(booking, today);
+  const soon = etaSoon(booking, today);
+  return (
+    <div className="booking-status">
+      <span className={`chip ${BOOKING_STATUS_TONE[status]}`}>{BOOKING_STATUS_LABEL[status]}</span>
+      {soon !== null && <div className="eta-soon">{etaSoonText(soon)}</div>}
+    </div>
+  );
+}
+
+function BookingDetail({ booking, actions, today }) {
   const [editing, setEditing] = useState(!booking.customerName && !booking.pod);
   const set = (field, value) => actions.updateBooking(booking.id, { [field]: value });
   const modeLabel = SHIPMENT_MODES.find((m) => m.value === booking.mode)?.label || "—";
@@ -3603,7 +3600,12 @@ function BookingDetail({ booking, actions }) {
       <div className="booking-grid">
         <div className="mini-field">
           <label>Status</label>
-          <select className={`tone-${BOOKING_STATUS_TONE[booking.status] || "grey"}`} value={booking.status} onChange={(e) => set("status", e.target.value)}>
+          <BookingStatusChip booking={booking} today={today} />
+          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Once loaded: In Transit from the ETD, Arrived from the ETA.</div>
+        </div>
+        <div className="mini-field">
+          <label>Set by hand</label>
+          <select aria-label="Status set by hand" className={`tone-${BOOKING_STATUS_TONE[booking.status] || "gray"}`} value={booking.status} onChange={(e) => set("status", e.target.value)}>
             {BOOKING_STATUSES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
           </select>
         </div>
@@ -3699,6 +3701,7 @@ function BookingDetail({ booking, actions }) {
 function DeliveryBookingTab({ bookings, actions }) {
   const [find, setFind] = useState("");
   const [expanded, setExpanded] = useState(null);
+  const today = todayLocalIso();
 
   const fq = find.trim().toLowerCase();
   const visible = fq
@@ -3750,10 +3753,10 @@ function DeliveryBookingTab({ bookings, actions }) {
                     <div className="muted sm-mono">{fmtDate(b.loadingBooked) || "—"}{b.loadingTime ? ` ${b.loadingTime}` : ""}</div>
                     <div className="muted sm-mono">{fmtDate(b.etd) || "—"}</div>
                     <div className="muted sm-mono">{fmtDate(b.eta) || "—"}</div>
-                    <div><span className={`chip ${b.status === "arrived" ? "green" : b.status === "pending" ? "gray" : "amber"}`}>{BOOKING_STATUS_LABEL[b.status]}</span></div>
+                    <BookingStatusChip booking={b} today={today} />
                     <ChevronRight size={16} className={`chev ${isOpen ? "open" : ""}`} />
                   </div>
-                  {isOpen && <BookingDetail booking={b} actions={actions} />}
+                  {isOpen && <BookingDetail booking={b} actions={actions} today={today} />}
                 </React.Fragment>
               );
             })}
@@ -5514,13 +5517,7 @@ export default function App() {
 
   const addBooking = () => {
     const id = uid("book");
-    setBookings((prev) => [{
-      id, customerName: "", saleName: "", docNo: "", pod: "", loadingAddress: "",
-      mode: "container", subType: SHIPMENT_SUBTYPES.container[0],
-      forwarder: "", currency: "USD", rate: "", method: LOADING_METHODS[0],
-      loadingBooked: "", loadingTime: "", etd: "", eta: "", note: "", status: "pending",
-      createdAt: new Date().toISOString(),
-    }, ...prev]);
+    setBookings((prev) => [emptyBooking(id, new Date().toISOString()), ...prev]);
     return id;
   };
   const updateBooking = (id, patch) => setBookings((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
@@ -5873,6 +5870,10 @@ export default function App() {
     };
     setPfisAs(byRole)(applyReceipts(nextPfis, nextPos));
 
+    // A customer delivery saved as Loaded goes to Delivery Booking by itself, once: a row typed in by hand under its number counts.
+    const booked = loadedForDelivery(before, draft) && !bookingOf(bookings, draft);
+    if (booked) setBookings((prev) => (bookingOf(prev, draft) ? prev : [bookingFromPfi(draft, uid("book"), new Date().toISOString()), ...prev]));
+
     (reorderToggles || []).forEach((t) => {
       const existing = reorders.find((r) => r.pfiId === draft.id && r.productId === t.productId && (r.poLineId || null) === (t.poLineId || null));
       if (existing) {
@@ -5893,7 +5894,7 @@ export default function App() {
 
     const summary = summarise(before, draft, allocPatches.length);
     const reorderCount = (reorderToggles || []).length;
-    const parts = [summary, reorderCount ? `${reorderCount} reorder request(s) changed` : ""].filter(Boolean).join(", ");
+    const parts = [summary, reorderCount ? `${reorderCount} reorder request(s) changed` : "", booked ? "added to Delivery Booking" : ""].filter(Boolean).join(", ");
     if (!parts) return;
     if (byRole === "sale") {
       pushBuyerPfiFeed(draft.id, saleId, draft.saleName, draft.customerName, `Sale saved ${pfiLabel(draft)}: ${parts}.`);

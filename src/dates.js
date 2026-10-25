@@ -68,6 +68,12 @@ export function parseMonth(text) {
   return full ? full.slice(0, 7) : null;
 }
 
+/** ISO date → whole days since 1970 (UTC), for date arithmetic; null when blank or malformed. */
+export function dayNumber(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ""));
+  return m ? Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86400000 : null;
+}
+
 export function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }

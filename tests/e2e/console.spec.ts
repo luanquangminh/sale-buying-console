@@ -384,6 +384,64 @@ test("order tracking shows a status chip that follows the Loaded flag", async ({
   await expect(row.locator(".chip").last()).not.toHaveText(/^loaded$/i);
 });
 
+test("a delivery saved as Loaded lands in Delivery Booking with its POD and address; the status there follows ETD and ETA", async ({ page }) => {
+  const day = (offset: number) => { const d = new Date(); d.setDate(d.getDate() + offset); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  await signIn(page, A.admin.username, A.admin.password);
+  await side(page, "Delivery Booking").click();
+  const acme = page.locator(".booking-row", { hasText: "Acme Foods Ltd" });
+  while (await acme.count()) { await acme.first().click(); await page.locator(".lane-detail").getByRole("button", { name: "Delete" }).click(); } // left by the sale's Loaded toggle above, or an earlier run
+  await settled(page);
+
+  await side(page, A.sale.name).click();
+  await pill(page, "Order Tracking").click();
+  const row = page.locator(".pfi-list-row", { hasText: "PFI 3200" });
+  await openDetail(page, row);
+  const delivery = page.locator(".detail-body .section-card", { hasText: "Loaded or not" });
+  await delivery.locator("select").first().selectOption("delivery");
+  await delivery.getByLabel("POD", { exact: true }).fill("Ashdod");
+  await delivery.getByLabel("Loading address", { exact: true }).fill("NN5 7UW Northampton");
+  const dates = delivery.locator('input[type="date"]'); // loading date, ETD, ETA
+  await dates.nth(1).fill(day(-1));
+  await dates.nth(2).fill(day(1));
+  await delivery.locator(".mini-field", { hasText: "Loaded or not" }).locator("select").selectOption("loaded");
+  await save(page);
+  await close(page);
+
+  await side(page, "Delivery Booking").click();
+  await expect(acme).toHaveCount(1);
+  await expect(acme).toContainText("3200");
+  await expect(acme).toContainText("Ashdod");
+  await expect(acme).toContainText("NN5 7UW Northampton");
+  await expect(acme.locator(".chip")).toHaveText(/in transit/i); // ETD yesterday
+  await expect(acme.locator(".eta-soon")).toHaveText("ETA tomorrow");
+
+  await acme.click();
+  const detail = page.locator(".lane-detail");
+  await expect(detail).toContainText("Ashdod");
+  await detail.getByRole("button", { name: /^Edit$/ }).click();
+  const bDates = detail.locator('input[type="date"]'); // loading booked, ETD, ETA
+  await bDates.nth(2).fill(day(10));
+  await expect(acme.locator(".chip")).toHaveText(/in transit/i);
+  await expect(acme.locator(".eta-soon")).toHaveCount(0);
+  await bDates.nth(1).fill(day(1));
+  await expect(acme.locator(".chip")).toHaveText(/^loaded$/i); // ETD not reached
+  await bDates.nth(2).fill(day(-1));
+  await expect(acme.locator(".chip")).toHaveText(/arrived/i); // ETA passed
+  await detail.getByLabel("Status set by hand").selectOption("pending");
+  await expect(acme.locator(".chip")).toHaveText(/pending/i); // not loaded: the dates move nothing
+  await detail.getByRole("button", { name: "Delete" }).click();
+  await expect(acme).toHaveCount(0);
+  await settled(page);
+
+  await side(page, A.sale.name).click(); // back to Not loaded, so the next run adds the row again
+  await pill(page, "Order Tracking").click();
+  await openDetail(page, row);
+  await page.locator(".detail-body .mini-field", { hasText: "Loaded or not" }).locator("select").selectOption("not_loaded");
+  await save(page);
+  await close(page);
+  await settled(page);
+});
+
 test("a row-level PO edit reaches the sale's open PFI without reopening it", async ({ browser }) => {
   const saleCtx = await browser.newContext();
   const sale = await saleCtx.newPage();
