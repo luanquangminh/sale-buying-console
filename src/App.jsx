@@ -10,6 +10,7 @@ import { orderTotals, vatOption, VAT_OPTIONS } from "./money";
 import { DUE_TONE, dueLabel, dueState, groupByCustomer, PAY_STATUSES, PAY_STATUS_TONE, payStatus } from "./payments";
 import { sortLanesByPod } from "./lanes";
 import { lineCover, pfiLineCover, pfiShortages, poShortages } from "./allocation";
+import { PAY_COMPANIES, diffTone, difference, fmtDiff, forSale, newestFirst, splitExpected, toConfirmCount, unmatched } from "./paymentsReceived";
 import { placePanel } from "./popup";
 import { acknowledged, changeSinceSent, describeChanges, describeWas, lineChange, removedSinceSent, stampSent } from "./sentMark";
 import { groupBySale, hasSaleChange } from "./orderGroups";
@@ -31,6 +32,7 @@ const ROLE_OPTIONS = [
   { value: "buyer", label: "Buyer" },
   { value: "admin", label: "Admin" },
   { value: "warehouse", label: "Warehouse" },
+  { value: "accountant", label: "Accountant" },
 ];
 const BOOKING_STATUSES = [
   { value: "pending", label: "Pending" },
@@ -557,6 +559,17 @@ const GlobalStyle = () => (
     .cal-dot { width:7px; height:7px; border-radius:50%; flex:none; background:#7C8891; }
     .cal-event .cal-dot { display:inline-block; vertical-align:middle; margin:-2px 5px 0 0; }
     .cal-event .cal-party { display:inline-block; vertical-align:middle; margin:-1px 4px 0 0; }
+    .pay-grid > div > label { display:block; }
+    .pay-grid .done-tick { margin-top:0; }
+    .pay-diff { font-weight:700; font-size:11.5px; margin-top:4px; }
+    .pay-diff.tone-red { color:#B23B3B; } .pay-diff.tone-green { color:#1B5237; } .pay-diff.tone-grey { color:#7C8891; }
+    .pay-qb { border:1px dashed #D8E6DC; border-radius:5px; padding:10px 12px; background:#FAFCFA; }
+    .pay-qb-title { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#2F7A52; margin-bottom:8px; }
+    .pay-table th.num, .pay-table td.num { text-align:right; padding-right:18px; min-width:110px; white-space:nowrap; }
+    .qb-cell { font-size:11.5px; color:#5B6770; white-space:nowrap; }
+    .pay-confirm-del { display:inline-flex; gap:6px; align-items:center; }
+    .pill-count { display:inline-block; min-width:18px; padding:0 5px; margin-left:4px; border-radius:9px; background:#2F7A52; color:#fff; font-size:10.5px; font-weight:700; line-height:18px; text-align:center; }
+    .pill.active .pill-count { background:#fff; color:#2F7A52; }
     .cal-party { display:inline-block; flex:none; min-width:13px; text-align:center; font-size:9px; font-weight:700; line-height:13px; border-radius:2px; background:rgba(255,255,255,.75); color:#3A4147; margin-left:-1px; }
     .cal-party.unset { background:#FFF1B8; color:#6B5200; }
     select.wh-party.unset { border-color:#D9A400; background:#FFFBEA; }
@@ -4382,6 +4395,295 @@ function WarehouseTab({ events, actions, userName, me, reps = [] }) {
   );
 }
 
+/* ---------------- Payments Received Tracking: a rep announces a payment a customer says is on its way; the accountant records what the bank showed ----------------
+   Sale: their own expected payments (pending, then confirmed with the difference). Accountant: everything to confirm, everything confirmed,
+   and the money nobody announced. Admin: both views. The data: expectedPayments (the rep's) and receivedPayments (the accountant's), see paymentsReceived.js. */
+
+const EMPTY_EXPECTED = { date: "", company: PAY_COMPANIES[0], currency: CURRENCIES[0], expectedAmount: "", sender: "", customer: "", proof: false, invNo: "" };
+const EMPTY_RECEIVED = { receivedDate: "", company: PAY_COMPANIES[0], currency: CURRENCIES[0], receivedAmount: "", sender: "", customer: "", qb: { date: "", time: "", done: false, addedBy: "" } };
+const fmtAmount = (n) => (n === "" || n === undefined || n === null ? "—" : Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+const amountOk = (v) => v !== "" && v !== undefined && v !== null && Number.isFinite(Number(v)) && Number(v) > 0;
+
+function ExpectedFields({ value, onChange, onEnter }) {
+  const set = (patch) => onChange({ ...value, ...patch });
+  const enter = (e) => { if (e.key === "Enter" && onEnter) { e.preventDefault(); onEnter(); } };
+  return (
+    <div className="form-grid pay-grid" style={{ gridTemplateColumns: "130px 90px 90px 130px 1fr 1fr 110px 110px" }}>
+      <div><label>Date</label><DateField value={value.date} onChange={(v) => set({ date: v })} /></div>
+      <div><label>Company</label><select aria-label="Company" value={value.company} onChange={(e) => set({ company: e.target.value })}>{PAY_COMPANIES.map((c) => <option key={c} value={c}>{c}</option>)}</select></div>
+      <div><label>Currency</label><select aria-label="Currency" value={value.currency} onChange={(e) => set({ currency: e.target.value })}>{CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}</select></div>
+      <div><label>Expected amount</label><input type="number" min="0" step="0.01" aria-label="Expected amount" placeholder="0.00" value={value.expectedAmount} onChange={(e) => set({ expectedAmount: e.target.value })} onKeyDown={enter} /></div>
+      <div><label>Sender name</label><input aria-label="Sender name" placeholder="Name on the transfer" value={value.sender} onChange={(e) => set({ sender: e.target.value })} onKeyDown={enter} /></div>
+      <div><label>Customer name</label><input aria-label="Customer name" placeholder="Customer" value={value.customer} onChange={(e) => set({ customer: e.target.value })} onKeyDown={enter} /></div>
+      <div><label>Payment proof</label><label className={`done-tick ${value.proof ? "on" : ""}`}><input type="checkbox" aria-label="Payment proof" checked={!!value.proof} onChange={(e) => set({ proof: e.target.checked })} /> {value.proof ? "Yes" : "No"}</label></div>
+      <div><label>INV no. <span className="muted">(optional)</span></label><input aria-label="INV no." placeholder="INV" value={value.invNo} onChange={(e) => set({ invNo: e.target.value })} onKeyDown={enter} /></div>
+    </div>
+  );
+}
+
+/** The accountant's side of a payment: what the bank showed, and the QuickBooks entry. `expected` (if any) gives the live difference. */
+function ReceivedFields({ value, onChange, expected }) {
+  const set = (patch) => onChange({ ...value, ...patch });
+  const setQb = (patch) => onChange({ ...value, qb: { ...value.qb, ...patch } });
+  const diff = expected ? difference(expected, value) : null;
+  return (
+    <>
+      <div className="form-grid pay-grid" style={{ gridTemplateColumns: "130px 90px 90px 140px 1fr 1fr", marginBottom: 10 }}>
+        <div><label>Date received</label><DateField value={value.receivedDate} onChange={(v) => set({ receivedDate: v })} /></div>
+        <div><label>Company</label><select aria-label="Company" value={value.company} onChange={(e) => set({ company: e.target.value })}>{PAY_COMPANIES.map((c) => <option key={c} value={c}>{c}</option>)}</select></div>
+        <div><label>Currency</label><select aria-label="Currency" value={value.currency} onChange={(e) => set({ currency: e.target.value })}>{CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}</select></div>
+        <div>
+          <label>Received amount</label>
+          <input type="number" min="0" step="0.01" aria-label="Received amount" placeholder="0.00" value={value.receivedAmount} onChange={(e) => set({ receivedAmount: e.target.value })} />
+          {expected && <div className={`pay-diff tone-${diffTone(diff)}`} title="Received minus expected">{diff === null ? "difference —" : `difference ${fmtDiff(diff)}`}</div>}
+        </div>
+        <div><label>Sender name</label><input aria-label="Sender name" placeholder="Name on the bank statement" value={value.sender} onChange={(e) => set({ sender: e.target.value })} /></div>
+        {!expected && <div><label>Customer <span className="muted">(if known)</span></label><input aria-label="Customer name" placeholder="Customer" value={value.customer} onChange={(e) => set({ customer: e.target.value })} /></div>}
+      </div>
+      <div className="pay-qb">
+        <div className="pay-qb-title">Add to QuickBooks</div>
+        <div className="form-grid pay-grid" style={{ gridTemplateColumns: "130px 110px 110px 1fr" }}>
+          <div><label>Date</label><DateField value={value.qb.date} onChange={(v) => setQb({ date: v })} /></div>
+          <div><label>Time</label><input type="time" aria-label="QuickBooks time" value={value.qb.time} onChange={(e) => setQb({ time: e.target.value })} /></div>
+          <div><label>Done</label><label className={`done-tick ${value.qb.done ? "on" : ""}`}><input type="checkbox" aria-label="Added to QuickBooks" checked={!!value.qb.done} onChange={(e) => setQb({ done: e.target.checked })} /> Done</label></div>
+          <div><label>Added by</label><input aria-label="Added by" placeholder="Who entered it" value={value.qb.addedBy} onChange={(e) => setQb({ addedBy: e.target.value })} /></div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+const qbText = (qb) => {
+  if (!qb) return "—";
+  const when = [fmtDate(qb.date), qb.time].filter(Boolean).join(" ");
+  return `${qb.done ? "Done" : "Not yet"}${when ? ` · ${when}` : ""}${qb.addedBy ? ` · ${qb.addedBy}` : ""}`;
+};
+
+function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actions, userName, reps = [] }) {
+  const isRep = mode === "sale";
+  const today = todayLocalIso();
+  const [tab, setTab] = useState(isRep ? "expected" : "toconfirm");
+  const [form, setForm] = useState(() => ({ ...EMPTY_EXPECTED, date: today }));
+  const [loose, setLoose] = useState(() => ({ ...EMPTY_RECEIVED, receivedDate: today, qb: { ...EMPTY_RECEIVED.qb, addedBy: userName || "" } }));
+  const [editing, setEditing] = useState(null); // { kind: "expected" | "received", row, draft, expected? }
+  const [confirming, setConfirming] = useState(null); // { expected, draft }
+  const [removing, setRemoving] = useState(null); // the id whose delete awaits a second click
+  const [find, setFind] = useState("");
+  const repName = (id) => (reps.find((r) => r.id === id) || {}).name || "";
+
+  const mine = isRep ? forSale(expected, saleId) : expected || [];
+  const { pending, confirmed } = splitExpected(mine, received);
+  const unannounced = isRep ? [] : unmatched(received);
+  const fq = find.trim().toLowerCase();
+  const matches = (r) => !fq || [r.customer, r.sender, r.invNo, r.saleName, r.expectedAmount, r.receivedAmount, r.confirmation && r.confirmation.sender].some((f) => String(f || "").toLowerCase().includes(fq));
+
+  const addExpected = () => {
+    if (!amountOk(form.expectedAmount) || !form.customer.trim()) return;
+    actions.addExpectedPayment({ ...form, saleId, saleName, createdBy: userName });
+    setForm({ ...EMPTY_EXPECTED, date: today, company: form.company, currency: form.currency });
+  };
+  const addLoose = () => {
+    if (!amountOk(loose.receivedAmount)) return;
+    actions.addReceivedPayment({ ...loose, expectedId: "", confirmedBy: userName });
+    setLoose({ ...EMPTY_RECEIVED, receivedDate: today, company: loose.company, currency: loose.currency, qb: { ...EMPTY_RECEIVED.qb, addedBy: userName || "" } });
+  };
+  const openConfirm = (e) => setConfirming({ expected: e, draft: { ...EMPTY_RECEIVED, receivedDate: today, company: e.company, currency: e.currency, receivedAmount: e.expectedAmount, sender: e.sender || "", qb: { ...EMPTY_RECEIVED.qb, addedBy: userName || "" } } });
+  const saveConfirm = () => {
+    if (!confirming || !amountOk(confirming.draft.receivedAmount)) return;
+    actions.addReceivedPayment({ ...confirming.draft, expectedId: confirming.expected.id, customer: confirming.expected.customer, confirmedBy: userName });
+    setConfirming(null);
+    setTab("confirmed");
+  };
+  const saveEdit = () => {
+    if (!editing) return;
+    if (editing.kind === "expected") { if (!amountOk(editing.draft.expectedAmount) || !editing.draft.customer.trim()) return; actions.updateExpectedPayment(editing.row.id, editing.draft); }
+    else { if (!amountOk(editing.draft.receivedAmount)) return; actions.updateReceivedPayment(editing.row.id, editing.draft); }
+    setEditing(null);
+  };
+  const remove = (kind, id) => {
+    if (removing !== id) { setRemoving(id); return; }
+    if (kind === "expected") actions.deleteExpectedPayment(id); else actions.deleteReceivedPayment(id);
+    setRemoving(null);
+  };
+  const Remove = ({ kind, id, label = "Delete" }) => (removing === id
+    ? <span className="pay-confirm-del"><button className="btn btn-sm btn-danger" onClick={() => remove(kind, id)}>Yes, {label.toLowerCase()}</button><button className="btn btn-sm" onClick={() => setRemoving(null)}>Cancel</button></span>
+    : <button className="btn-icon" title={label} onClick={() => remove(kind, id)}><Trash2 size={14} /></button>);
+  const Diff = ({ value }) => <span className={`ro pay-diff tone-${diffTone(value)}`}>{value === null || value === undefined ? "—" : fmtDiff(value)}</span>;
+  const empty = (text) => <div className="empty"><CreditCard size={30} /><div style={{ fontWeight: 600 }}>{text}</div></div>;
+
+  const pendingRows = pending.filter(matches); const confirmedRows = confirmed.filter(matches); const looseRows = unannounced.filter(matches);
+
+  return (
+    <div>
+      <div className="pill-tabs">
+        {isRep ? (
+          <>
+            <div className={`pill ${tab === "expected" ? "active" : ""}`} onClick={() => setTab("expected")}>Expected {pending.length > 0 && <span className="pill-count">{pending.length}</span>}</div>
+            <div className={`pill ${tab === "confirmed" ? "active" : ""}`} onClick={() => setTab("confirmed")}>Confirmed {confirmed.length > 0 && <span className="pill-count">{confirmed.length}</span>}</div>
+          </>
+        ) : (
+          <>
+            <div className={`pill ${tab === "toconfirm" ? "active" : ""}`} onClick={() => setTab("toconfirm")}>To confirm {pending.length > 0 && <span className="pill-count">{pending.length}</span>}</div>
+            <div className={`pill ${tab === "confirmed" ? "active" : ""}`} onClick={() => setTab("confirmed")}>Confirmed {confirmed.length > 0 && <span className="pill-count">{confirmed.length}</span>}</div>
+            <div className={`pill ${tab === "unmatched" ? "active" : ""}`} onClick={() => setTab("unmatched")}>Unmatched {unannounced.length > 0 && <span className="pill-count">{unannounced.length}</span>}</div>
+          </>
+        )}
+      </div>
+
+      {isRep && tab === "expected" && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <div className="add-form" style={{ borderBottom: "none" }}>
+            <ExpectedFields value={form} onChange={setForm} onEnter={addExpected} />
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10 }}>
+              <button className="btn btn-accent" disabled={!amountOk(form.expectedAmount) || !form.customer.trim()} onClick={addExpected}><Plus size={14} /> Add expected payment</button>
+              <span className="muted" style={{ fontSize: 12 }}>What the customer says they have sent. The accountant confirms it against the bank; it then moves to Confirmed.</span>
+            </div>
+          </div>
+        </div>
+      )}
+      {!isRep && tab === "unmatched" && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <div className="add-form" style={{ borderBottom: "none" }}>
+            <ReceivedFields value={loose} onChange={setLoose} expected={null} />
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10 }}>
+              <button className="btn btn-accent" disabled={!amountOk(loose.receivedAmount)} onClick={addLoose}><Plus size={14} /> Add received payment</button>
+              <span className="muted" style={{ fontSize: 12 }}>Money on the bank statement that no rep announced.</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="overview-bar">
+        <FindBar value={find} onChange={setFind} placeholder="Find by customer, sender, INV or rep…" total={tab === "confirmed" ? confirmed.length : tab === "unmatched" ? unannounced.length : pending.length} shown={tab === "confirmed" ? confirmedRows.length : tab === "unmatched" ? looseRows.length : pendingRows.length} />
+      </div>
+
+      {(tab === "expected" || tab === "toconfirm") && (
+        <div className="card">
+          {pending.length === 0 ? empty(isRep ? "Nothing expected right now" : "Nothing to confirm") : pendingRows.length === 0 ? empty("No payment matches that search") : (
+            <div className="table-scroll">
+              <table className="data-table pay-table" style={{ minWidth: "auto" }}>
+                <thead><tr><th>Date</th>{!isRep && <th>Sale rep</th>}<th>Customer</th><th>Company</th><th>Currency</th><th className="num">Expected</th><th>Sender</th><th>Proof</th><th>INV</th><th /></tr></thead>
+                <tbody>
+                  {pendingRows.map((e) => (
+                    <tr key={e.id} className="pay-row pending">
+                      <td className="ro">{fmtDate(e.date) || "—"}</td>
+                      {!isRep && <td className="ro">{e.saleName || repName(e.saleId) || "—"}</td>}
+                      <td className="ro" style={{ fontWeight: 600 }}>{e.customer || "—"}</td>
+                      <td className="ro">{e.company}</td>
+                      <td className="ro">{e.currency}</td>
+                      <td className="ro num sm-mono">{fmtAmount(e.expectedAmount)}</td>
+                      <td className="ro">{e.sender || "—"}</td>
+                      <td><span className={`chip ${e.proof ? "green" : "gray"}`}>{e.proof ? "Yes" : "No"}</span></td>
+                      <td className="ro">{e.invNo || "—"}</td>
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        {isRep ? (
+                          <>
+                            <button className="btn btn-sm" onClick={() => setEditing({ kind: "expected", row: e, draft: { date: e.date, company: e.company, currency: e.currency, expectedAmount: e.expectedAmount, sender: e.sender || "", customer: e.customer || "", proof: !!e.proof, invNo: e.invNo || "" } })}>Edit</button>{" "}
+                            <Remove kind="expected" id={e.id} />
+                          </>
+                        ) : (
+                          <button className="btn btn-sm btn-accent" onClick={() => openConfirm(e)}>Confirm</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === "confirmed" && (
+        <div className="card">
+          {confirmed.length === 0 ? empty("Nothing confirmed yet") : confirmedRows.length === 0 ? empty("No payment matches that search") : (
+            <div className="table-scroll">
+              <table className="data-table pay-table" style={{ minWidth: "auto" }}>
+                <thead><tr><th>Date received</th>{!isRep && <th>Sale rep</th>}<th>Customer</th><th>Company</th><th>Currency</th><th className="num">Expected</th><th className="num">Received</th><th className="num">Difference</th><th>Sender (bank)</th><th>QuickBooks</th><th>Confirmed by</th>{!isRep && <th />}</tr></thead>
+                <tbody>
+                  {confirmedRows.map((e) => (
+                    <tr key={e.id} className="pay-row confirmed">
+                      <td className="ro">{fmtDate(e.confirmation.receivedDate) || "—"}</td>
+                      {!isRep && <td className="ro">{e.saleName || repName(e.saleId) || "—"}</td>}
+                      <td className="ro" style={{ fontWeight: 600 }}>{e.customer || "—"}<div className="muted" style={{ fontSize: 11 }}>expected {fmtDate(e.date)}{e.invNo ? ` · INV ${e.invNo}` : ""}</div></td>
+                      <td className="ro">{e.confirmation.company}</td>
+                      <td className="ro">{e.confirmation.currency}</td>
+                      <td className="ro num sm-mono">{fmtAmount(e.expectedAmount)}</td>
+                      <td className="ro num sm-mono">{fmtAmount(e.confirmation.receivedAmount)}</td>
+                      <td className="num"><Diff value={e.diff} /></td>
+                      <td className="ro">{e.confirmation.sender || "—"}</td>
+                      <td className="ro qb-cell">{qbText(e.confirmation.qb)}</td>
+                      <td className="ro">{e.confirmation.confirmedBy || "—"}</td>
+                      {!isRep && (
+                        <td style={{ whiteSpace: "nowrap" }}>
+                          <button className="btn btn-sm" onClick={() => setEditing({ kind: "received", row: e.confirmation, expected: e, draft: { receivedDate: e.confirmation.receivedDate, company: e.confirmation.company, currency: e.confirmation.currency, receivedAmount: e.confirmation.receivedAmount, sender: e.confirmation.sender || "", customer: e.confirmation.customer || "", qb: { ...EMPTY_RECEIVED.qb, ...(e.confirmation.qb || {}) } } })}>Edit</button>{" "}
+                          <Remove kind="received" id={e.confirmation.id} label="Undo confirmation" />
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!isRep && tab === "unmatched" && (
+        <div className="card">
+          {unannounced.length === 0 ? empty("No unannounced money") : looseRows.length === 0 ? empty("No payment matches that search") : (
+            <div className="table-scroll">
+              <table className="data-table pay-table" style={{ minWidth: "auto" }}>
+                <thead><tr><th>Date received</th><th>Customer</th><th>Company</th><th>Currency</th><th className="num">Received</th><th>Sender (bank)</th><th>QuickBooks</th><th>Entered by</th><th /></tr></thead>
+                <tbody>
+                  {looseRows.map((r) => (
+                    <tr key={r.id} className="pay-row loose">
+                      <td className="ro">{fmtDate(r.receivedDate) || "—"}</td>
+                      <td className="ro" style={{ fontWeight: 600 }}>{r.customer || "—"}</td>
+                      <td className="ro">{r.company}</td>
+                      <td className="ro">{r.currency}</td>
+                      <td className="ro num sm-mono">{fmtAmount(r.receivedAmount)}</td>
+                      <td className="ro">{r.sender || "—"}</td>
+                      <td className="ro qb-cell">{qbText(r.qb)}</td>
+                      <td className="ro">{r.confirmedBy || "—"}</td>
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        <button className="btn btn-sm" onClick={() => setEditing({ kind: "received", row: r, expected: null, draft: { receivedDate: r.receivedDate, company: r.company, currency: r.currency, receivedAmount: r.receivedAmount, sender: r.sender || "", customer: r.customer || "", qb: { ...EMPTY_RECEIVED.qb, ...(r.qb || {}) } } })}>Edit</button>{" "}
+                        <Remove kind="received" id={r.id} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {confirming && (
+        <Modal title={`Confirm payment — ${confirming.expected.customer || "customer"}`} subtitle={`${confirming.expected.saleName || repName(confirming.expected.saleId)} expects ${confirming.expected.currency} ${fmtAmount(confirming.expected.expectedAmount)} from ${confirming.expected.sender || "—"} · announced ${fmtDate(confirming.expected.date)}`} onClose={() => setConfirming(null)}>
+          <ReceivedFields value={confirming.draft} onChange={(draft) => setConfirming({ ...confirming, draft })} expected={confirming.expected} />
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 14 }}>
+            <button className="btn btn-accent" disabled={!amountOk(confirming.draft.receivedAmount)} onClick={saveConfirm}><Save size={14} /> Confirm payment</button>
+            <button className="btn btn-ghost" onClick={() => setConfirming(null)}>Cancel</button>
+            <span className="muted" style={{ fontSize: 12 }}>The rep sees the amount received and the difference once saved.</span>
+          </div>
+        </Modal>
+      )}
+      {editing && (
+        <Modal title={editing.kind === "expected" ? "Expected payment" : editing.expected ? `Confirmation — ${editing.expected.customer || "customer"}` : "Received payment"} subtitle={editing.kind === "expected" ? "Change what you announced; the accountant has not confirmed it yet" : "What the bank showed"} onClose={() => setEditing(null)}>
+          {editing.kind === "expected"
+            ? <ExpectedFields value={editing.draft} onChange={(draft) => setEditing({ ...editing, draft })} onEnter={saveEdit} />
+            : <ReceivedFields value={editing.draft} onChange={(draft) => setEditing({ ...editing, draft })} expected={editing.expected} />}
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 14 }}>
+            <button className="btn btn-accent" onClick={saveEdit}><Save size={14} /> Save</button>
+            <button className="btn btn-ghost" onClick={() => setEditing(null)}>Cancel</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 /* ---------------- AI agent link (Admin, Sale, Buyer): connect Claude / ChatGPT through MCP ---------------- */
 
 const AGENT_TOOLS = {
@@ -4691,20 +4993,21 @@ function Shell({ user, onLogout, store }) {
   const isSale = user.role === "sale";
   const isBuyer = user.role === "buyer";
   const isWarehouse = user.role === "warehouse";
+  const isAccountant = user.role === "accountant";
 
   const salesReps = store.accounts.filter((a) => a.role === "sale");
   const [selectedSaleId, setSelectedSaleId] = useState(isSale ? user.id : (salesReps[0]?.id || ""));
   const [topSection, setTopSection] = useState(() => {
     const hash = typeof window !== "undefined" ? window.location.hash.replace("#", "") : "";
-    if (hash === "agent" && !isWarehouse) return "agent";
-    return isWarehouse ? "warehouse" : isBuyer ? "buyerspace" : "customer";
+    if (hash === "agent" && !isWarehouse && !isAccountant) return "agent";
+    return isWarehouse ? "warehouse" : isAccountant ? "paymentsReceived" : isBuyer ? "buyerspace" : "customer";
   });
   // `/#agent` also works while the app is already open (the import hint opens it in a new tab, but a pasted link may not).
   React.useEffect(() => {
-    const onHash = () => { if (window.location.hash === "#agent" && !isWarehouse) setTopSection("agent"); };
+    const onHash = () => { if (window.location.hash === "#agent" && !isWarehouse && !isAccountant) setTopSection("agent"); };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
-  }, [isWarehouse]);
+  }, [isWarehouse, isAccountant]);
   const [subSection, setSubSection] = useState("customer");
   const [buyerSubTab, setBuyerSubTab] = useState("feed");
   const [expandedPfiId, setExpandedPfiId] = useState(null);
@@ -4741,6 +5044,7 @@ function Shell({ user, onLogout, store }) {
     : 0;
   const fulfillmentUnseenCount = store.feedBuyerPfi.filter((f) => !f.seenByBuyer).length;
   const openReorderCount = store.reorders.filter((r) => !r.handled).length;
+  const toConfirmCountAll = toConfirmCount(store.expectedPayments, store.receivedPayments);
 
   const openPfiFromCustomer = (pfiId) => {
     setTopSection("customer");
@@ -4782,6 +5086,20 @@ function Shell({ user, onLogout, store }) {
               <div className={`side-item ${topSection === "payments" ? "active" : ""}`} onClick={() => setTopSection("payments")}>
                 <CreditCard size={14} /> Customer Balance
               </div>
+              <div className={`side-item ${topSection === "paymentsReceived" ? "active" : ""}`} onClick={() => setTopSection("paymentsReceived")}>
+                <CreditCard size={14} /> Payments Received
+                {toConfirmCountAll > 0 && <span className="badge-mini">{toConfirmCountAll}</span>}
+              </div>
+            </>
+          )}
+
+          {isAccountant && (
+            <>
+              <div className="side-section-label">Accountant</div>
+              <div className={`side-item ${topSection === "paymentsReceived" ? "active" : ""}`} onClick={() => setTopSection("paymentsReceived")}>
+                <CreditCard size={14} /> Payments Received
+                {toConfirmCountAll > 0 && <span className="badge-mini">{toConfirmCountAll}</span>}
+              </div>
             </>
           )}
 
@@ -4795,6 +5113,9 @@ function Shell({ user, onLogout, store }) {
               <div className={`side-item ${topSection === "customer" && subSection === "orders" ? "active" : ""}`} onClick={() => { setTopSection("customer"); setSubSection("orders"); }}>
                 <FileText size={14} /> Order Tracking
                 {orderFeedUnseenCount > 0 && <span className="badge-mini">{orderFeedUnseenCount}</span>}
+              </div>
+              <div className={`side-item ${topSection === "customer" && subSection === "payments" ? "active" : ""}`} onClick={() => { setTopSection("customer"); setSubSection("payments"); }}>
+                <CreditCard size={14} /> Payments Received
               </div>
             </>
           )}
@@ -4827,7 +5148,7 @@ function Shell({ user, onLogout, store }) {
               </div>
             </>
           )}
-          {!isWarehouse && (
+          {!isWarehouse && !isAccountant && (
             <>
               <div className="side-section-label">Shared</div>
               <div className={`side-item ${topSection === "delivery" ? "active" : ""}`} onClick={() => setTopSection("delivery")}>
@@ -4840,7 +5161,7 @@ function Shell({ user, onLogout, store }) {
               <Warehouse size={14} /> Warehouse's Space
             </div>
           )}
-          {!isWarehouse && (
+          {!isWarehouse && !isAccountant && (
             <div className={`side-item ${topSection === "agent" ? "active" : ""}`} onClick={() => setTopSection("agent")}>
               <Bot size={14} /> AI agent link
             </div>
@@ -4878,7 +5199,20 @@ function Shell({ user, onLogout, store }) {
               <div className="pill-tabs">
                 <div className={`pill ${subSection === "customer" ? "active" : ""}`} onClick={() => setSubSection("customer")}>Customer</div>
                 <div className={`pill ${subSection === "orders" ? "active" : ""}`} onClick={() => setSubSection("orders")}>Order Tracking</div>
+                <div className={`pill ${subSection === "payments" ? "active" : ""}`} onClick={() => setSubSection("payments")}>Payments Received</div>
               </div>
+              {subSection === "payments" && (
+                <PaymentsReceivedTab
+                  mode="sale"
+                  saleId={currentSaleId}
+                  saleName={isAdmin ? selectedRep.name : user.name}
+                  expected={store.expectedPayments}
+                  received={store.receivedPayments}
+                  actions={store}
+                  userName={user.name}
+                  reps={salesReps}
+                />
+              )}
               {subSection === "customer" && (
                 <CustomerTab
                   saleId={currentSaleId}
@@ -4991,6 +5325,25 @@ function Shell({ user, onLogout, store }) {
             </>
           )}
 
+          {topSection === "paymentsReceived" && (isAdmin || isAccountant) && (
+            <>
+              <div className="page-header">
+                <div>
+                  <div className="page-title sm-display">Payments Received Tracking</div>
+                  <div className="page-sub">What the sale reps expect from customers, and what the bank showed — confirm, correct, and note the QuickBooks entry</div>
+                </div>
+              </div>
+              <PaymentsReceivedTab
+                mode="accountant"
+                expected={store.expectedPayments}
+                received={store.receivedPayments}
+                actions={store}
+                userName={user.name}
+                reps={salesReps}
+              />
+            </>
+          )}
+
           {topSection === "accounts" && isAdmin && (
             <>
               <div className="page-header">
@@ -5031,7 +5384,7 @@ function Shell({ user, onLogout, store }) {
 
 const EMPTY_SLICES = {
   customersBySale: {}, feed: [], pfisBySale: {}, feedSale: [], feedBuyerPfi: [],
-  suppliers: [], pos: [], lanes: [], reorders: [], bookings: [], accounts: [], maiTasks: [], buyerJobs: [], warehouseEvents: [], customerMemos: [], paymentTracks: [],
+  suppliers: [], pos: [], lanes: [], reorders: [], bookings: [], accounts: [], maiTasks: [], buyerJobs: [], warehouseEvents: [], customerMemos: [], paymentTracks: [], expectedPayments: [], receivedPayments: [],
 };
 
 export default function App() {
@@ -5059,6 +5412,38 @@ export default function App() {
   const [warehouseEvents, setWarehouseEvents] = slice("warehouseEvents");
   const [customerMemos, setCustomerMemos] = slice("customerMemos");
   const [paymentTracks, setPaymentTracks] = slice("paymentTracks");
+  const [expectedPayments, setExpectedPayments] = slice("expectedPayments");
+  const [receivedPayments, setReceivedPayments] = slice("receivedPayments");
+
+  /* Payments Received Tracking: a rep announces a payment; the accountant records what the bank showed */
+  const money = (v) => (v === "" || v === undefined || v === null || !Number.isFinite(Number(v)) ? "" : Number(v));
+  const addExpectedPayment = (data) => {
+    const now = new Date().toISOString();
+    const row = {
+      id: uid("xpay"), saleId: data.saleId || "", saleName: data.saleName || "",
+      date: data.date || todayLocalIso(), company: PAY_COMPANIES.includes(data.company) ? data.company : PAY_COMPANIES[0], currency: CURRENCIES.includes(data.currency) ? data.currency : CURRENCIES[0],
+      expectedAmount: money(data.expectedAmount), sender: (data.sender || "").trim(), customer: (data.customer || "").trim(), proof: !!data.proof, invNo: (data.invNo || "").trim(),
+      createdBy: data.createdBy || "", createdAt: now, updatedAt: now,
+    };
+    setExpectedPayments((prev) => [row, ...(prev || [])]);
+    return row.id;
+  };
+  const updateExpectedPayment = (id, patch) => setExpectedPayments((prev) => (prev || []).map((r) => (r.id === id ? { ...r, ...patch, expectedAmount: money(patch.expectedAmount ?? r.expectedAmount), updatedAt: new Date().toISOString() } : r)));
+  const deleteExpectedPayment = (id) => setExpectedPayments((prev) => (prev || []).filter((r) => r.id !== id));
+  const addReceivedPayment = (data) => {
+    const now = new Date().toISOString();
+    const row = {
+      id: uid("rpay"), expectedId: data.expectedId || "",
+      receivedDate: data.receivedDate || todayLocalIso(), company: PAY_COMPANIES.includes(data.company) ? data.company : PAY_COMPANIES[0], currency: CURRENCIES.includes(data.currency) ? data.currency : CURRENCIES[0],
+      receivedAmount: money(data.receivedAmount), sender: (data.sender || "").trim(), customer: (data.customer || "").trim(),
+      qb: { date: (data.qb && data.qb.date) || "", time: (data.qb && data.qb.time) || "", done: !!(data.qb && data.qb.done), addedBy: ((data.qb && data.qb.addedBy) || "").trim() },
+      confirmedBy: data.confirmedBy || "", createdAt: now, updatedAt: now,
+    };
+    setReceivedPayments((prev) => [row, ...(prev || [])]);
+    return row.id;
+  };
+  const updateReceivedPayment = (id, patch) => setReceivedPayments((prev) => (prev || []).map((r) => (r.id === id ? { ...r, ...patch, receivedAmount: money(patch.receivedAmount ?? r.receivedAmount), updatedAt: new Date().toISOString() } : r)));
+  const deleteReceivedPayment = (id) => setReceivedPayments((prev) => (prev || []).filter((r) => r.id !== id));
 
   /* Customer Balance (admin only): invoices to collect */
   const addPaymentTrack = (data) => {
@@ -5866,6 +6251,7 @@ export default function App() {
     addBooking, updateBooking, deleteBooking,
     accounts, addAccount, updateAccount, deleteAccount,
     paymentTracks, addPaymentTrack, updatePaymentTrack, deletePaymentTrack,
+    expectedPayments, receivedPayments, addExpectedPayment, updateExpectedPayment, deleteExpectedPayment, addReceivedPayment, updateReceivedPayment, deleteReceivedPayment,
     customerMemos, saveCustomerMemo, updateCustomer, deleteCustomer, updateSupplier, deleteSupplier,
     maiTasks, addMaiTask, updateMaiTask, deleteMaiTask,
     buyerJobs, addBuyerJob, updateBuyerJob, deleteBuyerJob, addBuyerJobNote,
