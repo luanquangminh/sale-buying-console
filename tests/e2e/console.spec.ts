@@ -1996,6 +1996,7 @@ test("payments received: a rep announces a payment, the accountant confirms it w
   await settled(page);
   await cleanAccountant();
   await cleanRep();
+  const base = await page.locator(".pay-row").count(); // other runs' rows may be pending too
 
   // The rep announces two payments; the second is corrected before the accountant sees it.
   await expect(pillTab("Expected")).toHaveClass(/active/);
@@ -2025,7 +2026,7 @@ test("payments received: a rep announces a payment, the accountant confirms it w
   await page.locator('.modal-panel [aria-label="Expected amount"]').fill("2400");
   await page.getByRole("button", { name: "Save" }).click();
   await expect(row(SHALUXE)).toContainText("2,400.00");
-  await expect(pillTab("Expected").locator(".pill-count")).toHaveText("2");
+  await expect(pillTab("Expected").locator(".pill-count")).toHaveText(String(base + 2));
   await settled(page);
 
   // The buyer has no such page.
@@ -2078,7 +2079,7 @@ test("payments received: a rep announces a payment, the accountant confirms it w
   await side(page, "Payments Received").click();
   await expect(row(JUARA)).toHaveCount(0);
   await expect(row(SHALUXE)).toHaveCount(1);
-  await expect(pillTab("Expected").locator(".pill-count")).toHaveText("1");
+  await expect(pillTab("Expected").locator(".pill-count")).toHaveText(String(base + 1));
   await pillTab("Confirmed").click();
   await expect(row(JUARA)).toContainText("13,510.36");
   await expect(row(JUARA).locator(".pay-diff")).toHaveText("−49.64");
@@ -2109,6 +2110,80 @@ test("payments received: a rep announces a payment, the accountant confirms it w
   await cleanRep();
   await expect(row(JUARA)).toHaveCount(0);
   await expect(row(SHALUXE)).toHaveCount(0);
+});
+
+test("a rep's stale edit of a payment the accountant has just confirmed is refused, said so, and does not block later saves", async ({ browser }) => {
+  const STALE = "E2E Pay Stale"; const NEXT = "E2E Pay Next";
+  const repCtx = await browser.newContext(); const rep = await repCtx.newPage(); watchPushes(rep);
+  const accCtx = await browser.newContext(); const acc = await accCtx.newPage(); watchPushes(acc);
+  const row = (page: Page, text: string) => page.locator(".pay-row", { hasText: text });
+  const pillTab = (page: Page, text: string) => page.locator(".pill-tabs .pill", { hasText: text });
+  const field = (page: Page, label: string) => page.locator(`[aria-label="${label}"]`).last();
+  const removeRow = async (r: ReturnType<Page["locator"]>) => { await r.locator(".btn-icon").last().click(); await r.getByRole("button", { name: /^Yes, / }).click(); };
+  try {
+    // Leftovers, then two expected payments from the rep.
+    await signIn(acc, A.accountant.username, A.accountant.password);
+    await pillTab(acc, "Confirmed").click();
+    for (const t of [STALE, NEXT]) while (await row(acc, t).count()) await removeRow(row(acc, t).first());
+    await settled(acc);
+    await signIn(rep, A.sale.username, A.sale.password);
+    await side(rep, "Payments Received").click();
+    for (const t of [STALE, NEXT]) while (await row(rep, t).count()) await removeRow(row(rep, t).first());
+    for (const [customer, amount] of [[STALE, "1000"], [NEXT, "2000"]]) {
+      await field(rep, "Expected amount").fill(amount); await field(rep, "Customer name").fill(customer);
+      await rep.getByRole("button", { name: "Add expected payment" }).click();
+      await expect(row(rep, customer)).toHaveCount(1);
+    }
+    await settled(rep);
+
+    // The rep opens Edit on the first; meanwhile the accountant confirms it. The rep's page is kept from noticing (its version
+    // poll is answered with the version it already has), as a page left open for a while would be.
+    const held = await rep.evaluate(async () => (await (await fetch("/api/state/version")).json()).version);
+    await rep.route("**/api/state/version", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, version: held }) }));
+    await row(rep, STALE).getByRole("button", { name: "Edit" }).click();
+    await rep.locator(".modal-panel").waitFor();
+    await acc.reload(); // the accountant's page was open before the rep's rows existed
+    await pillTab(acc, "To confirm").click();
+    await expect(row(acc, STALE)).toHaveCount(1);
+    await row(acc, STALE).getByRole("button", { name: "Confirm" }).click();
+    await acc.locator(".modal-panel").waitFor();
+    await acc.getByRole("button", { name: "Confirm payment" }).click();
+    await expect(pillTab(acc, "Confirmed")).toHaveClass(/active/);
+    await settled(acc);
+
+    // The rep saves the stale edit: refused by the server, said on screen, the list reloaded; the next edit still saves.
+    await rep.locator('.modal-panel [aria-label="Expected amount"]').fill("1500");
+    await rep.getByRole("button", { name: "Save" }).click();
+    await expect(rep.locator(".sync-notice")).toContainText("Your last change was not saved");
+    await expect(rep.locator(".sync-notice")).toContainText("confirmed by the accountant");
+    await expect(row(rep, STALE)).toHaveCount(0); // moved to Confirmed on reload
+    await pillTab(rep, "Confirmed").click();
+    await expect(row(rep, STALE)).toContainText("1,000.00"); // the amount the accountant confirmed, not 1,500
+    await rep.locator(".sync-notice").getByRole("button", { name: "OK" }).click();
+    await expect(rep.locator(".sync-notice")).toHaveCount(0);
+    await rep.unroute("**/api/state/version");
+    await pillTab(rep, "Expected").click();
+    await row(rep, NEXT).getByRole("button", { name: "Edit" }).click();
+    await rep.locator(".modal-panel").waitFor();
+    await rep.locator('.modal-panel [aria-label="Expected amount"]').fill("2500");
+    await rep.getByRole("button", { name: "Save" }).click();
+    await expect(row(rep, NEXT)).toContainText("2,500.00");
+    await settled(rep);
+    const onServer = await acc.evaluate(async () => (await fetch("/api/state")).json());
+    expect(onServer.slices.expectedPayments.find((e: any) => e.customer === "E2E Pay Next").expectedAmount).toBe(2500); // the queue was not stuck behind the refused change
+    expect(onServer.slices.expectedPayments.find((e: any) => e.customer === "E2E Pay Stale").expectedAmount).toBe(1000);
+
+    // Tidy up: undo the confirmation, remove both.
+    await pillTab(acc, "Confirmed").click();
+    await removeRow(row(acc, STALE));
+    await settled(acc);
+    await rep.reload();
+    await side(rep, "Payments Received").click();
+    for (const t of [STALE, NEXT]) { await expect(row(rep, t)).toHaveCount(1); await removeRow(row(rep, t)); }
+    await settled(rep);
+  } finally {
+    await repCtx.close(); await accCtx.close();
+  }
 });
 
 test("every screen has its own address: it follows the sidebar, survives a reload, opens from a pasted link, and sends a role home from a page it may not open", async ({ page }) => {
