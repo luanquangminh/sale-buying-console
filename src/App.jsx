@@ -10,7 +10,7 @@ import { orderTotals, vatOption, VAT_OPTIONS } from "./money";
 import { DUE_TONE, dueLabel, dueState, groupByCustomer, PAY_STATUSES, PAY_STATUS_TONE, payStatus } from "./payments";
 import { sortLanesByPod } from "./lanes";
 import { lineCover, pfiLineCover, pfiShortages, poShortages } from "./allocation";
-import { PAY_COMPANIES, diffTone, difference, fmtDiff, forSale, newestFirst, splitExpected, toConfirmCount, unmatched } from "./paymentsReceived";
+import { PAY_COMPANIES, diffTone, difference, fmtDiff, forSale, isConfirmed, newestFirst, numOrNull as payNumber, splitExpected, toConfirmCount, unmatched } from "./paymentsReceived";
 import { homeFor, pathFor, stateFor } from "./routes";
 import { placePanel } from "./popup";
 import { acknowledged, changeSinceSent, describeChanges, describeWas, lineChange, removedSinceSent, stampSent } from "./sentMark";
@@ -560,6 +560,8 @@ const GlobalStyle = () => (
     .cal-dot { width:7px; height:7px; border-radius:50%; flex:none; background:#7C8891; }
     .cal-event .cal-dot { display:inline-block; vertical-align:middle; margin:-2px 5px 0 0; }
     .cal-event .cal-party { display:inline-block; vertical-align:middle; margin:-1px 4px 0 0; }
+    .sync-notice { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px; padding:10px 14px; border:1px solid #F2CFCA; border-left:3px solid #C64B4B; border-radius:5px; background:#FFF4F2; color:#5A2A2A; font-size:12.5px; }
+    .sync-notice .btn { margin-left:auto; }
     .pay-grid > div > label { display:block; }
     .pay-grid .done-tick { margin-top:0; }
     .pay-diff { font-weight:700; font-size:11.5px; margin-top:4px; }
@@ -4454,6 +4456,13 @@ function ReceivedFields({ value, onChange, expected }) {
   );
 }
 
+/** The delete control of a payment row: one click asks, the second removes. */
+function PayRemove({ id, label = "Delete", removing, onAsk, onCancel, onRemove }) {
+  if (removing !== id) return <button className="btn-icon" title={label} onClick={() => onAsk(id)}><Trash2 size={14} /></button>;
+  return <span className="pay-confirm-del"><button className="btn btn-sm btn-danger" onClick={() => onRemove(id)}>Yes, {label.toLowerCase()}</button><button className="btn btn-sm" onClick={onCancel}>Cancel</button></span>;
+}
+const PayDiff = ({ value }) => <span className={`ro pay-diff tone-${diffTone(value)}`}>{value === null || value === undefined ? "—" : fmtDiff(value)}</span>;
+
 const qbText = (qb) => {
   if (!qb) return "—";
   const when = [fmtDate(qb.date), qb.time].filter(Boolean).join(" ");
@@ -4474,9 +4483,9 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
 
   const mine = isRep ? forSale(expected, saleId) : expected || [];
   const { pending, confirmed } = splitExpected(mine, received);
-  const unannounced = isRep ? [] : unmatched(received);
+  const unannounced = isRep ? [] : unmatched(received, expected || []); // a receipt whose expected payment is gone shows here too
   const fq = find.trim().toLowerCase();
-  const matches = (r) => !fq || [r.customer, r.sender, r.invNo, r.saleName, r.expectedAmount, r.receivedAmount, r.confirmation && r.confirmation.sender].some((f) => String(f || "").toLowerCase().includes(fq));
+  const matches = (r) => !fq || [r.customer, r.sender, r.invNo, r.saleName, repName(r.saleId), r.expectedAmount, r.receivedAmount, r.confirmation && r.confirmation.sender].some((f) => String(f || "").toLowerCase().includes(fq));
 
   const addExpected = () => {
     if (!amountOk(form.expectedAmount) || !form.customer.trim()) return;
@@ -4497,19 +4506,16 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
   };
   const saveEdit = () => {
     if (!editing) return;
-    if (editing.kind === "expected") { if (!amountOk(editing.draft.expectedAmount) || !editing.draft.customer.trim()) return; actions.updateExpectedPayment(editing.row.id, editing.draft); }
-    else { if (!amountOk(editing.draft.receivedAmount)) return; actions.updateReceivedPayment(editing.row.id, editing.draft); }
+    if (editing.kind === "expected") {
+      if (isConfirmed(editing.row, received)) { setEditing(null); return; } // confirmed meanwhile: it has moved to Confirmed, nothing to change
+      if (!amountOk(editing.draft.expectedAmount) || !editing.draft.customer.trim()) return;
+      actions.updateExpectedPayment(editing.row.id, editing.draft);
+    } else { if (!amountOk(editing.draft.receivedAmount)) return; actions.updateReceivedPayment(editing.row.id, editing.draft); }
     setEditing(null);
   };
-  const remove = (kind, id) => {
-    if (removing !== id) { setRemoving(id); return; }
-    if (kind === "expected") actions.deleteExpectedPayment(id); else actions.deleteReceivedPayment(id);
-    setRemoving(null);
-  };
-  const Remove = ({ kind, id, label = "Delete" }) => (removing === id
-    ? <span className="pay-confirm-del"><button className="btn btn-sm btn-danger" onClick={() => remove(kind, id)}>Yes, {label.toLowerCase()}</button><button className="btn btn-sm" onClick={() => setRemoving(null)}>Cancel</button></span>
-    : <button className="btn-icon" title={label} onClick={() => remove(kind, id)}><Trash2 size={14} /></button>);
-  const Diff = ({ value }) => <span className={`ro pay-diff tone-${diffTone(value)}`}>{value === null || value === undefined ? "—" : fmtDiff(value)}</span>;
+  const removeExpected = (id) => { actions.deleteExpectedPayment(id); setRemoving(null); };
+  const removeReceived = (id) => { actions.deleteReceivedPayment(id); setRemoving(null); };
+  const askRemove = (id) => setRemoving(id); const cancelRemove = () => setRemoving(null);
   const empty = (text) => <div className="empty"><CreditCard size={30} /><div style={{ fontWeight: 600 }}>{text}</div></div>;
 
   const pendingRows = pending.filter(matches); const confirmedRows = confirmed.filter(matches); const looseRows = unannounced.filter(matches);
@@ -4580,7 +4586,7 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
                         {isRep ? (
                           <>
                             <button className="btn btn-sm" onClick={() => setEditing({ kind: "expected", row: e, draft: { date: e.date, company: e.company, currency: e.currency, expectedAmount: e.expectedAmount, sender: e.sender || "", customer: e.customer || "", proof: !!e.proof, invNo: e.invNo || "" } })}>Edit</button>{" "}
-                            <Remove kind="expected" id={e.id} />
+                            <PayRemove id={e.id} removing={removing} onAsk={askRemove} onCancel={cancelRemove} onRemove={removeExpected} />
                           </>
                         ) : (
                           <button className="btn btn-sm btn-accent" onClick={() => openConfirm(e)}>Confirm</button>
@@ -4611,14 +4617,14 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
                       <td className="ro">{e.confirmation.currency}</td>
                       <td className="ro num sm-mono">{fmtAmount(e.expectedAmount)}</td>
                       <td className="ro num sm-mono">{fmtAmount(e.confirmation.receivedAmount)}</td>
-                      <td className="num"><Diff value={e.diff} /></td>
+                      <td className="num"><PayDiff value={e.diff} /></td>
                       <td className="ro">{e.confirmation.sender || "—"}</td>
                       <td className="ro qb-cell">{qbText(e.confirmation.qb)}</td>
                       <td className="ro">{e.confirmation.confirmedBy || "—"}</td>
                       {!isRep && (
                         <td style={{ whiteSpace: "nowrap" }}>
                           <button className="btn btn-sm" onClick={() => setEditing({ kind: "received", row: e.confirmation, expected: e, draft: { receivedDate: e.confirmation.receivedDate, company: e.confirmation.company, currency: e.confirmation.currency, receivedAmount: e.confirmation.receivedAmount, sender: e.confirmation.sender || "", customer: e.confirmation.customer || "", qb: { ...EMPTY_RECEIVED.qb, ...(e.confirmation.qb || {}) } } })}>Edit</button>{" "}
-                          <Remove kind="received" id={e.confirmation.id} label="Undo confirmation" />
+                          <PayRemove id={e.confirmation.id} label="Undo confirmation" removing={removing} onAsk={askRemove} onCancel={cancelRemove} onRemove={removeReceived} />
                         </td>
                       )}
                     </tr>
@@ -4649,7 +4655,7 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
                       <td className="ro">{r.confirmedBy || "—"}</td>
                       <td style={{ whiteSpace: "nowrap" }}>
                         <button className="btn btn-sm" onClick={() => setEditing({ kind: "received", row: r, expected: null, draft: { receivedDate: r.receivedDate, company: r.company, currency: r.currency, receivedAmount: r.receivedAmount, sender: r.sender || "", customer: r.customer || "", qb: { ...EMPTY_RECEIVED.qb, ...(r.qb || {}) } } })}>Edit</button>{" "}
-                        <Remove kind="received" id={r.id} />
+                        <PayRemove id={r.id} removing={removing} onAsk={askRemove} onCancel={cancelRemove} onRemove={removeReceived} />
                       </td>
                     </tr>
                   ))}
@@ -5204,6 +5210,12 @@ function Shell({ user, onLogout, store }) {
         </div>
 
         <div className="main">
+          {store.syncNotice && (
+            <div className="sync-notice" role="alert">
+              <AlertTriangle size={14} /> <strong>Your last change was not saved</strong> — {store.syncNotice.text}. The screen now shows what is on the server.
+              <button className="btn btn-sm" onClick={store.dismissSyncNotice}>OK</button>
+            </div>
+          )}
           {(isAdmin || isSale) && topSection === "customer" && (
             <>
               <div className="page-header">
@@ -5431,34 +5443,33 @@ export default function App() {
   const [expectedPayments, setExpectedPayments] = slice("expectedPayments");
   const [receivedPayments, setReceivedPayments] = slice("receivedPayments");
 
-  /* Payments Received Tracking: a rep announces a payment; the accountant records what the bank showed */
-  const money = (v) => (v === "" || v === undefined || v === null || !Number.isFinite(Number(v)) ? "" : Number(v));
+  /* Payments Received Tracking: a rep announces a payment; the accountant records what the bank showed. Adds and edits are read the same way. */
+  const money = (v) => { const n = payNumber(v); return n === null ? "" : n; };
+  const text = (v) => (v || "").trim();
+  const expectedFields = (d) => ({
+    date: d.date || todayLocalIso(), company: PAY_COMPANIES.includes(d.company) ? d.company : PAY_COMPANIES[0], currency: CURRENCIES.includes(d.currency) ? d.currency : CURRENCIES[0],
+    expectedAmount: money(d.expectedAmount), sender: text(d.sender), customer: text(d.customer), proof: !!d.proof, invNo: text(d.invNo),
+  });
+  const receivedFields = (d) => ({
+    receivedDate: d.receivedDate || todayLocalIso(), company: PAY_COMPANIES.includes(d.company) ? d.company : PAY_COMPANIES[0], currency: CURRENCIES.includes(d.currency) ? d.currency : CURRENCIES[0],
+    receivedAmount: money(d.receivedAmount), sender: text(d.sender), customer: text(d.customer),
+    qb: { date: (d.qb && d.qb.date) || "", time: (d.qb && d.qb.time) || "", done: !!(d.qb && d.qb.done), addedBy: text(d.qb && d.qb.addedBy) },
+  });
   const addExpectedPayment = (data) => {
     const now = new Date().toISOString();
-    const row = {
-      id: uid("xpay"), saleId: data.saleId || "", saleName: data.saleName || "",
-      date: data.date || todayLocalIso(), company: PAY_COMPANIES.includes(data.company) ? data.company : PAY_COMPANIES[0], currency: CURRENCIES.includes(data.currency) ? data.currency : CURRENCIES[0],
-      expectedAmount: money(data.expectedAmount), sender: (data.sender || "").trim(), customer: (data.customer || "").trim(), proof: !!data.proof, invNo: (data.invNo || "").trim(),
-      createdBy: data.createdBy || "", createdAt: now, updatedAt: now,
-    };
+    const row = { id: uid("xpay"), saleId: data.saleId || "", saleName: data.saleName || "", ...expectedFields(data), createdBy: data.createdBy || "", createdAt: now, updatedAt: now };
     setExpectedPayments((prev) => [row, ...(prev || [])]);
     return row.id;
   };
-  const updateExpectedPayment = (id, patch) => setExpectedPayments((prev) => (prev || []).map((r) => (r.id === id ? { ...r, ...patch, expectedAmount: money(patch.expectedAmount ?? r.expectedAmount), updatedAt: new Date().toISOString() } : r)));
+  const updateExpectedPayment = (id, patch) => setExpectedPayments((prev) => (prev || []).map((r) => (r.id === id ? { ...r, ...expectedFields({ ...r, ...patch }), updatedAt: new Date().toISOString() } : r)));
   const deleteExpectedPayment = (id) => setExpectedPayments((prev) => (prev || []).filter((r) => r.id !== id));
   const addReceivedPayment = (data) => {
     const now = new Date().toISOString();
-    const row = {
-      id: uid("rpay"), expectedId: data.expectedId || "",
-      receivedDate: data.receivedDate || todayLocalIso(), company: PAY_COMPANIES.includes(data.company) ? data.company : PAY_COMPANIES[0], currency: CURRENCIES.includes(data.currency) ? data.currency : CURRENCIES[0],
-      receivedAmount: money(data.receivedAmount), sender: (data.sender || "").trim(), customer: (data.customer || "").trim(),
-      qb: { date: (data.qb && data.qb.date) || "", time: (data.qb && data.qb.time) || "", done: !!(data.qb && data.qb.done), addedBy: ((data.qb && data.qb.addedBy) || "").trim() },
-      confirmedBy: data.confirmedBy || "", createdAt: now, updatedAt: now,
-    };
+    const row = { id: uid("rpay"), expectedId: data.expectedId || "", ...receivedFields(data), confirmedBy: data.confirmedBy || "", createdAt: now, updatedAt: now };
     setReceivedPayments((prev) => [row, ...(prev || [])]);
     return row.id;
   };
-  const updateReceivedPayment = (id, patch) => setReceivedPayments((prev) => (prev || []).map((r) => (r.id === id ? { ...r, ...patch, receivedAmount: money(patch.receivedAmount ?? r.receivedAmount), updatedAt: new Date().toISOString() } : r)));
+  const updateReceivedPayment = (id, patch) => setReceivedPayments((prev) => (prev || []).map((r) => (r.id === id ? { ...r, ...receivedFields({ ...r, ...patch }), updatedAt: new Date().toISOString() } : r)));
   const deleteReceivedPayment = (id) => setReceivedPayments((prev) => (prev || []).filter((r) => r.id !== id));
 
   /* Customer Balance (admin only): invoices to collect */
@@ -6268,6 +6279,7 @@ export default function App() {
     accounts, addAccount, updateAccount, deleteAccount,
     paymentTracks, addPaymentTrack, updatePaymentTrack, deletePaymentTrack,
     expectedPayments, receivedPayments, addExpectedPayment, updateExpectedPayment, deleteExpectedPayment, addReceivedPayment, updateReceivedPayment, deleteReceivedPayment,
+    syncNotice: sync.notice, dismissSyncNotice: sync.dismissNotice,
     customerMemos, saveCustomerMemo, updateCustomer, deleteCustomer, updateSupplier, deleteSupplier,
     maiTasks, addMaiTask, updateMaiTask, deleteMaiTask,
     buyerJobs, addBuyerJob, updateBuyerJob, deleteBuyerJob, addBuyerJobNote,

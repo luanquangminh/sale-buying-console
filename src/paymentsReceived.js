@@ -6,7 +6,7 @@
 
 export const PAY_COMPANIES = ["LTD", "LLC"];
 
-const numOrNull = (v) => { if (v === "" || v === undefined || v === null) return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+export const numOrNull = (v) => { if (v === "" || v === undefined || v === null) return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
 const round2 = (n) => Math.round(n * 100) / 100;
 const when = (r, key) => `${r[key] || ""}T${r.createdAt || ""}`;
 /** Newest first by the given date field, then by when it was entered. */
@@ -40,11 +40,14 @@ export function splitExpected(expected, received) {
   };
 }
 
-/** Money the bank shows that no rep announced, newest first. */
-export const unmatched = (received) => newestFirst((received || []).filter((r) => !r.expectedId), "receivedDate");
+/** Money the bank shows that no rep announced, newest first; given the expected list, a receipt whose expected payment is gone counts too. */
+export const unmatched = (received, expected = null) => {
+  const known = expected ? new Set(expected.map((e) => e.id)) : null;
+  return newestFirst((received || []).filter((r) => !r.expectedId || (known && !known.has(r.expectedId))), "receivedDate");
+};
 
-/** Money that reached the bank without being announced: the accountant's own entries. */
-export const toConfirmCount = (expected, received) => splitExpected(expected, received).pending.length;
+/** How many expected payments wait for the accountant: the badge on the sidebar. */
+export const toConfirmCount = (expected, received) => (expected || []).filter((e) => !isConfirmed(e, received)).length;
 
 /** "+49.64", "−12.00" or "0.00" — how the gap reads next to its amount. */
 export function fmtDiff(diff) {

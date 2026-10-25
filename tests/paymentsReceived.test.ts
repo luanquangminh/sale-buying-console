@@ -47,6 +47,11 @@ describe("payments received: the lists each screen shows", () => {
     expect(unmatched(received).map((r) => r.id)).toEqual(["r2"]);
     expect(toConfirmCount(expected, received)).toBe(1);
   });
+  it("a receipt whose expected payment is gone shows under Unmatched when the expected list is known", () => {
+    const orphan = rec("r9", "e-gone", { receivedDate: "2026-10-24" });
+    expect(unmatched([...received, orphan], expected).map((r) => r.id)).toEqual(["r9", "r2"]); // newest receipt first
+    expect(unmatched([...received, orphan]).map((r) => r.id)).toEqual(["r2"]); // without the list, only the unannounced
+  });
   it("orders by the date typed, then by when it was entered", () => {
     const list = [exp("a", { date: "2026-10-01", createdAt: "2026-10-01T08:00:00.000Z" }), exp("b", { date: "2026-10-02", createdAt: "2026-10-01T07:00:00.000Z" }), exp("c", { date: "2026-10-01", createdAt: "2026-10-01T09:00:00.000Z" })];
     expect(newestFirst(list, "date").map((e) => e.id)).toEqual(["b", "c", "a"]);
