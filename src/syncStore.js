@@ -16,7 +16,9 @@ const POLL_MS = 20_000;
 export function useSyncStore({ onRemote } = {}) {
   const [user, setUser] = useState(undefined); // undefined = checking session, null = signed out
   const [slices, setSlices] = useState(null);
+  const [notice, setNotice] = useState(null); // { text, at }: a change the server refused; the screen was reloaded
   const version = useRef(0);
+  const loadStateRef = useRef(null);
   const onRemoteRef = useRef(onRemote);
   onRemoteRef.current = onRemote;
 
@@ -26,6 +28,10 @@ export function useSyncStore({ onRemote } = {}) {
       send: (changes, opts) => api.sync(changes, opts),
       onVersion: (v) => { version.current = Math.max(version.current, v); },
       onAuthError: () => setUser(null),
+      onRefused: (err) => {
+        setNotice({ text: err && err.message ? err.message : "the server refused it", at: Date.now() });
+        if (loadStateRef.current) loadStateRef.current().catch((e) => console.error(e)); // back to what the server holds
+      },
       onError: (err) => console.error("sync failed, will retry", err),
     });
   }
@@ -36,6 +42,8 @@ export function useSyncStore({ onRemote } = {}) {
     const next = onRemoteRef.current ? onRemoteRef.current(res.slices) : res.slices;
     setSlices(next);
   }, []);
+  loadStateRef.current = loadState;
+  const dismissNotice = useCallback(() => setNotice(null), []);
 
   const setSlice = useCallback((name, updater, meta) => {
     setSlices((prev) => {
@@ -102,5 +110,5 @@ export function useSyncStore({ onRemote } = {}) {
     setUser(null);
   }, []);
 
-  return { user, slices, setSlice, login, logout };
+  return { user, slices, setSlice, login, logout, notice, dismissNotice };
 }

@@ -10,7 +10,7 @@ export const KEEPALIVE_MAX_BYTES = 60_000; // browsers cap keepalive bodies at 6
 
 const utf8Bytes = (s) => new TextEncoder().encode(s).byteLength;
 
-export function createPushQueue({ send, onVersion, onAuthError, onError, delay = PUSH_DELAY_MS, byteLength = utf8Bytes }) {
+export function createPushQueue({ send, onVersion, onAuthError, onRefused, onError, delay = PUSH_DELAY_MS, byteLength = utf8Bytes }) {
   const pending = new Map();
   let timer = null;
   let inFlight = 0;            // pushes currently awaiting a response
@@ -37,6 +37,12 @@ export function createPushQueue({ send, onVersion, onAuthError, onError, delay =
         return true;
       } catch (err) {
         if (err && err.status === 401) { pending.clear(); if (onAuthError) onAuthError(err); }
+        else if (err && err.status >= 400 && err.status < 500) {
+          // The server refused the batch (403, 400): sending it again would never succeed, and every later change would
+          // wait behind it for ever. Drop what was refused and let the caller reload and tell the user.
+          for (const [key, change] of batch) if (pending.get(key) === change) pending.delete(key);
+          if (onRefused) onRefused(err, changes); else if (onError) onError(err);
+        }
         else { if (onError) onError(err); schedule(RETRY_DELAY_MS); }
         return false;
       } finally {

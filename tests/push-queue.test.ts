@@ -98,6 +98,39 @@ describe("push queue", () => {
     expect(sent[0].keepalive).toBe(false);
   });
 
+  it("drops a batch the server refused (403, 400) instead of retrying it, reports it, and still sends what comes after", async () => {
+    const onRefused = vi.fn(); const onError = vi.fn();
+    const { q, sent } = harness({ onRefused, onError });
+    q.queue(ch("a"));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(sent).toHaveLength(1);
+    sent[0].reject(Object.assign(new Error("expectedPayments: confirmed, cannot change"), { status: 403 }));
+    await flushMicrotasks();
+    expect(onRefused).toHaveBeenCalledTimes(1);
+    expect(onRefused.mock.calls[0][1].map((c: any) => c.id)).toEqual(["a"]);
+    expect(onError).not.toHaveBeenCalled();
+    expect(q.size).toBe(0);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(sent).toHaveLength(1); // no retry
+    q.queue(ch("b"));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(sent).toHaveLength(2);
+    expect(sent[1].changes.map((c: any) => c.id)).toEqual(["b"]); // the next change goes out on its own
+  });
+
+  it("keeps an edit made while a refused batch was in flight", async () => {
+    const onRefused = vi.fn();
+    const { q, sent } = harness({ onRefused });
+    q.queue(ch("a", 1));
+    await vi.advanceTimersByTimeAsync(300);
+    q.queue(ch("a", 2)); // newer than what is in flight
+    sent[0].reject(Object.assign(new Error("refused"), { status: 403 }));
+    await flushMicrotasks();
+    expect(q.size).toBe(1);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(sent[1].changes.map((c: any) => c.data.n)).toEqual([2]);
+  });
+
   it("retries a failed push after 2 s and clears everything on 401", async () => {
     const onAuthError = vi.fn();
     const { q, sent } = harness({ onAuthError });
