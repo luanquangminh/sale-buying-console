@@ -19,6 +19,8 @@ export const SLICES = {
   warehouseEvents: { kind: "warehouseEvents" },
   customerMemos: { kind: "customerMemos" },
   paymentTracks: { kind: "paymentTracks" },
+  expectedPayments: { kind: "expectedPayments" },
+  receivedPayments: { kind: "receivedPayments" },
 };
 
 export function flatten(name, value) {

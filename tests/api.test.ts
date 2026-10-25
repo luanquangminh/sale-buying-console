@@ -381,3 +381,105 @@ describe("warehouse calendar: customer and supplier entries, and what a sale rep
     expect(await titles(sale)).toEqual([MINE.title]);
   });
 });
+
+describe("payments received: a rep's expected payments, the accountant's confirmations, and who sees what", () => {
+  const REP = "sale-1700000000050-aaaaaa"; const OTHER = "sale-1700000000050-bbbbbb";
+  const stamp = "2026-10-20T09:00:00.000Z";
+  const expected = (id: string, saleId: string, customer: string) => ({ id, saleId, saleName: saleId === REP ? "Rep Pay" : "Other Pay", date: "2026-10-20", company: "LTD", currency: "GBP", expectedAmount: 13560, sender: "Juara", customer, proof: true, invNo: "", createdBy: "", createdAt: stamp, updatedAt: stamp });
+  const received = (id: string, expectedId: string, amount: number) => ({ id, expectedId, receivedDate: "2026-10-21", company: "LTD", currency: "GBP", receivedAmount: amount, sender: "JUARA TRADE", customer: "", qb: { date: "", time: "", done: false, addedBy: "" }, confirmedBy: "Finance", createdAt: stamp, updatedAt: stamp });
+  const MINE_PENDING = expected("xpay-1700000000050-000001", REP, "Juara Trade Fzco");
+  const MINE_DONE = expected("xpay-1700000000050-000002", REP, "Shaluxe");
+  const THEIRS = expected("xpay-1700000000050-000003", OTHER, "Mary");
+  const CONFIRMS_MINE = received("rpay-1700000000050-000001", MINE_DONE.id, 13510.36);
+  const CONFIRMS_THEIRS = received("rpay-1700000000050-000002", THEIRS.id, 2304);
+  const UNANNOUNCED = received("rpay-1700000000050-000003", "", 592);
+  const ids = async (cookie: string, slice: string) => (((await (await call(cookie, "/state")).json()).slices[slice] || []) as any[]).map((r) => r.id).sort();
+  const change = (kind: string, rec: any, extra: Record<string, unknown> = {}) => ({ kind, id: rec.id, createdAt: rec.createdAt, data: rec, ...extra });
+
+  async function setup() {
+    const { cookie: admin } = await login();
+    const accounts = [
+      { id: REP, role: "sale", name: "Rep Pay", username: "reppr", password: "pw-sale-test", createdAt: "2026-09-20T00:00:00.000Z" },
+      { id: OTHER, role: "sale", name: "Other Pay", username: "otherpr", password: "pw-sale-test", createdAt: "2026-09-20T00:00:00.000Z" },
+      { id: "accountant-1700000000050-cccccc", role: "accountant", name: "Finance", username: "financepr", password: "pw-acc-test", createdAt: "2026-09-20T00:00:00.000Z" },
+      { id: "buyer-1700000000050-dddddd", role: "buyer", name: "Buyer Pay", username: "buyerpr", password: "pw-buyer-test", createdAt: "2026-09-20T00:00:00.000Z" },
+    ];
+    await post(admin, "/sync", { changes: [
+      ...accounts.map((a) => ({ kind: "accounts", id: a.id, createdAt: a.createdAt, data: a })),
+      ...[MINE_PENDING, MINE_DONE, THEIRS].map((e) => change("expectedPayments", e)),
+      ...[CONFIRMS_MINE, CONFIRMS_THEIRS, UNANNOUNCED].map((r) => change("receivedPayments", r)),
+      { kind: "expectedPayments", id: "xpay-1700000000050-000009", deleted: true }, // the tests share one database
+    ] });
+    return { admin, rep: (await login("reppr", "pw-sale-test")).cookie, other: (await login("otherpr", "pw-sale-test")).cookie, acc: (await login("financepr", "pw-acc-test")).cookie, buyer: (await login("buyerpr", "pw-buyer-test")).cookie };
+  }
+
+  it("admin and the accountant see every expected and every received payment; the accountant sees nothing else", async () => {
+    const { admin, acc } = await setup();
+    for (const cookie of [admin, acc]) {
+      expect(await ids(cookie, "expectedPayments")).toEqual([MINE_PENDING.id, MINE_DONE.id, THEIRS.id].sort());
+      expect(await ids(cookie, "receivedPayments")).toEqual([CONFIRMS_MINE.id, CONFIRMS_THEIRS.id, UNANNOUNCED.id].sort());
+    }
+    const { slices } = await (await call(acc, "/state")).json();
+    expect(Object.keys(slices).filter((k) => (Array.isArray(slices[k]) ? slices[k].length : Object.keys(slices[k]).length) > 0).sort()).toEqual(["accounts", "expectedPayments", "receivedPayments"]);
+    expect(slices.accounts.every((a: any) => !("password" in a))).toBe(true);
+    expect((await post(acc, "/sync", { changes: [{ kind: "pos", id: "po-1700000000050-qqqqqq", data: { id: "po-1700000000050-qqqqqq" } }] })).status).toBe(403);
+  });
+
+  it("a rep receives their own expected payments and the receipts confirming them: not another rep's, not the unannounced money", async () => {
+    const { rep, other } = await setup();
+    expect(await ids(rep, "expectedPayments")).toEqual([MINE_PENDING.id, MINE_DONE.id].sort());
+    expect(await ids(rep, "receivedPayments")).toEqual([CONFIRMS_MINE.id]);
+    const { slices } = await (await call(rep, "/state")).json();
+    for (const s of ["Mary", String(UNANNOUNCED.receivedAmount)]) expect(JSON.stringify(slices)).not.toContain(s); // another rep's customer, the unannounced money
+    expect(await ids(other, "expectedPayments")).toEqual([THEIRS.id]);
+    expect(await ids(other, "receivedPayments")).toEqual([CONFIRMS_THEIRS.id]);
+  });
+
+  it("a buyer has neither", async () => {
+    const { buyer } = await setup();
+    const { slices } = await (await call(buyer, "/state")).json();
+    expect(slices.expectedPayments).toEqual([]);
+    expect(slices.receivedPayments).toEqual([]);
+    expect((await post(buyer, "/sync", { changes: [change("expectedPayments", expected("xpay-1700000000050-000008", REP, "x"))] })).status).toBe(403);
+  });
+
+  it("a rep adds, changes and removes their own pending expected payments, and nothing else", async () => {
+    const { admin, rep } = await setup();
+    const added = expected("xpay-1700000000050-000009", REP, "Beautiful Sprout");
+    expect((await post(rep, "/sync", { changes: [change("expectedPayments", added)] })).status).toBe(200);
+    expect((await post(rep, "/sync", { changes: [change("expectedPayments", { ...added, expectedAmount: 4400 })] })).status).toBe(200);
+    expect((await post(rep, "/sync", { changes: [change("expectedPayments", MINE_PENDING, { deleted: true, data: undefined })] })).status).toBe(200);
+    expect(await ids(admin, "expectedPayments")).toEqual([MINE_DONE.id, THEIRS.id, added.id].sort());
+    for (const ch of [
+      change("expectedPayments", expected("xpay-1700000000050-000010", OTHER, "for another rep")),
+      change("expectedPayments", { ...THEIRS, saleId: REP }), // cannot take another rep's
+      change("expectedPayments", THEIRS, { deleted: true, data: undefined }),
+      change("expectedPayments", { ...MINE_DONE, expectedAmount: 1 }), // confirmed: no longer theirs to change
+      change("expectedPayments", MINE_DONE, { deleted: true, data: undefined }),
+      change("receivedPayments", received("rpay-1700000000050-000009", added.id, 4400)), // what the bank showed is the accountant's to say
+      change("receivedPayments", CONFIRMS_MINE, { deleted: true, data: undefined }),
+    ]) expect((await post(rep, "/sync", { changes: [ch] })).status).toBe(403);
+    expect(await ids(admin, "expectedPayments")).toEqual([MINE_DONE.id, THEIRS.id, added.id].sort());
+    expect(await ids(admin, "receivedPayments")).toEqual([CONFIRMS_MINE.id, CONFIRMS_THEIRS.id, UNANNOUNCED.id].sort());
+    await post(admin, "/sync", { changes: [{ kind: "expectedPayments", id: added.id, deleted: true }] });
+  });
+
+  it("the accountant confirms a pending payment; the rep then sees the receipt, and the payment leaves their pending list", async () => {
+    const { admin, acc, rep } = await setup();
+    const conf = received("rpay-1700000000050-000004", MINE_PENDING.id, 13500);
+    expect((await post(acc, "/sync", { changes: [change("receivedPayments", conf)] })).status).toBe(200);
+    expect(await ids(rep, "receivedPayments")).toEqual([CONFIRMS_MINE.id, conf.id].sort());
+    expect((await post(acc, "/sync", { changes: [change("receivedPayments", { ...conf, receivedAmount: 13510.36, qb: { date: "2026-10-22", time: "09:30", done: true, addedBy: "Finance" } })] })).status).toBe(200);
+    const mine = ((await (await call(rep, "/state")).json()).slices.receivedPayments as any[]).find((r) => r.id === conf.id);
+    expect(mine).toMatchObject({ receivedAmount: 13510.36, qb: { done: true, addedBy: "Finance" } });
+    expect((await post(acc, "/sync", { changes: [{ kind: "receivedPayments", id: conf.id, deleted: true }] })).status).toBe(200); // undone: pending again
+    expect(await ids(rep, "receivedPayments")).toEqual([CONFIRMS_MINE.id]);
+    expect(await ids(admin, "receivedPayments")).toEqual([CONFIRMS_MINE.id, CONFIRMS_THEIRS.id, UNANNOUNCED.id].sort());
+  });
+
+  it("MCP is closed to the accountant", async () => {
+    await setup();
+    const mcp = await SELF.fetch("http://console.test/mcp", { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "x-api-key": "financepr:pw-acc-test" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "1" } } }) });
+    expect(mcp.status).toBe(403);
+  });
+});

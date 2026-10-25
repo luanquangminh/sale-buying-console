@@ -13,6 +13,6 @@ export type Bindings = {
   MCP_API_KEY?: string;
 };
 
-export type User = { id: string; name: string; role: "admin" | "buyer" | "sale" | "warehouse" };
+export type User = { id: string; name: string; role: "admin" | "buyer" | "sale" | "warehouse" | "accountant" };
 export type Variables = { user: User };
 export type AppEnv = { Bindings: Bindings; Variables: Variables };

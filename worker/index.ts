@@ -37,7 +37,12 @@ app.post("/sync", async (c) => {
   for (const ch of partial) {
     const stored = await c.env.DB.prepare("SELECT data FROM records WHERE kind = ? AND id = ?").bind(ch.kind, String(ch.id)).first<{ data: string }>();
     const own = (!stored || recordWritable(ch.kind, user, JSON.parse(stored.data))) && (ch.deleted || recordWritable(ch.kind, user, ch.data));
-    if (!own) return c.json({ ok: false, error: `${ch.kind}: a ${user.role} may only write an entry of their own customers` }, 403);
+    if (!own) return c.json({ ok: false, error: `${ch.kind}: a ${user.role} may only write what is their own` }, 403);
+    if (ch.kind === "expectedPayments" && stored) {
+      // once the accountant has confirmed it, the expected payment stays as the confirmation found it
+      const confirmed = await c.env.DB.prepare("SELECT id FROM records WHERE kind = 'receivedPayments' AND json_extract(data, '$.expectedId') = ? LIMIT 1").bind(String(ch.id)).first();
+      if (confirmed) return c.json({ ok: false, error: "expectedPayments: this payment has been confirmed by the accountant and can no longer be changed" }, 403);
+    }
   }
   try {
     const version = await applyChanges(c.env.DB, body.changes, user);

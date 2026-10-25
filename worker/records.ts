@@ -18,6 +18,8 @@ export const KINDS = {
   warehouseEvents: { slice: "warehouseEvents", roles: ["admin", "buyer", "warehouse"] }, // a sale rep reads and adds the customer entries marked as theirs (recordReadable, recordWritable)
   customerMemos: { slice: "customerMemos", roles: ["admin", "sale"] }, // a rep's own notes on a customer: never sent to the buyer
   paymentTracks: { slice: "paymentTracks", roles: ["admin"] }, // Customer Balance tab; add a role here and in the sidebar to open it to others
+  expectedPayments: { slice: "expectedPayments", roles: ["admin", "accountant"] }, // Payments Received: what a rep says is coming; the rep reads and writes their own (partlyAllowed)
+  receivedPayments: { slice: "receivedPayments", roles: ["admin", "accountant"] }, // what the bank showed; a rep reads the ones confirming their own expected payments
 } as const;
 
 export type Kind = keyof typeof KINDS;
@@ -27,21 +29,35 @@ export const kindAllowed = (kind: Kind, user: User) => {
   const cfg = KINDS[kind];
   const roles = "roles" in cfg ? (cfg.roles as readonly string[]) : null;
   if (user.role === "warehouse") return kind === "accounts" || (roles !== null && roles.includes("warehouse")); // the calendar and names only
+  if (user.role === "accountant") return kind === "accounts" || (roles !== null && roles.includes("accountant")); // the payments tab and names only
   return roles === null || roles.includes(user.role);
 };
 
 /** The kinds a role reaches record by record, not as a whole (see recordReadable / recordWritable). */
-export const partlyAllowed = (kind: Kind, user: User) => kind === "warehouseEvents" && user.role === "sale";
+const PARTLY: Partial<Record<Kind, readonly string[]>> = { warehouseEvents: ["sale"], expectedPayments: ["sale"], receivedPayments: ["sale"] };
+export const partlyAllowed = (kind: Kind, user: User) => Boolean(PARTLY[kind] && PARTLY[kind]!.includes(user.role));
 
 /**
- * What a sale rep may read of the warehouse calendar: the entries marked as a customer's and as theirs. Supplier entries,
- * entries of another rep's customers, and entries not marked yet never leave the server for them.
+ * What a sale rep may read of a kind they reach record by record:
+ * - the warehouse calendar: the entries marked as a customer's and as theirs; supplier entries, another rep's, and unmarked ones never leave the server for them;
+ * - expected payments: their own;
+ * - received payments: the ones confirming one of their own expected payments (`ownExpected` holds those ids), never the unannounced money.
  */
-export const recordReadable = (kind: Kind, user: User, rec: any) =>
-  partlyAllowed(kind, user) && Boolean(rec) && rec.party === "customer" && rec.saleId === user.id;
+export const recordReadable = (kind: Kind, user: User, rec: any, ownExpected?: Set<string>) => {
+  if (!partlyAllowed(kind, user) || !rec) return false;
+  if (kind === "warehouseEvents") return rec.party === "customer" && rec.saleId === user.id;
+  if (kind === "expectedPayments") return rec.saleId === user.id;
+  if (kind === "receivedPayments") return Boolean(rec.expectedId) && Boolean(ownExpected && ownExpected.has(rec.expectedId));
+  return false;
+};
 
-/** What a sale rep may write to the warehouse calendar: an entry of their own customers, and nothing else. */
-export const recordWritable = (kind: Kind, user: User, rec: any) => recordReadable(kind, user, rec);
+/** What a sale rep may write: an entry of their own customers, an expected payment of their own; what the bank showed is the accountant's. */
+export const recordWritable = (kind: Kind, user: User, rec: any) => {
+  if (!partlyAllowed(kind, user) || !rec) return false;
+  if (kind === "warehouseEvents") return rec.party === "customer" && rec.saleId === user.id;
+  if (kind === "expectedPayments") return rec.saleId === user.id;
+  return false;
+};
 
 type Row = { kind: string; id: string; sale_id: string | null; data: string };
 
@@ -52,13 +68,16 @@ export async function buildSnapshot(db: D1Database, user: User) {
     .all<Row>();
   const slices: Record<string, any> = {};
   for (const cfg of Object.values(KINDS)) slices[cfg.slice] = "bySale" in cfg && cfg.bySale ? {} : [];
+  // a rep's received payments are the ones confirming their own expected payments: know those first
+  const ownExpected = new Set<string>();
+  if (user.role === "sale") for (const row of results) if (row.kind === "expectedPayments" && JSON.parse(row.data).saleId === user.id) ownExpected.add(row.id);
   for (const row of results) {
     if (!isKind(row.kind)) continue;
     const full = kindAllowed(row.kind, user);
     if (!full && !partlyAllowed(row.kind, user)) continue;
     const cfg = KINDS[row.kind];
     let rec = JSON.parse(row.data);
-    if (!full && !recordReadable(row.kind, user, rec)) continue;
+    if (!full && !recordReadable(row.kind, user, rec, ownExpected)) continue;
     if (row.kind === "accounts" && user.role !== "admin") {
       const { password: _omit, ...rest } = rec;
       rec = rest;

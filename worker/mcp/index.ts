@@ -34,7 +34,7 @@ export const mcpApp = new Hono<AppEnv>();
 
 const handle = async (c: any) => {
   const user = await resolveUser(c.env, readKey(c));
-  if (user && user.role === "warehouse") return c.json({ jsonrpc: "2.0", error: { code: -32001, message: "MCP tools are not available to warehouse accounts" }, id: null }, 403);
+  if (user && (user.role === "warehouse" || user.role === "accountant")) return c.json({ jsonrpc: "2.0", error: { code: -32001, message: `MCP tools are not available to ${user.role} accounts` }, id: null }, 403);
   if (!user) {
     return c.json({ jsonrpc: "2.0", error: { code: -32001, message: "Unauthorized: send X-API-Key (or Authorization: Bearer, or ?key=) with <username>:<password> of an app account" }, id: null }, 401);
   }
