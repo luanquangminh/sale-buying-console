@@ -448,12 +448,14 @@ test("the left menu stays put while the page scrolls", async ({ page }) => {
   await side(page, "AI agent link").click();
   const sidebar = page.locator(".sidebar");
   expect((await sidebar.boundingBox())!.height).toBe(560); // the menu is as tall as the window, not as tall as the page
+  const innerBefore = await sidebar.evaluate((el) => el.scrollTop); // a menu taller than the window scrolls within itself; that must not move with the page
   const scrolled = await page.evaluate(() => { window.scrollTo(0, 400); return window.scrollY; });
   expect(scrolled).toBeGreaterThan(0); // the page itself did scroll
   const box = (await sidebar.boundingBox())!;
   expect(box.y).toBe(0);
   expect(box.height).toBe(560);
-  await expect(page.locator(".brand")).toBeInViewport();
+  expect(await sidebar.evaluate((el) => el.scrollTop)).toBe(innerBefore);
+  await expect(side(page, "AI agent link")).toBeInViewport(); // the item just chosen stays where it was
 });
 
 test("Delivery Booking shows one page of bookings at a time; the find box and the page size change what a page holds", async ({ page }) => {
