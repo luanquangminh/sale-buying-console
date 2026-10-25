@@ -4,7 +4,7 @@ import { authApp, currentUser } from "./auth";
 import { getVersion } from "./db";
 import { filesApp } from "./files";
 import { mcpApp } from "./mcp/index";
-import { buildSnapshot, isKind, kindAllowed, partlyAllowed, recordWritable } from "./records";
+import { buildSnapshot, isKind, kindAllowed, kindWritable, partlyAllowed, recordWritable } from "./records";
 import { applyChanges } from "./sync";
 import type { AppEnv } from "./types";
 
@@ -30,20 +30,18 @@ app.post("/sync", async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body || !Array.isArray(body.changes)) return c.json({ ok: false, error: "Expected { changes: [] }" }, 400);
   const user = c.get("user");
-  const denied = body.changes.find((ch: { kind?: unknown }) => isKind(ch.kind) && !kindAllowed(ch.kind, user) && !partlyAllowed(ch.kind, user));
+  const changes = body.changes as Array<{ kind?: unknown; id?: unknown; data?: any; deleted?: boolean }>;
+  const denied = changes.find((ch) => isKind(ch.kind) && !kindWritable(ch.kind, user) && !partlyAllowed(ch.kind, user));
   if (denied) return c.json({ ok: false, error: `${denied.kind} is not available to the ${user.role} role` }, 403);
   // a kind reached record by record: the record sent, and the one stored under that id, both have to be the user's
-  const partial = body.changes.filter((ch: { kind?: unknown }) => isKind(ch.kind) && !kindAllowed(ch.kind, user) && partlyAllowed(ch.kind, user));
+  const partial = changes.filter((ch) => isKind(ch.kind) && !kindWritable(ch.kind, user) && partlyAllowed(ch.kind, user));
   for (const ch of partial) {
     const stored = await c.env.DB.prepare("SELECT data FROM records WHERE kind = ? AND id = ?").bind(ch.kind, String(ch.id)).first<{ data: string }>();
-    const own = (!stored || recordWritable(ch.kind, user, JSON.parse(stored.data))) && (ch.deleted || recordWritable(ch.kind, user, ch.data));
+    const own = (!stored || recordWritable(ch.kind as any, user, JSON.parse(stored.data))) && (ch.deleted || recordWritable(ch.kind as any, user, ch.data));
     if (!own) return c.json({ ok: false, error: `${ch.kind}: a ${user.role} may only write what is their own` }, 403);
-    if (ch.kind === "expectedPayments" && stored) {
-      // once the accountant has confirmed it, the expected payment stays as the confirmation found it
-      const confirmed = await c.env.DB.prepare("SELECT id FROM records WHERE kind = 'receivedPayments' AND json_extract(data, '$.expectedId') = ? LIMIT 1").bind(String(ch.id)).first();
-      if (confirmed) return c.json({ ok: false, error: "expectedPayments: this payment has been confirmed by the accountant and can no longer be changed" }, 403);
-    }
   }
+  const refused = await paymentRulesBroken(c.env.DB, changes);
+  if (refused) return c.json({ ok: false, error: refused }, 403);
   try {
     const version = await applyChanges(c.env.DB, body.changes, user);
     return c.json({ ok: true, version });
@@ -51,6 +49,31 @@ app.post("/sync", async (c) => {
     return c.json({ ok: false, error: err instanceof Error ? err.message : "Bad request" }, 400);
   }
 });
+
+/**
+ * Payments received, for every role: an expected payment the accountant has confirmed stays as the confirmation found it
+ * (undo the confirmation first); a confirmation points at an expected payment that exists and has no other confirmation.
+ */
+async function paymentRulesBroken(db: D1Database, changes: Array<{ kind?: unknown; id?: unknown; data?: any; deleted?: boolean }>): Promise<string | null> {
+  const marks = (n: number) => Array(n).fill("?").join(",");
+  const touched = changes.filter((ch) => ch.kind === "expectedPayments").map((ch) => String(ch.id));
+  if (touched.length) {
+    const hit = await db.prepare(`SELECT id FROM records WHERE kind = 'receivedPayments' AND json_extract(data, '$.expectedId') IN (${marks(touched.length)}) LIMIT 1`).bind(...touched).first();
+    if (hit) return "expectedPayments: this payment has been confirmed by the accountant and can no longer be changed; undo the confirmation first";
+  }
+  const confirms = changes.filter((ch) => ch.kind === "receivedPayments" && !ch.deleted && ch.data && ch.data.expectedId).map((ch) => ({ id: String(ch.id), expectedId: String(ch.data.expectedId) }));
+  if (confirms.length) {
+    const ids = confirms.map((x) => x.expectedId);
+    const { results: found } = await db.prepare(`SELECT id FROM records WHERE kind = 'expectedPayments' AND id IN (${marks(ids.length)})`).bind(...ids).all<{ id: string }>();
+    const exists = new Set(found.map((r) => r.id));
+    if (confirms.some((x) => !exists.has(x.expectedId))) return "receivedPayments: the expected payment this confirms no longer exists";
+    const { results: others } = await db.prepare(`SELECT id, json_extract(data, '$.expectedId') AS expectedId FROM records WHERE kind = 'receivedPayments' AND json_extract(data, '$.expectedId') IN (${marks(ids.length)})`).bind(...ids).all<{ id: string; expectedId: string }>();
+    if (confirms.some((x) => others.some((o) => o.expectedId === x.expectedId && o.id !== x.id))) return "receivedPayments: that expected payment has already been confirmed";
+    const seen = new Set<string>();
+    for (const x of confirms) { if (seen.has(x.expectedId)) return "receivedPayments: that expected payment has already been confirmed"; seen.add(x.expectedId); }
+  }
+  return null;
+}
 
 app.route("/files", filesApp);
 app.route("/ai", aiApp);

@@ -404,12 +404,15 @@ describe("payments received: a rep's expected payments, the accountant's confirm
       { id: "accountant-1700000000050-cccccc", role: "accountant", name: "Finance", username: "financepr", password: "pw-acc-test", createdAt: "2026-09-20T00:00:00.000Z" },
       { id: "buyer-1700000000050-dddddd", role: "buyer", name: "Buyer Pay", username: "buyerpr", password: "pw-buyer-test", createdAt: "2026-09-20T00:00:00.000Z" },
     ];
+    // The tests share one database: the receipts go first (a confirmed expected payment cannot be re-written), then the rest.
+    await post(admin, "/sync", { changes: ["000001", "000002", "000003", "000004", "000005", "000006"].map((n) => ({ kind: "receivedPayments", id: `rpay-1700000000050-${n}`, deleted: true })) });
     await post(admin, "/sync", { changes: [
       ...accounts.map((a) => ({ kind: "accounts", id: a.id, createdAt: a.createdAt, data: a })),
       ...[MINE_PENDING, MINE_DONE, THEIRS].map((e) => change("expectedPayments", e)),
-      ...[CONFIRMS_MINE, CONFIRMS_THEIRS, UNANNOUNCED].map((r) => change("receivedPayments", r)),
-      { kind: "expectedPayments", id: "xpay-1700000000050-000009", deleted: true }, // the tests share one database
+      { kind: "expectedPayments", id: "xpay-1700000000050-000009", deleted: true },
     ] });
+    const seeded = await post(admin, "/sync", { changes: [CONFIRMS_MINE, CONFIRMS_THEIRS, UNANNOUNCED].map((r) => change("receivedPayments", r)) });
+    if (seeded.status !== 200) throw new Error(`setup: ${seeded.status} ${await seeded.text()}`);
     return { admin, rep: (await login("reppr", "pw-sale-test")).cookie, other: (await login("otherpr", "pw-sale-test")).cookie, acc: (await login("financepr", "pw-acc-test")).cookie, buyer: (await login("buyerpr", "pw-buyer-test")).cookie };
   }
 
@@ -475,6 +478,36 @@ describe("payments received: a rep's expected payments, the accountant's confirm
     expect((await post(acc, "/sync", { changes: [{ kind: "receivedPayments", id: conf.id, deleted: true }] })).status).toBe(200); // undone: pending again
     expect(await ids(rep, "receivedPayments")).toEqual([CONFIRMS_MINE.id]);
     expect(await ids(admin, "receivedPayments")).toEqual([CONFIRMS_MINE.id, CONFIRMS_THEIRS.id, UNANNOUNCED.id].sort());
+  });
+
+  it("a confirmed expected payment stays as the confirmation found it, for the admin and the accountant too", async () => {
+    const { admin, acc } = await setup();
+    for (const cookie of [admin, acc]) {
+      expect((await post(cookie, "/sync", { changes: [change("expectedPayments", { ...MINE_DONE, expectedAmount: 1 })] })).status).toBe(403);
+      expect((await post(cookie, "/sync", { changes: [change("expectedPayments", MINE_DONE, { deleted: true, data: undefined })] })).status).toBe(403);
+    }
+    expect((await post(admin, "/sync", { changes: [change("expectedPayments", { ...MINE_PENDING, expectedAmount: 1 })] })).status).toBe(200); // pending: fine
+    // undo the confirmation, then the expected payment is open again
+    expect((await post(acc, "/sync", { changes: [{ kind: "receivedPayments", id: CONFIRMS_MINE.id, deleted: true }] })).status).toBe(200);
+    expect((await post(admin, "/sync", { changes: [change("expectedPayments", { ...MINE_DONE, expectedAmount: 2 })] })).status).toBe(200);
+  });
+
+  it("a confirmation needs an expected payment that exists and has no confirmation yet", async () => {
+    const { acc } = await setup();
+    expect((await post(acc, "/sync", { changes: [change("receivedPayments", received("rpay-1700000000050-000005", "xpay-1700000000050-gone", 10))] })).status).toBe(403);
+    expect((await post(acc, "/sync", { changes: [change("receivedPayments", received("rpay-1700000000050-000005", MINE_DONE.id, 10))] })).status).toBe(403); // already confirmed by CONFIRMS_MINE
+    expect((await post(acc, "/sync", { changes: [change("receivedPayments", received("rpay-1700000000050-000005", MINE_PENDING.id, 10)), change("receivedPayments", received("rpay-1700000000050-000006", MINE_PENDING.id, 11))] })).status).toBe(403); // twice in one batch
+    expect((await post(acc, "/sync", { changes: [change("receivedPayments", received("rpay-1700000000050-000005", MINE_PENDING.id, 10))] })).status).toBe(200);
+    expect((await post(acc, "/sync", { changes: [change("receivedPayments", { ...received("rpay-1700000000050-000005", MINE_PENDING.id, 12) })] })).status).toBe(200); // its own correction is not a second confirmation
+    expect((await post(acc, "/sync", { changes: [change("receivedPayments", received("rpay-1700000000050-000006", "", 592))] })).status).toBe(200); // unannounced money points at nothing
+  });
+
+  it("the accountant reads the account names but cannot write accounts", async () => {
+    const { acc } = await setup();
+    const r = await post(acc, "/sync", { changes: [{ kind: "accounts", id: "admin-01", data: { id: "admin-01", role: "admin", name: "x", username: "admin", password: "x" } }] });
+    expect(r.status).toBe(403);
+    expect((await post(acc, "/sync", { changes: [{ kind: "accounts", id: "accountant-1700000000050-cccccc", deleted: true }] })).status).toBe(403);
+    expect((await (await call(acc, "/state")).json()).slices.accounts.length).toBeGreaterThan(0);
   });
 
   it("MCP is closed to the accountant", async () => {

@@ -25,13 +25,16 @@ export const KINDS = {
 export type Kind = keyof typeof KINDS;
 export const isKind = (k: unknown): k is Kind => typeof k === "string" && k in KINDS;
 /** A kind with `roles` is neither sent to nor accepted from any other role. */
+/** Roles that get the account names (to show who did what) and their own kinds, nothing else. */
+const NAMES_ONLY = new Set(["warehouse", "accountant"]);
 export const kindAllowed = (kind: Kind, user: User) => {
   const cfg = KINDS[kind];
   const roles = "roles" in cfg ? (cfg.roles as readonly string[]) : null;
-  if (user.role === "warehouse") return kind === "accounts" || (roles !== null && roles.includes("warehouse")); // the calendar and names only
-  if (user.role === "accountant") return kind === "accounts" || (roles !== null && roles.includes("accountant")); // the payments tab and names only
+  if (NAMES_ONLY.has(user.role)) return kind === "accounts" || (roles !== null && roles.includes(user.role));
   return roles === null || roles.includes(user.role);
 };
+/** What a role may write as a whole kind: the names a names-only role reads are not theirs to change. */
+export const kindWritable = (kind: Kind, user: User) => kindAllowed(kind, user) && !(NAMES_ONLY.has(user.role) && kind === "accounts");
 
 /** The kinds a role reaches record by record, not as a whole (see recordReadable / recordWritable). */
 const PARTLY: Partial<Record<Kind, readonly string[]>> = { warehouseEvents: ["sale"], expectedPayments: ["sale"], receivedPayments: ["sale"] };
@@ -68,15 +71,15 @@ export async function buildSnapshot(db: D1Database, user: User) {
     .all<Row>();
   const slices: Record<string, any> = {};
   for (const cfg of Object.values(KINDS)) slices[cfg.slice] = "bySale" in cfg && cfg.bySale ? {} : [];
-  // a rep's received payments are the ones confirming their own expected payments: know those first
-  const ownExpected = new Set<string>();
-  if (user.role === "sale") for (const row of results) if (row.kind === "expectedPayments" && JSON.parse(row.data).saleId === user.id) ownExpected.add(row.id);
+  // a rep's received payments are the ones confirming their own expected payments: know those first (parsed once)
+  const ownExpected = new Set<string>(); const parsed = new Map<string, any>();
+  if (user.role === "sale") for (const row of results) if (row.kind === "expectedPayments") { const rec = JSON.parse(row.data); parsed.set(row.id, rec); if (rec.saleId === user.id) ownExpected.add(row.id); }
   for (const row of results) {
     if (!isKind(row.kind)) continue;
     const full = kindAllowed(row.kind, user);
     if (!full && !partlyAllowed(row.kind, user)) continue;
     const cfg = KINDS[row.kind];
-    let rec = JSON.parse(row.data);
+    let rec = parsed.get(row.id) ?? JSON.parse(row.data);
     if (!full && !recordReadable(row.kind, user, rec, ownExpected)) continue;
     if (row.kind === "accounts" && user.role !== "admin") {
       const { password: _omit, ...rest } = rec;
