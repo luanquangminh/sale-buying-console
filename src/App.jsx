@@ -11,6 +11,7 @@ import { DUE_TONE, dueLabel, dueState, groupByCustomer, PAY_STATUSES, PAY_STATUS
 import { sortLanesByPod } from "./lanes";
 import { lineCover, pfiLineCover, pfiShortages, poShortages } from "./allocation";
 import { PAY_COMPANIES, diffTone, difference, fmtDiff, forSale, newestFirst, splitExpected, toConfirmCount, unmatched } from "./paymentsReceived";
+import { homeFor, pathFor, stateFor } from "./routes";
 import { placePanel } from "./popup";
 import { acknowledged, changeSinceSent, describeChanges, describeWas, lineChange, removedSinceSent, stampSent } from "./sentMark";
 import { groupBySale, hasSaleChange } from "./orderGroups";
@@ -1659,7 +1660,7 @@ function ProductsTable({
       {importState.status !== "idle" && (
         <div className={`import-note ${importState.status === "ok" ? "ok" : importState.status === "err" ? "err" : "busy"}`} style={{ marginBottom: 8 }}>
           {importState.message}
-          {importState.agentHint && <> <a href="#agent" target="_blank" rel="noreferrer" className="import-agent-link">Open AI agent link ↗</a></>}
+          {importState.agentHint && <> <a href="/agent" target="_blank" rel="noreferrer" className="import-agent-link">Open AI agent link ↗</a></>}
         </div>
       )}
 
@@ -4996,21 +4997,36 @@ function Shell({ user, onLogout, store }) {
   const isAccountant = user.role === "accountant";
 
   const salesReps = store.accounts.filter((a) => a.role === "sale");
-  const [selectedSaleId, setSelectedSaleId] = useState(isSale ? user.id : (salesReps[0]?.id || ""));
-  const [topSection, setTopSection] = useState(() => {
-    const hash = typeof window !== "undefined" ? window.location.hash.replace("#", "") : "";
-    if (hash === "agent" && !isWarehouse && !isAccountant) return "agent";
-    return isWarehouse ? "warehouse" : isAccountant ? "paymentsReceived" : isBuyer ? "buyerspace" : "customer";
-  });
-  // `/#agent` also works while the app is already open (the import hint opens it in a new tab, but a pasted link may not).
-  React.useEffect(() => {
-    const onHash = () => { if (window.location.hash === "#agent" && !isWarehouse && !isAccountant) setTopSection("agent"); };
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
-  }, [isWarehouse, isAccountant]);
-  const [subSection, setSubSection] = useState("customer");
-  const [buyerSubTab, setBuyerSubTab] = useState("feed");
+  // The address names the screen (routes.js): read it once on load; a page this role may not open sends it home.
+  const [landing] = useState(() => (typeof window === "undefined" ? null : stateFor(window.location.pathname, user.role, { hash: window.location.hash, reps: salesReps })));
+  const [selectedSaleId, setSelectedSaleId] = useState((landing && landing.selectedSaleId) || (isSale ? user.id : (salesReps[0]?.id || "")));
+  const [topSection, setTopSection] = useState(landing ? landing.topSection : homeFor(user.role));
+  const [subSection, setSubSection] = useState((landing && landing.subSection) || "customer");
+  const [buyerSubTab, setBuyerSubTab] = useState((landing && landing.buyerSubTab) || "feed");
   const [expandedPfiId, setExpandedPfiId] = useState(null);
+  // The address follows the screen; Back and Forward, and the old `/#agent` link, bring the screen back.
+  const repsRef = React.useRef(salesReps); repsRef.current = salesReps;
+  const firstPath = React.useRef(true);
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const path = pathFor({ topSection, subSection, buyerSubTab, selectedSaleId }, user.role);
+    if (window.location.pathname + window.location.hash !== path) window.history[firstPath.current ? "replaceState" : "pushState"](null, "", path);
+    firstPath.current = false;
+  }, [topSection, subSection, buyerSubTab, selectedSaleId, user.role]);
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const apply = () => {
+      const s = stateFor(window.location.pathname, user.role, { hash: window.location.hash, reps: repsRef.current });
+      if (!s) return;
+      setTopSection(s.topSection);
+      if (s.subSection) setSubSection(s.subSection);
+      if (s.buyerSubTab) setBuyerSubTab(s.buyerSubTab);
+      if (s.selectedSaleId) setSelectedSaleId(s.selectedSaleId);
+    };
+    window.addEventListener("popstate", apply);
+    window.addEventListener("hashchange", apply);
+    return () => { window.removeEventListener("popstate", apply); window.removeEventListener("hashchange", apply); };
+  }, [user.role]);
 
   const selectedRep = salesReps.find((r) => r.id === selectedSaleId) || salesReps[0] || { id: "", name: "—" };
   const currentSaleId = isSale ? user.id : selectedSaleId;
