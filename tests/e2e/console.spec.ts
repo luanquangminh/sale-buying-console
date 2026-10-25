@@ -51,7 +51,10 @@ const NOTE = "E2E: please confirm 40ft reefer rate to Lagos for Acme";
 
 const SLOW = { timeout: 60_000 }; // a cold or busy server can take a while to answer the first requests of a page
 async function signIn(page: Page, username: string, password: string) {
-  await page.goto("/");
+  try { await page.goto("/"); } catch (e) { // a cold or busy server can miss the first load: one more try before giving up
+    if (!/Timeout/i.test(String(e))) throw e;
+    await page.goto("/", { timeout: 90_000 });
+  }
   const signInButton = page.getByRole("button", { name: "Sign in" });
   const logout = page.getByText("Log out");
   await Promise.race([signInButton.waitFor(SLOW), logout.waitFor(SLOW)]); // the app decides which screen after /auth/me
