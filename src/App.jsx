@@ -202,7 +202,7 @@ const GlobalStyle = () => (
     .login-note { font-size:11px; color:#9AA3A9; margin-top:16px; line-height:1.5; }
 
     .shell { display:flex; min-height:100vh; }
-    .sidebar { width:232px; background:#F5FBF6; border-right:1px solid #D8E6DC; flex-shrink:0; display:flex; flex-direction:column; padding:20px 14px; }
+    .sidebar { width:232px; background:#F5FBF6; border-right:1px solid #D8E6DC; flex-shrink:0; display:flex; flex-direction:column; padding:20px 14px; box-sizing:border-box; position:sticky; top:0; height:100vh; align-self:flex-start; overflow-y:auto; } /* the menu stays put; only the page scrolls */
     .brand { display:flex; align-items:center; gap:9px; padding:4px 6px 20px; }
     .brand-logo { width:38px; height:auto; border-radius:3px; flex-shrink:0; }
     .brand-name { font-weight:700; font-size:12.5px; letter-spacing:.01em; color:#12233B; line-height:1.25; }
@@ -688,7 +688,7 @@ const GlobalStyle = () => (
 
     @media (max-width: 860px) {
       .shell { flex-direction:column; }
-      .sidebar { width:100%; flex-direction:row; flex-wrap:wrap; }
+      .sidebar { width:100%; flex-direction:row; flex-wrap:wrap; position:static; height:auto; overflow:visible; }
       .side-spacer { display:none; }
       .main { padding:18px; }
       .detail-cols, .detail-cols.three { grid-template-columns:1fr; }
@@ -2950,6 +2950,7 @@ function SupplierArea({ suppliers, pos, addSupplier, updateSupplier, deleteSuppl
   const [form, setForm] = useState({ name: "", note: "" });
   const [editing, setEditing] = useState(null); // { id, name, note }
   const [removing, setRemoving] = useState(null); // supplier id awaiting the confirmation
+  const pager = usePager(suppliers, { ensureIndex: suppliers.findIndex((x) => x.id === (editing ? editing.id : removing)) });
 
   const saveEdit = () => {
     if (!editing.name.trim()) return;
@@ -2997,7 +2998,7 @@ function SupplierArea({ suppliers, pos, addSupplier, updateSupplier, deleteSuppl
         ) : (
           <>
             <div className="supplier-head"><div>Name</div><div>Note</div><div>POs</div><div /></div>
-            {suppliers.map((s) => {
+            {pager.rows.map((s) => {
               const poCount = pos.filter((p) => p.supplierId === s.id).length;
               return (
                 <React.Fragment key={s.id}>
@@ -3047,6 +3048,7 @@ function SupplierArea({ suppliers, pos, addSupplier, updateSupplier, deleteSuppl
                 </React.Fragment>
               );
             })}
+            <Pager pager={pager} />
           </>
         )}
       </div>
