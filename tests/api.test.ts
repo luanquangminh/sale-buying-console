@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 
 const BASE = "http://console.test/api";
 
+/** The first MCP request a client makes, with the console login as its key: 403 says the role has no tools. */
+const mcpInit = (key: string) => SELF.fetch("http://console.test/mcp", { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "x-api-key": key }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "1" } } }) });
+
 async function login(username = "admin", password = "changeme") {
   const res = await SELF.fetch(`${BASE}/auth/login`, {
     method: "POST",
@@ -295,7 +298,7 @@ describe("warehouse role", () => {
     expect(slices.maiTasks).toEqual([]);
     expect((await post(cookie, "/sync", { changes: [{ kind: "warehouseEvents", id: "wh-1700000000002-ffffff", data: { id: "wh-1700000000002-ffffff", date: "2026-09-25", title: "Hunt collection", type: "collection" } }] })).status).toBe(200);
     expect((await post(cookie, "/sync", { changes: [{ kind: "pos", id: "po-1700000000001-qqqqqq", data: { id: "po-1700000000001-qqqqqq" } }] })).status).toBe(403);
-    const mcp = await SELF.fetch("http://console.test/mcp", { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "x-api-key": "wh9:pw-wh-test" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "1" } } }) });
+    const mcp = await mcpInit("wh9:pw-wh-test");
     expect(mcp.status).toBe(403);
   });
 });
@@ -512,7 +515,7 @@ describe("payments received: a rep's expected payments, the accountant's confirm
 
   it("MCP is closed to the accountant", async () => {
     await setup();
-    const mcp = await SELF.fetch("http://console.test/mcp", { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "x-api-key": "financepr:pw-acc-test" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "1" } } }) });
+    const mcp = await mcpInit("financepr:pw-acc-test");
     expect(mcp.status).toBe(403);
   });
 });

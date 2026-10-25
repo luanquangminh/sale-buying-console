@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, request, test, type Page } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 import * as XLSX from "xlsx";
 import { A } from "./accounts";
@@ -49,17 +49,18 @@ test.afterEach(async ({ page }) => { await settled(page, 1200); });
 const FIX = (f: string) => fileURLToPath(new URL(`../fixtures/${f}`, import.meta.url));
 const NOTE = "E2E: please confirm 40ft reefer rate to Lagos for Acme";
 
+const SLOW = { timeout: 60_000 }; // a cold or busy server can take a while to answer the first requests of a page
 async function signIn(page: Page, username: string, password: string) {
   await page.goto("/");
   const signInButton = page.getByRole("button", { name: "Sign in" });
   const logout = page.getByText("Log out");
-  await Promise.race([signInButton.waitFor(), logout.waitFor()]); // the app decides which screen after /auth/me
+  await Promise.race([signInButton.waitFor(SLOW), logout.waitFor(SLOW)]); // the app decides which screen after /auth/me
   if (await logout.count()) { await logout.click(); }
-  await signInButton.waitFor();
+  await signInButton.waitFor(SLOW);
   await page.locator("input.select-line").first().fill(username);
   await page.locator('input[type="password"]').fill(password);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByText("Log out")).toBeVisible();
+  await expect(page.getByText("Log out")).toBeVisible(SLOW);
 }
 
 const side = (page: Page, text: string) => page.locator(".side-item", { hasText: new RegExp(`^\\s*${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*(\\d+)?\\s*$`) }); // whole label, badge count allowed
@@ -76,6 +77,36 @@ const save = async (page: Page) => {
 };
 const close = (page: Page) => page.getByRole("button", { name: "Close" }).click();
 /** Orders to update lists the PFIs under their sale rep: open every rep, then the row is there. */
+/** The payments tab: a row by its text, a form field by its label, the two-click delete; rows wiped through the API as the admin. */
+const payRow = (page: Page, text: string) => page.locator(".pay-row", { hasText: text });
+const payField = (page: Page, label: string) => page.locator(`[aria-label="${label}"]`).last(); // the add form, or the open dialog
+const removePayRow = async (page: Page, row: ReturnType<Page["locator"]>) => { await row.locator(".btn-icon").last().click(); await row.getByRole("button", { name: /^Yes, / }).click(); };
+const wipePayments = async (baseURL: string, names: string[]) => {
+  const api = await request.newContext({ baseURL });
+  await api.post("/api/auth/login", { data: { username: A.admin.username, password: A.admin.password } });
+  const { slices } = await (await api.get("/api/state")).json();
+  const hit = (r: any) => names.some((n) => String(r.customer || "").includes(n));
+  const expected = slices.expectedPayments.filter(hit); const ids = new Set(expected.map((e: any) => e.id));
+  const received = slices.receivedPayments.filter((r: any) => hit(r) || ids.has(r.expectedId));
+  if (received.length) await api.post("/api/sync", { data: { changes: received.map((r: any) => ({ kind: "receivedPayments", id: r.id, deleted: true })) } }); // receipts first: a confirmed payment cannot be removed
+  if (expected.length) await api.post("/api/sync", { data: { changes: expected.map((e: any) => ({ kind: "expectedPayments", id: e.id, deleted: true })) } });
+  await api.post("/api/auth/logout"); await api.dispose();
+};
+/** The admin makes a login of this role from the accounts file, unless it is there already. */
+const ensureAccount = async (page: Page, role: "warehouse" | "accountant") => {
+  const who = A[role];
+  await signIn(page, A.admin.username, A.admin.password);
+  await side(page, "Accounts").click();
+  const rows = page.locator(".account-row");
+  if (await rows.filter({ has: page.locator(`input[value="${who.username}"]`) }).count()) return;
+  const form = page.locator(".add-form").first();
+  await form.locator("select").selectOption(role);
+  await form.locator("input").nth(0).fill(who.name || role); await form.locator("input").nth(1).fill(who.username); await form.locator("input").nth(2).fill(who.password);
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(rows.filter({ has: page.locator(`input[value="${who.username}"]`) })).toHaveCount(1);
+  await settled(page);
+};
+
 const order = async (page: Page, pfi: string) => {
   await page.locator(".sale-group-head").first().waitFor();
   const closed = page.locator(".sale-group:not(.open) > .sale-group-head");
@@ -574,16 +605,7 @@ test("a sale's save of an open PFI keeps the buyer's status change made meanwhil
 });
 
 test("warehouse: admin creates the login; it sees only the calendar; entries add, move, and reach the buyer", async ({ page }) => {
-  await signIn(page, A.admin.username, A.admin.password);
-  await side(page, "Accounts").click();
-  const rows = page.locator(".account-row");
-  if (!(await rows.filter({ has: page.locator(`input[value="${A.warehouse.username}"]`) }).count())) {
-    const form = page.locator(".add-form").first();
-    await form.locator("select").selectOption("warehouse");
-    await form.locator("input").nth(0).fill(A.warehouse.name || "Warehouse"); await form.locator("input").nth(1).fill(A.warehouse.username); await form.locator("input").nth(2).fill(A.warehouse.password);
-    await page.getByRole("button", { name: "Create account" }).click();
-    await expect(rows.filter({ has: page.locator(`input[value="${A.warehouse.username}"]`) })).toHaveCount(1);
-  }
+  await ensureAccount(page, "warehouse");
 
   await signIn(page, A.warehouse.username, A.warehouse.password);
   await expect(page.locator(".side-item")).toHaveCount(1);
@@ -1961,41 +1983,15 @@ test("floor stock and reorder: a line is judged on what the order needs against 
   await removeDoc(pfiRow, "Delete PFI");
 });
 
-test("payments received: a rep announces a payment, the accountant confirms it with the bank's figure, each side sees its own lists", async ({ page }) => {
+test("payments received: a rep announces a payment, the accountant confirms it with the bank's figure, each side sees its own lists", async ({ page, baseURL }) => {
   const JUARA = "E2E Pay Juara Trade"; const SHALUXE = "E2E Pay Shaluxe"; const WALKIN = "E2E Pay Walk-in";
-  const pillTab = (text: string) => page.locator(".pill-tabs .pill", { hasText: text });
-  const row = (text: string) => page.locator(".pay-row", { hasText: text });
-  const field = (label: string) => page.locator(`[aria-label="${label}"]`).last(); // the add form, or the open dialog
-  const removeRow = async (r: ReturnType<Page["locator"]>) => { await r.locator(".btn-icon").last().click(); await r.getByRole("button", { name: /^Yes, / }).click(); };
-  const cleanAccountant = async () => {
-    await signIn(page, A.accountant.username, A.accountant.password);
-    await pillTab("Confirmed").click();
-    for (const t of [JUARA, SHALUXE]) while (await row(t).count()) await removeRow(row(t).first());
-    await pillTab("Unmatched").click();
-    while (await row(WALKIN).count()) await removeRow(row(WALKIN).first());
-    await settled(page);
-  };
-  const cleanRep = async () => {
-    await signIn(page, A.sale.username, A.sale.password);
-    await side(page, "Payments Received").click();
-    for (const t of [JUARA, SHALUXE]) while (await row(t).count()) await removeRow(row(t).first());
-    await settled(page);
-  };
+  const TITLES = [JUARA, SHALUXE, WALKIN];
+  const row = (text: string) => payRow(page, text); const field = (label: string) => payField(page, label); const pillTab = (text: string) => pill(page, text);
 
-  // The accountant login, made by the admin like any other.
-  await signIn(page, A.admin.username, A.admin.password);
-  await side(page, "Accounts").click();
-  const rows = page.locator(".account-row");
-  if (!(await rows.filter({ has: page.locator(`input[value="${A.accountant.username}"]`) }).count())) {
-    const form = page.locator(".add-form").first();
-    await form.locator("select").selectOption("accountant");
-    await form.locator("input").nth(0).fill(A.accountant.name || "Accountant"); await form.locator("input").nth(1).fill(A.accountant.username); await form.locator("input").nth(2).fill(A.accountant.password);
-    await page.getByRole("button", { name: "Create account" }).click();
-    await expect(rows.filter({ has: page.locator(`input[value="${A.accountant.username}"]`) })).toHaveCount(1);
-  }
-  await settled(page);
-  await cleanAccountant();
-  await cleanRep();
+  await ensureAccount(page, "accountant");
+  await wipePayments(baseURL!, TITLES);
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Payments Received").click();
   const base = await page.locator(".pay-row").count(); // other runs' rows may be pending too
 
   // The rep announces two payments; the second is corrected before the accountant sees it.
@@ -2105,30 +2101,33 @@ test("payments received: a rep announces a payment, the accountant confirms it w
   await expect(row(SHALUXE)).toHaveCount(1);
   await expect(row(SHALUXE).getByRole("button", { name: "Edit" })).toHaveCount(1);
 
-  await cleanAccountant();
-  for (const t of [JUARA, SHALUXE, WALKIN]) await expect(row(t)).toHaveCount(0);
-  await cleanRep();
+  // Tidy up through the screens once (the undo and the deletes are controls too), then make sure nothing is left.
+  await signIn(page, A.accountant.username, A.accountant.password);
+  await pillTab("Confirmed").click();
+  await removePayRow(page, row(JUARA));
   await expect(row(JUARA)).toHaveCount(0);
+  await pillTab("Unmatched").click();
+  await removePayRow(page, row(WALKIN));
+  await expect(row(WALKIN)).toHaveCount(0);
+  await settled(page);
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Payments Received").click();
+  await removePayRow(page, row(SHALUXE));
   await expect(row(SHALUXE)).toHaveCount(0);
+  await settled(page);
+  await wipePayments(baseURL!, TITLES);
 });
 
-test("a rep's stale edit of a payment the accountant has just confirmed is refused, said so, and does not block later saves", async ({ browser }) => {
+test("a rep's stale edit of a payment the accountant has just confirmed is refused, said so, and does not block later saves", async ({ browser, baseURL }) => {
   const STALE = "E2E Pay Stale"; const NEXT = "E2E Pay Next";
   const repCtx = await browser.newContext(); const rep = await repCtx.newPage(); watchPushes(rep);
   const accCtx = await browser.newContext(); const acc = await accCtx.newPage(); watchPushes(acc);
-  const row = (page: Page, text: string) => page.locator(".pay-row", { hasText: text });
-  const pillTab = (page: Page, text: string) => page.locator(".pill-tabs .pill", { hasText: text });
-  const field = (page: Page, label: string) => page.locator(`[aria-label="${label}"]`).last();
-  const removeRow = async (r: ReturnType<Page["locator"]>) => { await r.locator(".btn-icon").last().click(); await r.getByRole("button", { name: /^Yes, / }).click(); };
+  const row = payRow; const pillTab = pill; const field = payField;
   try {
-    // Leftovers, then two expected payments from the rep.
+    await wipePayments(baseURL!, [STALE, NEXT]);
     await signIn(acc, A.accountant.username, A.accountant.password);
-    await pillTab(acc, "Confirmed").click();
-    for (const t of [STALE, NEXT]) while (await row(acc, t).count()) await removeRow(row(acc, t).first());
-    await settled(acc);
     await signIn(rep, A.sale.username, A.sale.password);
     await side(rep, "Payments Received").click();
-    for (const t of [STALE, NEXT]) while (await row(rep, t).count()) await removeRow(row(rep, t).first());
     for (const [customer, amount] of [[STALE, "1000"], [NEXT, "2000"]]) {
       await field(rep, "Expected amount").fill(amount); await field(rep, "Customer name").fill(customer);
       await rep.getByRole("button", { name: "Add expected payment" }).click();
@@ -2173,14 +2172,7 @@ test("a rep's stale edit of a payment the accountant has just confirmed is refus
     expect(onServer.slices.expectedPayments.find((e: any) => e.customer === "E2E Pay Next").expectedAmount).toBe(2500); // the queue was not stuck behind the refused change
     expect(onServer.slices.expectedPayments.find((e: any) => e.customer === "E2E Pay Stale").expectedAmount).toBe(1000);
 
-    // Tidy up: undo the confirmation, remove both.
-    await pillTab(acc, "Confirmed").click();
-    await removeRow(row(acc, STALE));
-    await settled(acc);
-    await rep.reload();
-    await side(rep, "Payments Received").click();
-    for (const t of [STALE, NEXT]) { await expect(row(rep, t)).toHaveCount(1); await removeRow(row(rep, t)); }
-    await settled(rep);
+    await wipePayments(baseURL!, [STALE, NEXT]);
   } finally {
     await repCtx.close(); await accCtx.close();
   }
