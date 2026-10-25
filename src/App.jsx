@@ -4534,8 +4534,15 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
   };
   const removeExpected = (id) => { actions.deleteExpectedPayment(id); setRemoving(null); };
   const removeReceived = (id) => { actions.deleteReceivedPayment(id); setRemoving(null); };
+  const undoConfirmation = (e) => actions.deleteReceivedPayment(e.confirmation.id); // the payment goes back to To confirm
+  const removeConfirmed = (expectedId) => { // the whole row: the confirmation and what the rep announced, in one push
+    const e = confirmed.find((x) => x.id === expectedId);
+    if (e) actions.deleteReceivedPayment(e.confirmation.id);
+    actions.deleteExpectedPayment(expectedId);
+    setRemoving(null);
+  };
   const remover = (onRemove, label) => (id) => <PayRemove id={id} label={label} removing={removing} onAsk={setRemoving} onCancel={() => setRemoving(null)} onRemove={onRemove} />;
-  const removeExpectedCtl = remover(removeExpected); const removeReceivedCtl = remover(removeReceived); const undoCtl = remover(removeReceived, "Undo confirmation");
+  const removeExpectedCtl = remover(removeExpected); const removeReceivedCtl = remover(removeReceived); const removeConfirmedCtl = remover(removeConfirmed);
 
   return (
     <div>
@@ -4585,9 +4592,8 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
               <td><span className={`chip ${e.proof ? "green" : "gray"}`}>{e.proof ? "Yes" : "No"}</span></td>
               <td className="ro">{e.invNo || "—"}</td>
               <td style={{ whiteSpace: "nowrap" }}>
-                {isRep
-                  ? <><button className="btn btn-sm" onClick={() => openEdit("expected", e)}>Edit</button>{" "}{removeExpectedCtl(e.id)}</>
-                  : <button className="btn btn-sm btn-accent" onClick={() => openConfirm(e)}>Confirm</button>}
+                {!isRep && <><button className="btn btn-sm btn-accent" onClick={() => openConfirm(e)}>Confirm</button>{" "}</>}
+                <button className="btn btn-sm" onClick={() => openEdit("expected", e)}>Edit</button>{" "}{removeExpectedCtl(e.id)}
               </td>
             </tr>
           )}
@@ -4610,7 +4616,13 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
               <td className="ro">{e.confirmation.sender || "—"}</td>
               <td className="ro qb-cell">{qbText(e.confirmation.qb)}</td>
               <td className="ro">{e.confirmation.confirmedBy || "—"}</td>
-              {!isRep && <td style={{ whiteSpace: "nowrap" }}><button className="btn btn-sm" onClick={() => openEdit("received", e.confirmation, e)}>Edit</button>{" "}{undoCtl(e.confirmation.id)}</td>}
+              {!isRep && (
+                <td style={{ whiteSpace: "nowrap" }}>
+                  <button className="btn btn-sm" onClick={() => openEdit("received", e.confirmation, e)}>Edit</button>{" "}
+                  <button className="btn btn-sm" title="Back to To confirm: the confirmation is removed, the rep's announcement stays" onClick={() => undoConfirmation(e)}>Undo</button>{" "}
+                  {removeConfirmedCtl(e.id)}
+                </td>
+              )}
             </tr>
           )}
         </PayTable>
@@ -4646,7 +4658,7 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
         </Modal>
       )}
       {editing && (
-        <Modal title={editing.kind === "expected" ? "Expected payment" : editing.expected ? `Confirmation — ${editing.expected.customer || "customer"}` : "Received payment"} subtitle={editing.kind === "expected" ? "Change what you announced; the accountant has not confirmed it yet" : "What the bank showed"} onClose={() => setEditing(null)}>
+        <Modal title={editing.kind === "expected" ? "Expected payment" : editing.expected ? `Confirmation — ${editing.expected.customer || "customer"}` : "Received payment"} subtitle={editing.kind === "expected" ? (isRep ? "Change what you announced; the accountant has not confirmed it yet" : `What ${editing.row.saleName || repName(editing.row.saleId) || "the rep"} announced, not confirmed yet`) : "What the bank showed"} onClose={() => setEditing(null)}>
           {editing.kind === "expected"
             ? <ExpectedFields value={editing.draft} onChange={(draft) => setEditing({ ...editing, draft })} onEnter={saveEdit} />
             : <ReceivedFields value={editing.draft} onChange={(draft) => setEditing({ ...editing, draft })} expected={editing.expected} />}

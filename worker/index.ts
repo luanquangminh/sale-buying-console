@@ -78,15 +78,17 @@ type Change = { kind?: unknown; id?: unknown; data?: any; deleted?: boolean };
  */
 async function applyPaymentRules(db: D1Database, changes: Change[]): Promise<string | null> {
   const touched = changes.filter((ch) => ch.kind === "expectedPayments").map((ch) => String(ch.id));
+  const receiptsGoing = new Set(changes.filter((ch) => ch.kind === "receivedPayments" && ch.deleted).map((ch) => String(ch.id)));
   const receipts = changes.filter((ch) => ch.kind === "receivedPayments" && !ch.deleted && ch.data);
   const confirms = receipts.filter((ch) => ch.data.expectedId).map((ch) => ({ id: String(ch.id), expectedId: String(ch.data.expectedId) }));
   if (!touched.length && !receipts.length) return null;
   const expectedIds = confirms.map((x) => x.expectedId);
   const stmts: D1PreparedStatement[] = [];
-  if (touched.length) stmts.push(db.prepare(`SELECT id FROM records WHERE kind = 'receivedPayments' AND json_extract(data, '$.expectedId') IN (${marks(touched.length)}) LIMIT 1`).bind(...touched));
+  if (touched.length) stmts.push(db.prepare(`SELECT id FROM records WHERE kind = 'receivedPayments' AND json_extract(data, '$.expectedId') IN (${marks(touched.length)})`).bind(...touched));
   if (expectedIds.length) stmts.push(db.prepare(`SELECT kind, id, json_extract(data, '$.expectedId') AS expectedId, json_extract(data, '$.saleId') AS saleId FROM records WHERE (kind = 'expectedPayments' AND id IN (${marks(expectedIds.length)})) OR (kind = 'receivedPayments' AND json_extract(data, '$.expectedId') IN (${marks(expectedIds.length)}))`).bind(...expectedIds, ...expectedIds));
   const results = stmts.length ? await db.batch<{ kind: string; id: string; expectedId: string | null; saleId: string | null }>(stmts) : [];
-  if (touched.length && results[0].results.length) return "expectedPayments: this payment has been confirmed by the accountant and can no longer be changed; undo the confirmation first";
+  // locked while a confirmation points at it, unless that confirmation goes in the same batch (the accountant deleting the row whole)
+  if (touched.length && results[0].results.some((r) => !receiptsGoing.has(r.id))) return "expectedPayments: this payment has been confirmed by the accountant and can no longer be changed; undo the confirmation first";
   const rows = expectedIds.length ? results[touched.length ? 1 : 0].results : [];
   const repOf = new Map(rows.filter((r) => r.kind === "expectedPayments").map((r) => [r.id, r.saleId || ""]));
   if (confirms.some((x) => !repOf.has(x.expectedId))) return "receivedPayments: the expected payment this confirms no longer exists";

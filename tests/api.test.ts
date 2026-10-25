@@ -495,6 +495,14 @@ describe("payments received: a rep's expected payments, the accountant's confirm
     expect((await post(admin, "/sync", { changes: [change("expectedPayments", { ...MINE_DONE, expectedAmount: 2 })] })).status).toBe(200);
   });
 
+  it("the accountant removes a confirmed payment whole: the confirmation and the announcement in one batch", async () => {
+    const { acc, rep } = await setup();
+    expect((await post(acc, "/sync", { changes: [{ kind: "expectedPayments", id: MINE_DONE.id, deleted: true }] })).status).toBe(403); // the announcement alone: still confirmed
+    expect((await post(acc, "/sync", { changes: [{ kind: "receivedPayments", id: CONFIRMS_MINE.id, deleted: true }, { kind: "expectedPayments", id: MINE_DONE.id, deleted: true }] })).status).toBe(200);
+    expect(await ids(rep, "expectedPayments")).toEqual([MINE_PENDING.id]);
+    expect(await ids(rep, "receivedPayments")).toEqual([]);
+  });
+
   it("a confirmation needs an expected payment that exists and has no confirmation yet", async () => {
     const { acc } = await setup();
     expect((await post(acc, "/sync", { changes: [change("receivedPayments", received("rpay-1700000000050-000005", "xpay-1700000000050-gone", 10))] })).status).toBe(403);

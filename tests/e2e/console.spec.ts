@@ -2060,6 +2060,20 @@ test("payments received: a rep announces a payment, the accountant confirms it w
   await pillTab("To confirm").click();
   await expect(row(JUARA)).toHaveCount(0);
   await expect(row(SHALUXE)).toHaveCount(1);
+  // On To confirm the accountant may also correct or drop what a rep announced.
+  await row(SHALUXE).getByRole("button", { name: "Edit" }).click();
+  await page.locator(".modal-panel").waitFor();
+  await expect(page.locator(".modal-sub")).toContainText(`What ${A.sale.name} announced`);
+  await page.locator('.modal-panel [aria-label="Expected amount"]').fill("2450");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(row(SHALUXE)).toContainText("2,450.00");
+  // a row to drop: the accountant has no add form on To confirm, so it goes in through the API as a rep's would
+  await page.evaluate(async (customer) => { const now = new Date().toISOString(); const id = `xpay-e2e-${Date.now()}`; await fetch("/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes: [{ kind: "expectedPayments", id, createdAt: now, data: { id, saleId: "", saleName: "", date: "2026-10-25", company: "LTD", currency: "GBP", expectedAmount: 1, sender: "", customer, proof: false, invNo: "", createdBy: "e2e", createdAt: now, updatedAt: now } }] }) }); }, `${SHALUXE} dup`);
+  await page.reload();
+  await expect(row(`${SHALUXE} dup`)).toHaveCount(1);
+  await removePayRow(page, row(`${SHALUXE} dup`));
+  await expect(row(`${SHALUXE} dup`)).toHaveCount(0);
+  await settled(page);
   // Money nobody announced.
   await pillTab("Unmatched").click();
   await field("Received amount").fill("592");
@@ -2101,21 +2115,35 @@ test("payments received: a rep announces a payment, the accountant confirms it w
   await expect(row(SHALUXE)).toHaveCount(1);
   await expect(row(SHALUXE).getByRole("button", { name: "Edit" })).toHaveCount(1);
 
-  // Tidy up through the screens once (the undo and the deletes are controls too), then make sure nothing is left.
+  // Tidy up through the screens once (undo, delete whole and the deletes are controls too), then make sure nothing is left.
   await signIn(page, A.accountant.username, A.accountant.password);
   await pillTab("Confirmed").click();
-  await removePayRow(page, row(JUARA));
+  await row(JUARA).getByRole("button", { name: "Undo" }).click(); // back to To confirm, the announcement kept
   await expect(row(JUARA)).toHaveCount(0);
+  await pillTab("To confirm").click();
+  await expect(row(JUARA)).toHaveCount(1);
+  await row(JUARA).getByRole("button", { name: "Confirm" }).click();
+  await page.locator(".modal-panel").waitFor();
+  await page.getByRole("button", { name: "Confirm payment" }).click();
+  await settled(page);
+  await removePayRow(page, row(JUARA)); // the whole row: confirmation and announcement
+  await expect(row(JUARA)).toHaveCount(0);
+  await settled(page);
   await pillTab("Unmatched").click();
   await removePayRow(page, row(WALKIN));
   await expect(row(WALKIN)).toHaveCount(0);
   await settled(page);
   await signIn(page, A.sale.username, A.sale.password);
   await side(page, "Payments Received").click();
+  await expect(row(JUARA)).toHaveCount(0); // gone for the rep too
+  await pillTab("Confirmed").click();
+  await expect(row(JUARA)).toHaveCount(0);
+  await pillTab("Expected").click();
+  await expect(row(SHALUXE)).toContainText("2,450.00"); // the accountant's correction reached the rep
   await removePayRow(page, row(SHALUXE));
   await expect(row(SHALUXE)).toHaveCount(0);
   await settled(page);
-  await wipePayments(baseURL!, TITLES);
+  await wipePayments(baseURL!, [...TITLES, `${SHALUXE} dup`]);
 });
 
 test("a rep's stale edit of a payment the accountant has just confirmed is refused, said so, and does not block later saves", async ({ browser, baseURL }) => {
