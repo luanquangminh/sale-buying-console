@@ -1,9 +1,10 @@
 /*
  * Does what the POs order cover what a PFI line needs? A PO row gives a PFI the cases allocated to it;
- * a PFI line is short while the rows pointing at it, over every PO, add up to less than its quantity.
- * Removed rows give nothing.
+ * a PFI line is short while the rows pointing at it, over every PO, plus its floor stock, add up to less
+ * than its quantity. Removed rows give nothing.
  */
 import { matchPfiLine } from "./receipts";
+import { floorStockOf } from "./status";
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const blank = (v) => v === "" || v === undefined || v === null;
@@ -24,6 +25,7 @@ export function lineCover(pfi, lineId, po) {
   const need = num(line.quantity);
   if (need <= 0) return null;
   const others = (line.receipts || []).filter((r) => r.poId !== po.id && live(r.orderStatus)).reduce((acc, r) => acc + num(r.quantity), 0);
+  const floor = floorStockOf(line);
   let here = 0;
   for (const p of po.products || []) {
     for (const ref of p.linkedPfiRefs || []) {
@@ -31,8 +33,8 @@ export function lineCover(pfi, lineId, po) {
       if (matchPfiLine(pfi.lines, ref, p) === lineId) here += allocatedCases(p, ref);
     }
   }
-  const allocated = tidy(here + others);
-  return { need, here: tidy(here), others: tidy(others), allocated, short: tidy(Math.max(need - allocated, 0)), over: tidy(Math.max(allocated - need, 0)) };
+  const allocated = tidy(here + others + floor);
+  return { need, here: tidy(here), others: tidy(others), floor: tidy(floor), allocated, short: tidy(Math.max(need - allocated, 0)), over: tidy(Math.max(allocated - need, 0)) };
 }
 
 /** Every PFI line this PO points at and leaves short, once each, in the order of the PO's rows. */
@@ -57,15 +59,17 @@ export function poShortages(po, pfiOptions) {
 }
 
 /**
- * Cover of a PFI line as the PFI screen sees it: the cases of every PO row pointing at it (its receipts)
- * against its quantity. null while no PO row covers the line, or the line has no quantity.
+ * Cover of a PFI line as the PFI screen sees it: the cases of every PO row pointing at it (its receipts), plus its
+ * floor stock, against its quantity. null while nothing covers the line, or the line has no quantity.
  */
 export function pfiLineCover(line) {
   const rows = (line.receipts || []).filter((r) => live(r.orderStatus));
   const need = num(line.quantity);
-  if (!rows.length || need <= 0) return null;
-  const allocated = tidy(rows.reduce((acc, r) => acc + num(r.quantity), 0));
-  return { need, allocated, short: tidy(Math.max(need - allocated, 0)), over: tidy(Math.max(allocated - need, 0)) };
+  const floor = floorStockOf(line);
+  if ((!rows.length && floor <= 0) || need <= 0) return null;
+  const ordered = tidy(rows.reduce((acc, r) => acc + num(r.quantity), 0));
+  const allocated = tidy(ordered + floor);
+  return { need, ordered, floor: tidy(floor), allocated, short: tidy(Math.max(need - allocated, 0)), over: tidy(Math.max(allocated - need, 0)) };
 }
 
 /** The lines of a PFI that its POs leave short, in the order of the PFI. */

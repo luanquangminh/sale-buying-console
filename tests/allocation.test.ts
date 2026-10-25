@@ -24,7 +24,7 @@ describe("allocatedCases", () => {
 describe("lineCover", () => {
   it("reports how many cases a PFI line is short of", () => {
     expect(lineCover(pfi([tea(100)]), "L-tea", po([row(80, [ref({ allocatedQty: 80 })])])))
-      .toEqual({ need: 100, here: 80, others: 0, allocated: 80, short: 20, over: 0 });
+      .toEqual({ need: 100, here: 80, others: 0, floor: 0, allocated: 80, short: 20, over: 0 });
   });
   it("is covered when the allocation meets the order, and says by how much it goes over", () => {
     expect(lineCover(pfi([tea(100)]), "L-tea", po([row(100, [ref({ allocatedQty: 100 })])]))).toMatchObject({ allocated: 100, short: 0, over: 0 });
@@ -33,7 +33,7 @@ describe("lineCover", () => {
   it("adds up several rows of this PO and what the other POs already give the line", () => {
     const line = tea(100, [receipt("po-2", 30), receipt("po-3", 10)]);
     const cover = lineCover(pfi([line]), "L-tea", po([row(40, [ref({ allocatedQty: 40 })]), row(15, [ref({ allocatedQty: 15 })])]));
-    expect(cover).toEqual({ need: 100, here: 55, others: 40, allocated: 95, short: 5, over: 0 });
+    expect(cover).toEqual({ need: 100, here: 55, others: 40, floor: 0, allocated: 95, short: 5, over: 0 });
   });
   it("counts this PO as it is being edited, not as it was last saved", () => {
     const line = tea(100, [receipt("po-1", 100)]); // saved: this PO gave 100
@@ -77,7 +77,7 @@ describe("poShortages", () => {
       row(40, [ref({ pfiProductId: "L-jam", allocatedQty: 40 })], { product: "Bonne Maman Jam", ean: "3045320001570" }),
     ]);
     expect(poShortages(draft, options)).toEqual([
-      { pfiId: "pfi-1", lineId: "L-tea", pfiLabel: "PFI 3376", customerName: "Acme Foods Ltd", product: "Yogi Tea Classic Chai", need: 100, here: 70, others: 10, allocated: 80, short: 20, over: 0 },
+      { pfiId: "pfi-1", lineId: "L-tea", pfiLabel: "PFI 3376", customerName: "Acme Foods Ltd", product: "Yogi Tea Classic Chai", need: 100, here: 70, others: 10, floor: 0, allocated: 80, short: 20, over: 0 },
     ]);
   });
   it("is empty when every linked line is covered, or nothing is linked", () => {
@@ -98,9 +98,9 @@ describe("poShortages", () => {
 describe("pfiLineCover / pfiShortages (the PFI side)", () => {
   const line = (id: string, product: string, quantity: number | string, receipts: any[]) => ({ id, product, quantity, receipts });
   it("adds up the PO rows covering the line", () => {
-    expect(pfiLineCover(line("a", "Tea", 100, [receipt("po-1", 80), receipt("po-2", 15)]))).toEqual({ need: 100, allocated: 95, short: 5, over: 0 });
-    expect(pfiLineCover(line("a", "Tea", 100, [receipt("po-1", 100)]))).toEqual({ need: 100, allocated: 100, short: 0, over: 0 });
-    expect(pfiLineCover(line("a", "Tea", 100, [receipt("po-1", "120")]))).toEqual({ need: 100, allocated: 120, short: 0, over: 20 });
+    expect(pfiLineCover(line("a", "Tea", 100, [receipt("po-1", 80), receipt("po-2", 15)]))).toEqual({ need: 100, ordered: 95, floor: 0, allocated: 95, short: 5, over: 0 });
+    expect(pfiLineCover(line("a", "Tea", 100, [receipt("po-1", 100)]))).toEqual({ need: 100, ordered: 100, floor: 0, allocated: 100, short: 0, over: 0 });
+    expect(pfiLineCover(line("a", "Tea", 100, [receipt("po-1", "120")]))).toEqual({ need: 100, ordered: 120, floor: 0, allocated: 120, short: 0, over: 20 });
   });
   it("leaves removed PO rows out", () => {
     expect(pfiLineCover(line("a", "Tea", 100, [receipt("po-1", 80, "removed"), receipt("po-2", 30)]))).toMatchObject({ allocated: 30, short: 70 });
@@ -119,10 +119,27 @@ describe("pfiLineCover / pfiShortages (the PFI side)", () => {
       line("d", "Beans", 48, [receipt("po-1", 20), receipt("po-2", 10)]),
     ] };
     expect(pfiShortages(order)).toEqual([
-      { lineId: "a", product: "Tea", need: 100, allocated: 80, short: 20, over: 0 },
-      { lineId: "d", product: "Beans", need: 48, allocated: 30, short: 18, over: 0 },
+      { lineId: "a", product: "Tea", need: 100, ordered: 80, floor: 0, allocated: 80, short: 20, over: 0 },
+      { lineId: "d", product: "Beans", need: 48, ordered: 30, floor: 0, allocated: 30, short: 18, over: 0 },
     ]);
     expect(pfiShortages({ products: [] })).toEqual([]);
     expect(pfiShortages({})).toEqual([]);
+  });
+});
+
+describe("floor stock covers part of what a line needs", () => {
+  const stocked = (quantity: number, floorStock: number | string, receipts: any[] = []) => ({ ...tea(quantity, receipts), floorStock });
+  it("on the PO side, 30 on the floor and 50 on this PO cover an order of 80", () => {
+    expect(lineCover(pfi([stocked(80, 30)]), "L-tea", po([row(50, [ref({ allocatedQty: 50 })])])))
+      .toEqual({ need: 80, here: 50, others: 0, floor: 30, allocated: 80, short: 0, over: 0 });
+    expect(lineCover(pfi([stocked(80, 30)]), "L-tea", po([row(40, [ref({ allocatedQty: 40 })])]))).toMatchObject({ floor: 30, allocated: 70, short: 10 });
+    expect(poShortages(po([row(50, [ref({ allocatedQty: 50 })])]), [pfi([stocked(80, 30)])])).toEqual([]);
+    expect(poShortages(po([row(40, [ref({ allocatedQty: 40 })])]), [pfi([stocked(80, 30)])])).toMatchObject([{ lineId: "L-tea", floor: 30, short: 10 }]);
+  });
+  it("on the PFI side, the floor stock counts with the PO rows, and alone says what is left to order", () => {
+    expect(pfiLineCover(stocked(80, 30, [receipt("po-1", 50)]))).toEqual({ need: 80, ordered: 50, floor: 30, allocated: 80, short: 0, over: 0 });
+    expect(pfiLineCover(stocked(80, 30))).toEqual({ need: 80, ordered: 0, floor: 30, allocated: 30, short: 50, over: 0 });
+    expect(pfiLineCover(stocked(80, "", []))).toBe(null);
+    expect(pfiShortages({ products: [stocked(80, 30, [receipt("po-1", 50)]), stocked(80, 30)] })).toMatchObject([{ lineId: "L-tea", short: 50 }]);
   });
 });

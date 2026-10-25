@@ -47,7 +47,7 @@ export function buildServer(env: Bindings, user: User): McpServer {
     if (!row || (scopeSaleId(user) && row.sale_id !== user.id)) return fail(`PFI ${pfiNo} not found`);
     const d = row.data;
     return text({ pfiNo: d.pfiNo, customerName: d.customerName, saleRep: d.saleName, currency: d.currency, incoterm: d.incoterm, paymentTerm: d.paymentTerm, delivery: d.delivery, payments: d.payments, ...moneyOf(d.products),
-      lines: (d.products || []).map((p: any) => ({ product: p.product, ean: p.ean, caseBarcode: p.caseBarcode, pack: p.caseSize, bbd: p.bbd, quantity: p.quantity, rate: p.rate, vat: p.vat, amount: p.amount, orderStatus: p.orderStatus })) });
+      lines: (d.products || []).map((p: any) => ({ product: p.product, ean: p.ean, caseBarcode: p.caseBarcode, pack: p.caseSize, bbd: p.bbd, quantity: p.quantity, rate: p.rate, vat: p.vat, amount: p.amount, floorStock: p.floorStock ?? "", orderStatus: p.orderStatus })) });
   });
 
   server.tool("create_pfi", "Create a PFI for a customer (the customer is created if it does not exist yet). Sale reps create their own; admin must name the sale rep.", {
@@ -111,7 +111,7 @@ export function buildServer(env: Bindings, user: User): McpServer {
     if (!row) return fail(`PO ${poNo} not found`);
     const d = row.data;
     return text({ poNo: d.poNo, supplierName: d.supplierName, currency: d.currency, incoterm: d.incoterm, sentStatus: d.sentStatus, receivedStatus: d.receivedStatus, ...moneyOf(d.products),
-      lines: (d.products || []).map((p: any) => ({ product: p.product, ean: p.ean, caseBarcode: p.caseBarcode, pack: p.caseSize, bbd: p.bbd, quantity: p.quantity, rate: p.rate, vat: p.vat, amount: p.amount, orderStatus: p.orderStatus, linkedPfis: (p.linkedPfiRefs || []).length })) });
+      lines: (d.products || []).map((p: any) => ({ product: p.product, ean: p.ean, caseBarcode: p.caseBarcode, pack: p.caseSize, bbd: p.bbd, quantity: p.quantity, rate: p.rate, vat: p.vat, amount: p.amount, floorStock: p.floorStock ?? "", orderStatus: p.orderStatus, linkedPfis: (p.linkedPfiRefs || []).length })) });
   });
 
   server.tool("add_po_lines", "Append product lines to a PO (buyer/admin). Read the supplier's confirmation yourself (PDF, photo or pasted text), then call this once with every line as printed.", { poNo: z.string(), lines: z.array(LineInput).min(1) }, async ({ poNo, lines }) => {

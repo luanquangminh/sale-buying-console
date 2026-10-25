@@ -21,6 +21,12 @@ describe("mergeOtherRole", () => {
     expect(m.documents.map((d: any) => [d.id, d.status])).toEqual([["d1", "waiting_delivery"], ["d2", "not_applied"]]);
     expect(m.payments).toEqual([{ id: "p1", amount: 5 }]);
   });
+  it("the floor stock box is the buyer's: a sale save keeps it, a buyer save carries it", () => {
+    const stocked = { ...fresh, products: [line("a", { floorStock: 30 }), line("b"), line("c")] };
+    expect(mergeOtherRole(draft, stocked, "sale").products[0]).toMatchObject({ product: "Pa (sale edit)", floorStock: 30 });
+    const bdraft = { ...draft, products: [line("a", { floorStock: 45 }), line("b")] };
+    expect(mergeOtherRole(bdraft, stocked, "buyer").products[0]).toMatchObject({ product: "Pa", floorStock: 45 });
+  });
   it("is a no-op without a fresh record", () => {
     expect(mergeOtherRole(draft, null, "sale")).toBe(draft);
   });

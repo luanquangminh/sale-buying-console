@@ -6,7 +6,7 @@
  * record over a draft. Delivery is shared and stays as the draft has it.
  */
 
-export const BUYER_LINE_FIELDS = ["orderStatus", "estimatedDeliveryDate", "receivedQuantity", "receivedDate", "bbdReceived"];
+export const BUYER_LINE_FIELDS = ["orderStatus", "estimatedDeliveryDate", "receivedQuantity", "receivedDate", "bbdReceived", "floorStock"];
 
 const pick = (obj, keys) => Object.fromEntries(keys.filter((k) => k in obj).map((k) => [k, obj[k]]));
 

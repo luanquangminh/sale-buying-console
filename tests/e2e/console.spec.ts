@@ -222,11 +222,16 @@ test("sale rep sees the buyer's updates and the PO receipt, requests a reorder",
   const receipt = page.locator(".detail-body tr.sub-row", { hasText: "PO 4500" }).first();
   await expect(receipt).toContainText("Received");
   await expect(receipt).toContainText("Short 2");
-  if (!(await receipt.innerText()).includes("Reordered")) {
-    await receipt.locator(".reorder-btn").click();
+  // the reorder is asked for on the line itself, for what the order lacks: 2 of its 20
+  const line = page.locator(".detail-body tr.parent-row").filter({ has: page.locator('input[value^="Yogi Tea"]') }).first();
+  await expect(line).toContainText("Short 2");
+  if (!(await line.locator(".reorder-btn").innerText()).includes("Reordered")) {
+    await expect(line.locator(".reorder-btn")).toHaveText(/Reorder 2/);
+    await line.locator(".reorder-btn").click();
     await save(page);
   }
-  await expect(receipt).toContainText("Reordered");
+  await expect(line.locator(".reorder-btn")).toHaveText(/Reordered/);
+  await expect(receipt.locator(".reorder-btn:not(.active)")).toHaveCount(0); // no request per PO row any more (one made before this rule may still show as Reordered)
   await close(page);
 });
 
@@ -904,7 +909,7 @@ test("order status Removed: offered on every screen, kept on a PO-wide change, i
   const keepLine = page.locator(".detail-body tbody tr:not(.sub-row)", { hasText: KEEP });
   await expect(keepLine.locator("select").filter({ has: page.locator('option[value="removed"]') })).toHaveCount(1);
   await keepLine.locator("select").filter({ has: page.locator('option[value="removed"]') }).selectOption("received");
-  await keepLine.locator('input[type="number"]').fill("10");
+  await (await cell(keepLine, /received qty/i)).locator("input").fill("10"); // the line also has a Floor stock box now
   const dropLine = page.locator(".detail-body tbody tr:not(.sub-row)", { hasText: DROP });
   await expect(await cell(dropLine, /order status/i)).toHaveText("Removed");
   await expect(await cell(dropLine, /short \/ surplus/i)).toHaveText("—");
@@ -1811,6 +1816,146 @@ test("PO: a PFI line that the cases ordered do not cover is flagged, with the ca
 
   await removeDoc(poRow("4531"), "Delete PO");
   await removeDoc(poRow("4530"), "Delete PO");
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Order Tracking").click();
+  await removeDoc(pfiRow, "Delete PFI");
+});
+
+test("floor stock and reorder: a line is judged on what the order needs against the floor stock and what arrived, not the PO's quantity; EUR1 is a document type", async ({ page }) => {
+  const TEA = "E2E Floor Tea 100g"; const JAM = "E2E Floor Jam 200g";
+  const pfiRow = page.locator(".pfi-list-row", { hasText: "PFI 3295" });
+  const poRow = page.locator(".pfi-list-row", { hasText: "PO 4533" });
+  const lineRows = page.locator(".detail-body tbody tr:not(.sub-row):not(:has(td[colspan]))");
+  const lineOf = (name: string) => lineRows.filter({ has: page.locator(`input[value="${name}"]`) }); // where the line is edited: sale's PFI, the PO
+  const shownLine = (name: string) => lineRows.filter({ hasText: name }); // where it is read: the buyer's PFI
+  const rowBelow = (row: ReturnType<Page["locator"]>) => row.locator("xpath=following-sibling::tr[1]"); // the PO row under a PFI line
+  const addRow = async (name: string, qty: string) => {
+    const rowForm = page.locator(".detail-body .section-card").first().locator(".mini-form-row").first();
+    await rowForm.locator("input").nth(0).fill(name);
+    await rowForm.locator("input").nth(4).fill(qty);
+    await rowForm.locator("input").nth(5).fill("1");
+    await rowForm.getByRole("button", { name: "Add row" }).click();
+  };
+  const linkToPfi = async (name: string) => {
+    await lineOf(name).locator(".pfi-picker-trigger").click();
+    await page.locator(".pfi-picker-option", { hasText: "PFI 3295" }).locator('input[type="checkbox"]').check();
+    await page.locator(".picker-backdrop").click();
+  };
+  const removeDoc = async (row: ReturnType<Page["locator"]>, button: string) => {
+    if (!(await row.count())) return;
+    await openDetail(page, row);
+    await page.getByRole("button", { name: button }).click();
+    await page.getByRole("button", { name: "Yes, delete" }).click();
+    await expect(row).toHaveCount(0);
+  };
+  const openPos = async () => { await pill(page, "PO Tracking").click(); await pill(page, /^PO$/).click(); };
+  const alloc = page.locator(".detail-body tr.sub-row", { hasText: "PFI 3295" });
+  const warning = page.locator(".detail-body .short-warning");
+  const docs = page.locator(".detail-body .section-card", { has: page.locator(".section-title", { hasText: "Documents" }) });
+
+  // Leftovers of an aborted run, then the order: tea 80 cases, jam 40, and an EUR1 among its documents.
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await openPos();
+  await removeDoc(poRow, "Delete PO");
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Order Tracking").click();
+  await removeDoc(pfiRow, "Delete PFI");
+  await page.getByRole("button", { name: "Add PFI" }).click();
+  await page.locator(".add-form").first().locator("input").nth(0).fill("3295");
+  await page.getByRole("button", { name: "Create PFI" }).click();
+  await page.locator(".detail-body").waitFor();
+  await addRow(TEA, "80");
+  await addRow(JAM, "40");
+  await expect(docs.locator('.mini-form-row select option')).toHaveText(["COO", "HC", "BL", "SWB", "Free Sale", "PL", "INV", "EUR1"]);
+  await docs.locator(".mini-form-row select").selectOption("EUR1");
+  await docs.locator(".mini-form-row textarea").fill("EUR1 for the customs broker");
+  await docs.getByRole("button", { name: "Add" }).click();
+  await expect(docs.locator(".doc-type-badge")).toHaveText(["EUR1"]);
+  await expect(lineOf(TEA).locator('input[aria-label="Floor stock"]')).toHaveCount(0); // the box is the buyer's
+  await save(page);
+  await close(page);
+
+  // The buyer: 30 cases of tea are already on the floor. The line then needs 50 more, and says so.
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await pill(page, "Orders to update").click();
+  await openDetail(page, await order(page, "PFI 3295"));
+  await expect(docs.locator(".doc-type-badge")).toHaveText(["EUR1"]);
+  await expect(shownLine(TEA).locator(".cover-note")).toHaveCount(0);
+  await shownLine(TEA).locator('input[aria-label="Floor stock"]').fill("30");
+  await expect(shownLine(TEA).locator(".cover-note")).toHaveClass(/short/);
+  await expect(shownLine(TEA).locator(".cover-note")).toContainText("Short 50");
+  await expect(shownLine(TEA).locator(".cover-note")).toContainText("0 ordered + 30 floor stock of 80");
+  await expect(warning).toContainText(`${TEA}: needs 80, floor stock 30, ordered 0, short 50`);
+  await expect(shownLine(TEA).locator(".reorder-btn")).toHaveCount(0); // nothing to reorder: the rest is still to be bought
+  await save(page);
+  await close(page);
+
+  // A PO for the 50 covers the tea with the floor stock; 30 of the 40 jam does not cover the jam.
+  await openPos();
+  await page.getByRole("button", { name: "Add PO" }).click();
+  await page.locator(".add-form").first().locator("input").nth(0).fill("4533");
+  await page.getByRole("button", { name: "Create PO" }).click();
+  await page.locator(".detail-body").waitFor();
+  await addRow(TEA, "50");
+  await linkToPfi(TEA);
+  await expect(alloc.first().locator(".cover-note")).toHaveClass(/ok/);
+  await expect(alloc.first().locator(".cover-note")).toContainText("Covered");
+  await expect(alloc.first().locator(".cover-note")).toContainText("50 of 80 for this PFI + 30 floor stock");
+  await expect(warning).toHaveCount(0);
+  await addRow(JAM, "30");
+  await linkToPfi(JAM);
+  await expect(alloc.nth(1).locator(".cover-note")).toContainText("Short 10");
+  await expect(alloc.nth(1).locator(".cover-note")).toContainText("30 of 40 for this PFI");
+  await expect(warning).toContainText(`${JAM}: needs 40, allocated 30, short 10`);
+  await expect(warning).not.toContainText(TEA);
+  // Everything ordered arrives.
+  for (const [i, got] of [[0, "50"], [1, "30"]] as const) {
+    await alloc.nth(i).locator("select").filter({ has: page.locator('option[value="removed"]') }).selectOption("received");
+    await alloc.nth(i).locator('input[placeholder="received"]').fill(got);
+  }
+  await save(page);
+  await close(page);
+
+  // On the PFI: the tea is complete (50 arrived + 30 on the floor = 80); the jam is 10 short although its PO row is complete.
+  await pill(page, "Orders to update").click();
+  await openDetail(page, await order(page, "PFI 3295"));
+  await expect(shownLine(TEA)).toContainText("Received");
+  await expect(shownLine(TEA)).toContainText("Complete");
+  await expect(shownLine(TEA).locator('input[aria-label="Floor stock"]')).toHaveValue("30");
+  await expect(shownLine(TEA).locator(".reorder-btn")).toHaveCount(0);
+  await expect(shownLine(JAM)).toContainText("Short 10");
+  await expect(rowBelow(shownLine(JAM))).toContainText("Complete"); // 30 of the 30 this PO ordered
+  await expect(shownLine(JAM).locator(".reorder-btn")).toHaveCount(0); // a reorder is the rep's to ask for
+  await close(page);
+
+  // The rep asks for the 10 the order lacks, on the line, not per PO row.
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Order Tracking").click();
+  await openDetail(page, pfiRow);
+  await expect(lineOf(TEA).locator("td").nth(8)).toHaveText("30"); // the floor stock, read only
+  await expect(lineOf(TEA)).toContainText("Complete");
+  await expect(lineOf(TEA).locator(".reorder-btn")).toHaveCount(0);
+  await expect(lineOf(JAM)).toContainText("Short 10");
+  await expect(lineOf(JAM).locator(".reorder-btn")).toHaveText(/Reorder 10/);
+  await expect(rowBelow(lineOf(JAM)).locator(".reorder-btn")).toHaveCount(0);
+  await lineOf(JAM).locator(".reorder-btn").click();
+  await save(page);
+  await expect(lineOf(JAM).locator(".reorder-btn")).toHaveText(/Reordered/);
+  await close(page);
+
+  // The buyer gets the request for 10, and it names no PO: it is what the order needs.
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await pill(page, "Orders to update").click();
+  const request = page.locator(".reorder-row", { hasText: JAM }).first();
+  await expect(request).toContainText("10 short");
+  await expect(request).toContainText("PFI 3295");
+  await expect(request).not.toContainText("short on PO");
+  await request.locator('.btn-icon[title="Dismiss"]').click();
+  await expect(page.locator(".reorder-row", { hasText: JAM })).toHaveCount(0);
+  await settled(page);
+
+  await openPos();
+  await removeDoc(poRow, "Delete PO");
   await signIn(page, A.sale.username, A.sale.password);
   await side(page, "Order Tracking").click();
   await removeDoc(pfiRow, "Delete PFI");

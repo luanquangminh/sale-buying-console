@@ -4,7 +4,7 @@ import { api } from "./api";
 import { useSyncStore } from "./syncStore";
 import { extractPdfForImport, imageToDataUrl } from "./pdfExtract";
 import { fmtDate, fmtMonth, parseDmy, parseMonth, todayIso } from "./dates";
-import { keepRemoved, pfiTrackingStatus, rollupStatusLabel, TRACKING_TONE } from "./status";
+import { floorStockOf, keepRemoved, lineReceivedTotal, lineStatusSource, pfiTrackingStatus, rollupStatusLabel, TRACKING_TONE } from "./status";
 import { matchNames, uniqueNames } from "./suggest";
 import { orderTotals, vatOption, VAT_OPTIONS } from "./money";
 import { DUE_TONE, dueLabel, dueState, groupByCustomer, PAY_STATUSES, PAY_STATUS_TONE, payStatus } from "./payments";
@@ -101,7 +101,7 @@ const VEHICLE_SUBTYPES = {
   uk_delivery: ["Dry", "Temperature Controlled"],
   air_freight: ["General Cargo", "Temperature Controlled"],
 };
-const DOC_TYPES = ["COO", "HC", "BL", "SWB", "Free Sale", "PL", "INV"];
+const DOC_TYPES = ["COO", "HC", "BL", "SWB", "Free Sale", "PL", "INV", "EUR1"];
 const DOC_STATUSES = [
   { value: "not_applied", label: "Have not applied" },
   { value: "applied", label: "Applied" },
@@ -114,6 +114,7 @@ const FIELD_LABEL = {
   receivedQuantity: "Received quantity",
   receivedDate: "Received date",
   bbdReceived: "BBD received",
+  floorStock: "Floor stock",
 };
 const SYNCED_FIELDS = ["estimatedDeliveryDate", "receivedQuantity", "receivedDate", "bbdReceived"];
 
@@ -1457,13 +1458,19 @@ function ProductsTable({
   const totals = orderTotals(pfi.products);
   const shortages = variant === "po" ? poShortages(pfi, allPfiOptions) : [];
   const lineShortages = variant === "po" ? [] : pfiShortages(pfi);
+  const coverNote = (c) => (
+    <div className={`cover-note ${c.short > 0 ? "short" : "ok"}`} style={{ marginTop: 4 }} title={`This line needs ${c.need}. The POs order ${c.ordered} for it${c.floor > 0 ? `; ${c.floor} are floor stock` : ""}.`}>
+      <strong>{c.short > 0 ? `Short ${c.short}` : "Covered"}</strong>
+      <span>{c.floor > 0 ? `${c.ordered} ordered + ${c.floor} floor stock of ${c.need}` : `${c.ordered} of ${c.need} ordered`}</span>
+    </div>
+  );
   // What Sale changed after a PO covering the line was sent: shown on the PFI to both sides; only the buyer can settle it.
   const showSentMarks = variant !== "po";
   const canSettleMarks = variant === "pfi-buyer";
   const goneLines = showSentMarks ? removedSinceSent(pfi) : [];
   const goneRow = (g) => (
     <tr key={`gone-${g.lineId}`} className="row-gone ghost-row">
-      <td colSpan={15}>
+      <td colSpan={16}>
         <div className="gone-note">{g.product} has been removed <span>after PO {g.pos.join(", PO ")} was sent</span></div>
       </td>
     </tr>
@@ -1617,7 +1624,7 @@ function ProductsTable({
   };
 
   const optionFor = (pfiId) => allPfiOptions.find((o) => o.pfiId === pfiId);
-  const colCount = 15;
+  const colCount = isPo ? 15 : 16; // the PFI view has the Floor stock column
 
   return (
     <div className="section-card">
@@ -1686,7 +1693,7 @@ function ProductsTable({
           <ul>
             {shortages.map((sh) => (
               <li key={`${sh.pfiId}:${sh.lineId}`}>
-                <strong>{sh.pfiLabel}</strong> · {sh.customerName} — {sh.product}: needs {sh.need}, allocated {sh.allocated}
+                <strong>{sh.pfiLabel}</strong> · {sh.customerName} — {sh.product}: needs {sh.need}, {sh.floor > 0 ? `floor stock ${sh.floor}, ` : ""}allocated {sh.allocated - sh.floor}
                 {sh.others > 0 ? ` (this PO ${sh.here} + other POs ${sh.others})` : ""}, <strong>short {sh.short}</strong>
               </li>
             ))}
@@ -1699,7 +1706,7 @@ function ProductsTable({
           <div className="short-warning-head"><AlertTriangle size={14} /> {lineShortages.length === 1 ? "1 line is" : `${lineShortages.length} lines are`} not fully covered by the cases ordered on the POs</div>
           <ul>
             {lineShortages.map((sh) => (
-              <li key={sh.lineId}>{sh.product}: needs {sh.need}, ordered {sh.allocated}, <strong>short {sh.short}</strong></li>
+              <li key={sh.lineId}>{sh.product}: needs {sh.need}, {sh.floor > 0 ? `floor stock ${sh.floor}, ` : ""}ordered {sh.ordered}, <strong>short {sh.short}</strong></li>
             ))}
           </ul>
         </div>
@@ -1717,6 +1724,7 @@ function ProductsTable({
               <th>Amount</th>
               <th style={{ minWidth: 150 }}>{isPo ? "PFI" : "PO No."}</th>
               <th style={{ borderLeft: "2px solid #BFE3CB", minWidth: 118 }}>Order status</th>
+              {!isPo && <th title="Cases already in the warehouse for this line. They count toward what the line needs, so the POs only have to cover the rest.">Floor stock</th>}
               <th>Est. delivery</th>
               <th>Received qty</th>
               <th>Received date</th>
@@ -1744,17 +1752,17 @@ function ProductsTable({
                 return v === null ? acc : (acc === null ? v : acc + v);
               }, null);
 
-              const totalReceived = hasReceipts
-                ? sumReceived(receipts, "receivedQuantity", (r) => r.orderStatus)
-                : hasAllocations ? sumReceived(allocations, "receivedQty", allocStatus)
-                  : p.orderStatus === "removed" ? null : numOrNull(p.receivedQuantity);
+              // PFI view: what arrived plus the floor stock (status.js); PO view: what each PFI got, or the row's own box
+              const totalReceived = isPo
+                ? (hasAllocations ? sumReceived(allocations, "receivedQty", allocStatus) : p.orderStatus === "removed" ? null : numOrNull(p.receivedQuantity))
+                : (!hasReceipts && p.orderStatus === "removed" ? null : lineReceivedTotal(p));
 
               const diff = totalReceived === null ? null : totalReceived - Number(p.quantity || 0);
               const short = diff !== null && diff < 0 ? Math.abs(diff) : 0;
               const surplus = diff !== null && diff > 0 ? diff : 0;
 
               const statusSource = hasReceipts
-                ? receipts
+                ? lineStatusSource(p)
                 : hasAllocations ? allocations.map((a) => ({ orderStatus: allocStatus(a) })) : [];
               const rollLabel = rolledUp ? rollupStatusLabel(statusSource) : null;
               const lineCoverNote = isPo ? null : pfiLineCover(p);
@@ -1810,15 +1818,10 @@ function ProductsTable({
                           ? (
                             <div>
                               <span className="ro po-no-cell">{receipts.length === 1 ? receiptPoLabel(receipts[0]) : `${receipts.length} POs`}</span>
-                              {lineCoverNote && (
-                                <div className={`cover-note ${lineCoverNote.short > 0 ? "short" : "ok"}`} style={{ marginTop: 4 }} title={`This line needs ${lineCoverNote.need}. The POs order ${lineCoverNote.allocated} for it.`}>
-                                  <strong>{lineCoverNote.short > 0 ? `Short ${lineCoverNote.short}` : "Covered"}</strong>
-                                  <span>{lineCoverNote.allocated} of {lineCoverNote.need} ordered</span>
-                                </div>
-                              )}
+                              {lineCoverNote && coverNote(lineCoverNote)}
                             </div>
                           )
-                          : <span className="ro muted">—</span>
+                          : lineCoverNote ? coverNote(lineCoverNote) : <span className="ro muted">—</span>
                       )}
                     </td>
 
@@ -1833,6 +1836,13 @@ function ProductsTable({
                           )
                           : <span className={`ro tone-${ORDER_STATUS_TONE[p.orderStatus] || "grey"}`}>{ORDER_STATUS_LABEL[p.orderStatus] || "—"}</span>}
                     </td>
+                    {!isPo && (
+                      <td>
+                        {canEditBuyer
+                          ? <input type="number" min="0" aria-label="Floor stock" placeholder="0" value={p.floorStock ?? ""} onChange={(e) => onBuyerField(p.id, "floorStock", e.target.value)} />
+                          : <span className="ro">{floorStockOf(p) > 0 ? floorStockOf(p) : "—"}</span>}
+                      </td>
+                    )}
                     <td>
                       {rolledUp
                         ? <span className="ro muted">{isPo ? "per PFI below" : "per PO below"}</span>
@@ -1869,8 +1879,8 @@ function ProductsTable({
                     </td>
                     <td>
                       {(() => {
-                        if (isPo || hasReceipts) return <span className="ro muted">{hasReceipts ? "per PO below" : "—"}</span>;
-                        const key = `${p.id}::manual`;
+                        if (isPo) return <span className="ro muted">—</span>;
+                        const key = `${p.id}::manual`; // the line as a whole: what the order needs against what arrived, whatever the POs ordered
                         const on = reorderKeys.has(key);
                         if (canEditSale && (short > 0 || on)) {
                           return (
@@ -1909,6 +1919,7 @@ function ProductsTable({
                             )
                             : <span className={`ro tone-${ORDER_STATUS_TONE[r.orderStatus] || "grey"}`}>{ORDER_STATUS_LABEL[r.orderStatus] || "—"}</span>}
                         </td>
+                        <td />
                         <td>{canEditBuyer ? <DateField value={r.estimatedDeliveryDate || ""} onChange={(v) => onReceiptField(r, "estimatedDeliveryDate", v)} /> : <span className="ro">{fmtDate(r.estimatedDeliveryDate) || "—"}</span>}</td>
                         <td>{canEditBuyer ? <input type="number" value={r.receivedQuantity ?? ""} onChange={(e) => onReceiptField(r, "receivedQuantity", e.target.value)} /> : <span className="ro">{r.receivedQuantity || "—"}</span>}</td>
                         <td>{canEditBuyer ? <DateField value={r.receivedDate || ""} onChange={(v) => onReceiptField(r, "receivedDate", v)} /> : <span className="ro">{fmtDate(r.receivedDate) || "—"}</span>}</td>
@@ -1921,17 +1932,19 @@ function ProductsTable({
                         </td>
                         <td>
                           {(() => {
+                            // A reorder is asked for on the line above, against what the order needs. A request made per PO row before that stays until it is undone.
                             const rshort = rdiff !== null && rdiff < 0 ? Math.abs(rdiff) : 0;
                             const key = `${p.id}::${r.poLineId}`;
                             const on = reorderKeys.has(key);
-                            if (canEditSale && (rshort > 0 || on)) {
+                            if (!on) return <span className="ro muted">—</span>;
+                            if (canEditSale) {
                               return (
-                                <button className={`reorder-btn ${on ? "active" : ""}`} onClick={() => onToggleReorder(p.id, r, rshort)}>
-                                  <RotateCcw size={11} /> {on ? "Reordered" : `Reorder ${rshort}`}
+                                <button className="reorder-btn active" onClick={() => onToggleReorder(p.id, r, rshort)}>
+                                  <RotateCcw size={11} /> Reordered
                                 </button>
                               );
                             }
-                            return on ? <span className="chip amber">Reordered</span> : <span className="ro muted">—</span>;
+                            return <span className="chip amber">Reordered</span>;
                           })()}
                         </td>
                         {canDelete && <td />}
@@ -1982,10 +1995,10 @@ function ProductsTable({
                           {cover && (
                             <div
                               className={`cover-note ${cover.short > 0 ? "short" : "ok"}`}
-                              title={`The PFI line needs ${cover.need}. This PO gives ${cover.here}${cover.others > 0 ? `, other POs give ${cover.others}` : ""}.`}
+                              title={`The PFI line needs ${cover.need}. This PO gives ${cover.here}${cover.others > 0 ? `, other POs give ${cover.others}` : ""}${cover.floor > 0 ? `, ${cover.floor} are floor stock` : ""}.`}
                             >
                               <strong>{cover.short > 0 ? `Short ${cover.short}` : "Covered"}</strong>
-                              <span>{cover.allocated} of {cover.need} for this PFI</span>
+                              <span>{cover.allocated - cover.floor} of {cover.need} for this PFI{cover.floor > 0 ? ` + ${cover.floor} floor stock` : ""}</span>
                             </div>
                           )}
                         </td>
@@ -4711,7 +4724,7 @@ function Shell({ user, onLogout, store }) {
         saleId: rep.id,
         shortLabel: pfiLabel(p),
         customerName: p.customerName,
-        lines: (p.products || []).map(({ id, product, ean, caseBarcode, caseSize, bbd, vat, quantity, rate, receipts }) => ({ id, product, ean, caseBarcode, caseSize, bbd, vat, quantity, rate, receipts: receipts || [] })),
+        lines: (p.products || []).map(({ id, product, ean, caseBarcode, caseSize, bbd, vat, quantity, rate, floorStock, receipts }) => ({ id, product, ean, caseBarcode, caseSize, bbd, vat, quantity, rate, floorStock, receipts: receipts || [] })),
         label: `${pfiLabel(p)} — ${p.customerName}`,
         search: `${p.pfiNo || ""} ${p.customerName}`,
       });
