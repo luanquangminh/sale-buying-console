@@ -442,6 +442,77 @@ test("a delivery saved as Loaded lands in Delivery Booking with its POD and addr
   await settled(page);
 });
 
+test("Delivery Booking shows one page of bookings at a time; the find box and the page size change what a page holds", async ({ page }) => {
+  await signIn(page, A.admin.username, A.admin.password);
+  const PREFIX = "E2E Page Ltd";
+  // Bookings left by an earlier run go first, through the API: the screen must start from a known set.
+  const wipe = async () => {
+    const ids: string[] = await page.evaluate(async (prefix) => {
+      const state = await (await fetch("/api/state", { credentials: "include" })).json();
+      return (state.slices.bookings || []).filter((b: any) => String(b.customerName || "").startsWith(prefix)).map((b: any) => b.id);
+    }, PREFIX);
+    if (ids.length) {
+      const status = await page.evaluate(async (ids) => (await fetch("/api/sync", {
+        method: "POST", credentials: "include", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ changes: ids.map((id) => ({ kind: "bookings", id, deleted: true })) }),
+      })).status, ids);
+      expect(status).toBe(200);
+    }
+  };
+  await wipe();
+
+  // 23 bookings in one push, each a millisecond newer than the last: the server lists newest first, so 23 leads page 1.
+  const stamp = Date.now();
+  const created = await page.evaluate(async ({ prefix, stamp }) => {
+    const changes = Array.from({ length: 23 }, (_, i) => {
+      const nn = String(i + 1).padStart(2, "0");
+      const id = `book-e2e-page-${nn}-${stamp}`;
+      const createdAt = new Date(stamp + i).toISOString();
+      const data = { id, pfiId: "", saleId: "", customerName: `${prefix} ${nn}`, saleName: "", docNo: `P${nn}`, pod: "", loadingAddress: "", mode: "container", subType: "20ft Dry", forwarder: "", currency: "USD", rate: "", method: "Palletized", loadingBooked: "", loadingTime: "", etd: "", eta: "", note: "", status: "pending", createdAt };
+      return { kind: "bookings", id, data, createdAt };
+    });
+    return (await fetch("/api/sync", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes }) })).status;
+  }, { prefix: PREFIX, stamp });
+  expect(created).toBe(200);
+
+  await page.reload(); // the store takes the server's rows
+  await expect(page.getByText("Log out")).toBeVisible(SLOW);
+  await side(page, "Delivery Booking").click();
+  const rows = page.locator(".booking-row");
+  const pager = page.locator('[aria-label="Pages"]');
+  await expect(rows).toHaveCount(20);
+  await expect(pager).toContainText(/1–20 of \d+/);
+  const total = Number((await pager.innerText()).match(/of (\d+)/)![1]);
+  expect(total).toBeGreaterThanOrEqual(23);
+  await expect(rows.filter({ hasText: `${PREFIX} 23` })).toBeVisible();
+  await expect(rows.filter({ hasText: `${PREFIX} 01` })).toHaveCount(0); // 23..04 fill page 1; 03, 02, 01 lead page 2
+
+  await pager.getByRole("button", { name: "Next" }).click();
+  await expect(pager).toContainText(/21–\d+ of \d+/);
+  await expect(rows).toHaveCount(Math.min(20, total - 20));
+  await expect(rows.filter({ hasText: `${PREFIX} 01` })).toBeVisible();
+
+  // A search narrows the list to one page; the pager is not shown while the list fits.
+  const find = page.getByPlaceholder(/^Find by customer, sale, PFI\/INV no\./);
+  await find.fill(`${PREFIX} 0`);
+  await expect(rows).toHaveCount(9);
+  await expect(pager).toHaveCount(0);
+  await find.fill("");
+  await expect(rows).toHaveCount(20);
+
+  // A bigger page holds more rows; the pager stays as long as the list is longer than the smallest page.
+  await page.getByLabel("Rows per page").selectOption("50");
+  await expect(rows).toHaveCount(Math.min(50, total));
+  await expect(pager).toContainText(/1–\d+ of \d+/);
+
+  await wipe();
+  await page.reload();
+  await expect(page.getByText("Log out")).toBeVisible(SLOW);
+  await side(page, "Delivery Booking").click();
+  await expect(page.locator(".side-item", { hasText: "Delivery Booking" })).toHaveClass(/active/);
+  await expect(page.locator(".booking-row", { hasText: PREFIX })).toHaveCount(0);
+});
+
 test("a row-level PO edit reaches the sale's open PFI without reopening it", async ({ browser }) => {
   const saleCtx = await browser.newContext();
   const sale = await saleCtx.newPage();

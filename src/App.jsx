@@ -12,6 +12,7 @@ import { sortLanesByPod } from "./lanes";
 import { lineCover, pfiLineCover, pfiShortages, poShortages } from "./allocation";
 import { PAY_COMPANIES, diffTone, difference, fmtDiff, forSale, isConfirmed, splitExpected, toConfirmCount, unmatched } from "./paymentsReceived";
 import { homeFor, pathFor, sectionAllowed, stateFor } from "./routes";
+import { DEFAULT_PAGE_SIZE, PAGE_SIZES, needsPager, pageLabel, pageOf } from "./pager";
 import { BOOKING_STATUSES, BOOKING_STATUS_LABEL, BOOKING_STATUS_TONE, LOADING_METHODS, SHIPMENT_MODES, SHIPMENT_SUBTYPES, bookingFromPfi, bookingOf, bookingStatus, emptyBooking, etaSoon, etaSoonText, loadedForDelivery } from "./booking";
 import { placePanel } from "./popup";
 import { acknowledged, changeSinceSent, describeChanges, describeWas, lineChange, removedSinceSent, stampSent } from "./sentMark";
@@ -418,6 +419,10 @@ const GlobalStyle = () => (
     .overview-bar { display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
     .overview-bar .find-bar { flex:1; min-width:240px; }
     .find-bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .pager { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:10px 18px; border-top:1px solid #EEF0EF; font-size:12.5px; }
+    .pager-nav { display:flex; align-items:center; gap:8px; }
+    .pager-size { display:flex; align-items:center; gap:6px; font-size:12px; }
+    .pager-size select { width:auto; min-width:0; padding:4px 8px; font-size:12px; }
 
     .save-bar { position:sticky; top:0; z-index:12; display:flex; align-items:center; gap:10px; flex-wrap:wrap; background:#fff; border:1px solid #D8E6DC; border-radius:5px; padding:10px 14px; margin-bottom:14px; box-shadow:0 2px 10px rgba(20,60,40,0.06); }
 
@@ -1063,6 +1068,7 @@ function CustomerTab({ saleId, saleName, customers, pfisForSale, memos = [], sav
   const visibleCustomers = fq
     ? customers.filter((c) => [c.companyName, c.groupChatName].some((f) => String(f || "").toLowerCase().includes(fq)))
     : customers;
+  const pager = usePager(visibleCustomers, { resetKey: find, ensureIndex: visibleCustomers.findIndex((c) => c.id === expandedId) });
 
   const handleAddCustomer = () => {
     if (!form.companyName.trim()) return;
@@ -1150,7 +1156,7 @@ function CustomerTab({ saleId, saleName, customers, pfisForSale, memos = [], sav
               <div>PFI</div>
               <div />
             </div>
-            {visibleCustomers.map((c) => {
+            {pager.rows.map((c) => {
               const pfisOfCustomer = pfisForSale.filter((p) => p.customerId === c.id);
               return (
                 <React.Fragment key={c.id}>
@@ -1219,6 +1225,7 @@ function CustomerTab({ saleId, saleName, customers, pfisForSale, memos = [], sav
                 </React.Fragment>
               );
             })}
+            <Pager pager={pager} />
           </>
         )}
       </div>
@@ -1230,6 +1237,7 @@ function CustomerTab({ saleId, saleName, customers, pfisForSale, memos = [], sav
 
 function BuyerFeed({ feed, answerFeedItem, deleteFeedItem }) {
   const [replies, setReplies] = useState({});
+  const pager = usePager(feed);
 
   const submitReply = (item) => {
     const answer = (replies[item.id] || "").trim();
@@ -1252,7 +1260,7 @@ function BuyerFeed({ feed, answerFeedItem, deleteFeedItem }) {
 
   return (
     <div className="card">
-      {feed.map((item) => (
+      {pager.rows.map((item) => (
         <div key={item.id} className={`feed-item ${item.status === "sent" ? "pending" : ""}`}>
           <div className="feed-top">
             <div className="feed-meta">
@@ -1281,6 +1289,7 @@ function BuyerFeed({ feed, answerFeedItem, deleteFeedItem }) {
           )}
         </div>
       ))}
+      <Pager pager={pager} />
     </div>
   );
 }
@@ -2415,6 +2424,40 @@ function exportPfiWorkbook(pfi) {
   XLSX.writeFile(wb, `PFI_${pfi.pfiNo || "order"}_packing_list.xlsx`);
 }
 
+/**
+ * Page state for a list screen. The page goes back to 1 when the filter text or the page size changes; a row opened
+ * from elsewhere (ensureIndex: its position in the list) pulls its page into view.
+ */
+function usePager(list, { resetKey = "", ensureIndex = -1 } = {}) {
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
+  React.useEffect(() => { setPage(1); }, [resetKey, size]);
+  const current = pageOf(list, page, size);
+  const wanted = ensureIndex >= 0 ? Math.floor(ensureIndex / current.size) + 1 : 0;
+  React.useEffect(() => { if (wanted && wanted !== current.page) setPage(wanted); }, [wanted]); // eslint-disable-line react-hooks/exhaustive-deps
+  return { ...current, setPage, setSize };
+}
+
+/** The bar under a paged list: where the page stands, Prev / Next, and how many rows a page holds. Hidden while the list fits one page. */
+function Pager({ pager }) {
+  if (!needsPager(pager.total)) return null;
+  return (
+    <div className="pager" role="navigation" aria-label="Pages">
+      <span className="muted">{pageLabel(pager)}</span>
+      <div className="pager-nav">
+        <button className="btn btn-sm" disabled={pager.page <= 1} onClick={() => pager.setPage(pager.page - 1)}><ChevronLeft size={13} /> Prev</button>
+        <span className="muted">Page {pager.page} of {pager.pages}</span>
+        <button className="btn btn-sm" disabled={pager.page >= pager.pages} onClick={() => pager.setPage(pager.page + 1)}>Next <ChevronRight size={13} /></button>
+      </div>
+      <label className="muted pager-size">Rows per page
+        <select aria-label="Rows per page" value={pager.size} onChange={(e) => pager.setSize(Number(e.target.value))}>
+          {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+      </label>
+    </div>
+  );
+}
+
 function FindBar({ value, onChange, placeholder, total, shown }) {
   return (
     <div className="find-bar">
@@ -2691,6 +2734,7 @@ function PfiList({ saleId, saleName, customers, pfis, expandedPfiId, setExpanded
   }));
 
   const openPfi = pfis.find((p) => p.id === expandedPfiId) || null;
+  const pager = usePager(pfis, { ensureIndex: pfis.findIndex((p) => p.id === expandedPfiId) }); // a PFI opened from a customer or a feed link brings its page
 
   return (
     <div>
@@ -2719,7 +2763,7 @@ function PfiList({ saleId, saleName, customers, pfis, expandedPfiId, setExpanded
             <div className="pfi-list-head has-status">
               <div>Customer</div><div>Currency</div><div>Incoterm</div><div>Total</div><div>Payment</div><div>Status</div><div />
             </div>
-            {pfis.map((p) => {
+            {pager.rows.map((p) => {
               const total = productTotal(p.products);
               const paid = paymentTotal(p.payments);
               const status = paymentStatus(total, paid);
@@ -2736,6 +2780,7 @@ function PfiList({ saleId, saleName, customers, pfis, expandedPfiId, setExpanded
                 </div>
               );
             })}
+            <Pager pager={pager} />
           </>
         )}
       </div>
@@ -2802,6 +2847,7 @@ function BuyerFulfillment({ pfisBySale, feedBuyerPfi, actions, pos, reorders }) 
     () => groupBySale(pfisBySale, (id) => ((actions.accounts || []).find((a) => a.id === id) || {}).name),
     [pfisBySale, actions.accounts],
   );
+  const pager = usePager(groups, { ensureIndex: groups.findIndex((g) => g.pfis.some((p) => p.id === expanded)) });
   const toggleSale = (saleId) => setOpenSales((prev) => {
     const next = new Set(prev);
     if (next.has(saleId)) next.delete(saleId); else next.add(saleId);
@@ -2847,7 +2893,7 @@ function BuyerFulfillment({ pfisBySale, feedBuyerPfi, actions, pos, reorders }) 
         </div>
       ) : (
         <div className="card">
-          {groups.map((g) => {
+          {pager.rows.map((g) => {
             const isOpen = openSales.has(g.saleId);
             return (
               <div key={g.saleId} className={`sale-group ${isOpen ? "open" : ""}`}>
@@ -2880,6 +2926,7 @@ function BuyerFulfillment({ pfisBySale, feedBuyerPfi, actions, pos, reorders }) 
               </div>
             );
           })}
+          <Pager pager={pager} />
         </div>
       )}
 
@@ -3202,6 +3249,7 @@ function PoList({ suppliers, pos, expandedPoId, setExpandedPoId, actions, allPfi
   const visiblePos = fq
     ? pos.filter((p) => [p.poNo, p.supplierName].some((f) => String(f || "").toLowerCase().includes(fq)))
     : pos;
+  const pager = usePager(visiblePos, { resetKey: find, ensureIndex: visiblePos.findIndex((p) => p.id === expandedPoId) });
 
   const handleCreate = (data) => {
     const supplier = suppliers.find((s) => s.id === data.supplierId);
@@ -3237,7 +3285,7 @@ function PoList({ suppliers, pos, expandedPoId, setExpandedPoId, actions, allPfi
             <div className="pfi-list-head">
               <div>Supplier</div><div>Currency</div><div>Incoterm</div><div>Total</div><div>Payment</div><div />
             </div>
-            {visiblePos.map((p) => {
+            {pager.rows.map((p) => {
               const total = productTotal(p.products);
               const paid = paymentTotal(p.payments);
               const status = paymentStatus(total, paid);
@@ -3256,6 +3304,7 @@ function PoList({ suppliers, pos, expandedPoId, setExpandedPoId, actions, allPfi
                 </div>
               );
             })}
+            <Pager pager={pager} />
           </>
         )}
       </div>
@@ -3321,6 +3370,7 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
   const visibleLanes = fq
     ? sortedLanes.filter((l) => [l.pod, l.loadingAddress, l.containerType].some((f) => String(f || "").toLowerCase().includes(fq)))
     : sortedLanes;
+  const pager = usePager(visibleLanes, { resetKey: find, ensureIndex: visibleLanes.findIndex((l) => l.id === expanded) });
 
   const submitLane = () => {
     if (!form.pod.trim() || !form.loadingAddress.trim()) return;
@@ -3419,7 +3469,7 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
             <div className="lane-head-row">
               <div>POD</div><div>Loading address</div><div>Container</div><div>Transit time</div><div>Forwarders</div><div>Cheapest rate</div><div />
             </div>
-            {visibleLanes.map((lane) => {
+            {pager.rows.map((lane) => {
               const best = bestQuote(lane);
               const isOpen = expanded === lane.id;
               const d = draftFor(lane.id);
@@ -3559,6 +3609,7 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
                 </React.Fragment>
               );
             })}
+            <Pager pager={pager} />
           </>
         )}
       </div>
@@ -3708,6 +3759,7 @@ function DeliveryBookingTab({ bookings, actions }) {
     ? bookings.filter((b) => [b.customerName, b.saleName, b.docNo, b.pod, b.loadingAddress, b.forwarder, b.note]
       .some((f) => String(f || "").toLowerCase().includes(fq)))
     : bookings;
+  const pager = usePager(visible, { resetKey: find, ensureIndex: visible.findIndex((b) => b.id === expanded) });
 
   const add = () => setExpanded(actions.addBooking());
 
@@ -3741,7 +3793,7 @@ function DeliveryBookingTab({ bookings, actions }) {
             <div className="booking-head-row">
               <div>Customer</div><div>PFI / INV</div><div>POD</div><div>Loading address</div><div>Loading booked</div><div>ETD</div><div>ETA</div><div>Status</div><div />
             </div>
-            {visible.map((b) => {
+            {pager.rows.map((b) => {
               const isOpen = expanded === b.id;
               return (
                 <React.Fragment key={b.id}>
@@ -3760,6 +3812,7 @@ function DeliveryBookingTab({ bookings, actions }) {
                 </React.Fragment>
               );
             })}
+            <Pager pager={pager} />
           </>
         )}
       </div>
@@ -3810,6 +3863,7 @@ function PaymentTrackingTab({ rows, customerNames, actions, userName }) {
   const fq = find.trim().toLowerCase();
   const visible = fq ? list.filter((r) => [r.customer, r.inv].some((f) => String(f || "").toLowerCase().includes(fq))) : list;
   const groups = React.useMemo(() => groupByCustomer(visible, today), [visible, today]);
+  const pager = usePager(groups, { resetKey: find, ensureIndex: editing ? groups.findIndex((g) => g.invoices.some((r) => r.id === editing.id)) : -1 });
   const ready = (v) => v.customer.trim() && v.inv.trim() && v.amount !== "" && !Number.isNaN(Number(v.amount));
   const keyOf = (customer) => String(customer || "").trim().replace(/\s+/g, " ").toLowerCase();
   const openCustomer = (customer) => setOpenCustomers((prev) => new Set(prev).add(keyOf(customer)));
@@ -3874,7 +3928,7 @@ function PaymentTrackingTab({ rows, customerNames, actions, userName }) {
             <div className="pay-cust-head">
               <div>Customer</div><div>Invoices</div><div>Outstanding balance</div><div /><div />
             </div>
-            {groups.map((g) => {
+            {pager.rows.map((g) => {
               const isOpen = Boolean(fq) || openCustomers.has(g.key); // a search shows what it found
               return (
                 <div key={g.key} className={`pay-cust ${isOpen ? "open" : ""}`}>
@@ -3977,6 +4031,7 @@ function PaymentTrackingTab({ rows, customerNames, actions, userName }) {
                 </div>
               );
             })}
+            <Pager pager={pager} />
           </>
         )}
       </div>
@@ -4002,6 +4057,7 @@ function MaiTab({ tasks, actions }) {
   const list = tasks || [];
   const fq = find.trim().toLowerCase();
   const visible = fq ? list.filter((t) => [t.task, t.sale, t.supplier].some((f) => String(f || "").toLowerCase().includes(fq))) : list;
+  const pager = usePager(visible, { resetKey: find, ensureIndex: visible.findIndex((t) => t.id === editing) });
 
   const submit = () => {
     if (!form.task.trim()) return;
@@ -4042,41 +4098,44 @@ function MaiTab({ tasks, actions }) {
         ) : visible.length === 0 ? (
           <div className="empty"><ClipboardList size={30} /><div style={{ fontWeight: 600 }}>No task matches that search</div></div>
         ) : (
-          <div className="table-scroll">
-            <table className="data-table" style={{ minWidth: "auto" }}>
-              <thead><tr><th style={{ minWidth: 280 }}>Task</th><th style={{ minWidth: 140 }}>Sale</th><th style={{ minWidth: 160 }}>Supplier</th><th>Status</th><th /></tr></thead>
-              <tbody>
-                {visible.map((t) => {
-                  const isEdit = editing === t.id;
-                  return (
-                    <tr key={t.id} className={`mai-row ${t.status === "done" ? "row-done" : ""}`}>
-                      <td>{isEdit ? <input value={draft.task} onChange={(e) => setDraft({ ...draft, task: e.target.value })} /> : <span className="ro">{t.task}</span>}</td>
-                      <td>{isEdit ? <input value={draft.sale} onChange={(e) => setDraft({ ...draft, sale: e.target.value })} /> : <span className="ro">{t.sale || "—"}</span>}</td>
-                      <td>{isEdit ? <input value={draft.supplier} onChange={(e) => setDraft({ ...draft, supplier: e.target.value })} /> : <span className="ro">{t.supplier || "—"}</span>}</td>
-                      <td>
-                        <select className={`tone-${MAI_STATUS_TONE[t.status] || "grey"}`} value={t.status || "not_started"} onChange={(e) => actions.updateMaiTask(t.id, { status: e.target.value })}>
-                          {MAI_STATUSES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-                        </select>
-                      </td>
-                      <td style={{ whiteSpace: "nowrap" }}>
-                        {isEdit ? (
-                          <>
-                            <button className="btn btn-sm btn-accent" onClick={saveEdit}><Save size={12} /> Save</button>{" "}
-                            <button className="btn btn-sm" onClick={() => setEditing(null)}>Cancel</button>
-                          </>
-                        ) : (
-                          <>
-                            <button className="btn-icon" title="Edit task" onClick={() => startEdit(t)}><Pencil size={14} /></button>
-                            <button className="btn-icon" title="Delete task" onClick={() => actions.deleteMaiTask(t.id)}><Trash2 size={14} /></button>
-                          </>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <>
+            <div className="table-scroll">
+              <table className="data-table" style={{ minWidth: "auto" }}>
+                <thead><tr><th style={{ minWidth: 280 }}>Task</th><th style={{ minWidth: 140 }}>Sale</th><th style={{ minWidth: 160 }}>Supplier</th><th>Status</th><th /></tr></thead>
+                <tbody>
+                  {pager.rows.map((t) => {
+                    const isEdit = editing === t.id;
+                    return (
+                      <tr key={t.id} className={`mai-row ${t.status === "done" ? "row-done" : ""}`}>
+                        <td>{isEdit ? <input value={draft.task} onChange={(e) => setDraft({ ...draft, task: e.target.value })} /> : <span className="ro">{t.task}</span>}</td>
+                        <td>{isEdit ? <input value={draft.sale} onChange={(e) => setDraft({ ...draft, sale: e.target.value })} /> : <span className="ro">{t.sale || "—"}</span>}</td>
+                        <td>{isEdit ? <input value={draft.supplier} onChange={(e) => setDraft({ ...draft, supplier: e.target.value })} /> : <span className="ro">{t.supplier || "—"}</span>}</td>
+                        <td>
+                          <select className={`tone-${MAI_STATUS_TONE[t.status] || "grey"}`} value={t.status || "not_started"} onChange={(e) => actions.updateMaiTask(t.id, { status: e.target.value })}>
+                            {MAI_STATUSES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+                          </select>
+                        </td>
+                        <td style={{ whiteSpace: "nowrap" }}>
+                          {isEdit ? (
+                            <>
+                              <button className="btn btn-sm btn-accent" onClick={saveEdit}><Save size={12} /> Save</button>{" "}
+                              <button className="btn btn-sm" onClick={() => setEditing(null)}>Cancel</button>
+                            </>
+                          ) : (
+                            <>
+                              <button className="btn-icon" title="Edit task" onClick={() => startEdit(t)}><Pencil size={14} /></button>
+                              <button className="btn-icon" title="Delete task" onClick={() => actions.deleteMaiTask(t.id)}><Trash2 size={14} /></button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <Pager pager={pager} />
+          </>
         )}
       </div>
     </div>
@@ -4104,6 +4163,7 @@ function JobsTab({ jobs, actions, userName }) {
   const list = jobs || [];
   const fq = find.trim().toLowerCase();
   const visible = fq ? list.filter((j) => [j.jobs, j.maiNote, ...(j.notes || []).map((n) => n.text)].some((f) => String(f || "").toLowerCase().includes(fq))) : list;
+  const pager = usePager(visible, { resetKey: find, ensureIndex: visible.findIndex((j) => j.id === expanded) });
 
   const submit = () => {
     if (!form.jobs.trim()) return;
@@ -4154,7 +4214,7 @@ function JobsTab({ jobs, actions, userName }) {
             <div className="jobs-head-row">
               <div>Given date</div><div>Jobs</div><div>Mai's note</div><div>Status</div><div>Notes</div><div /><div />
             </div>
-            {visible.map((j) => {
+            {pager.rows.map((j) => {
               const isOpen = expanded === j.id;
               const notes = j.notes || [];
               return (
@@ -4217,6 +4277,7 @@ function JobsTab({ jobs, actions, userName }) {
                 </React.Fragment>
               );
             })}
+            <Pager pager={pager} />
           </>
         )}
       </div>
@@ -4471,14 +4532,17 @@ const qbText = (qb) => {
   return `${qb.done ? "Done" : "Not yet"}${when ? ` · ${when}` : ""}${qb.addedBy ? ` · ${qb.addedBy}` : ""}`;
 };
 /** One list of payments: the card, the empty states, the table scaffold; each tab supplies its header cells and a row renderer. */
-function PayTable({ list, rows, emptyText, head, children }) {
+function PayTable({ list, rows, pager, emptyText, head, children }) {
   const empty = (text) => <div className="empty"><CreditCard size={30} /><div style={{ fontWeight: 600 }}>{text}</div></div>;
   return (
     <div className="card">
       {list.length === 0 ? empty(emptyText) : rows.length === 0 ? empty("No payment matches that search") : (
-        <div className="table-scroll">
-          <table className="data-table pay-table" style={{ minWidth: "auto" }}><thead><tr>{head}</tr></thead><tbody>{rows.map(children)}</tbody></table>
-        </div>
+        <>
+          <div className="table-scroll">
+            <table className="data-table pay-table" style={{ minWidth: "auto" }}><thead><tr>{head}</tr></thead><tbody>{pager.rows.map(children)}</tbody></table>
+          </div>
+          <Pager pager={pager} />
+        </>
       )}
     </div>
   );
@@ -4507,6 +4571,7 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
   const list = (TABS.find(([key]) => key === tab) || TABS[0])[2];
   const fq = find.trim().toLowerCase();
   const rows = fq ? list.filter((r) => [r.customer, r.sender, r.invNo, r.saleName, repName(r.saleId), r.expectedAmount, r.receivedAmount, r.confirmation && r.confirmation.sender].some((f) => String(f || "").toLowerCase().includes(fq))) : list;
+  const pager = usePager(rows, { resetKey: `${tab}|${find}` }); // another sub-tab starts on page 1
 
   const addExpected = () => {
     if (!amountOk(form.expectedAmount) || !form.customer.trim()) return;
@@ -4581,7 +4646,7 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
       </div>
 
       {(tab === "expected" || tab === "toconfirm") && (
-        <PayTable list={list} rows={rows} emptyText={isRep ? "Nothing expected right now" : "Nothing to confirm"}
+        <PayTable list={list} rows={rows} pager={pager} emptyText={isRep ? "Nothing expected right now" : "Nothing to confirm"}
           head={<><th>Date</th>{!isRep && <th>Sale rep</th>}<th>Customer</th><th>Company</th><th>Currency</th><th className="num">Expected</th><th>Sender</th><th>Proof</th><th>INV</th><th /></>}>
           {(e) => (
             <tr key={e.id} className="pay-row pending">
@@ -4604,7 +4669,7 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
       )}
 
       {tab === "confirmed" && (
-        <PayTable list={list} rows={rows} emptyText="Nothing confirmed yet"
+        <PayTable list={list} rows={rows} pager={pager} emptyText="Nothing confirmed yet"
           head={<><th>Date received</th>{!isRep && <th>Sale rep</th>}<th>Customer</th><th>Company</th><th>Currency</th><th className="num">Expected</th><th className="num">Received</th><th className="num">Difference</th><th>Sender (bank)</th><th>QuickBooks</th><th>Confirmed by</th>{!isRep && <th />}</>}>
           {(e) => (
             <tr key={e.id} className="pay-row confirmed">
@@ -4632,7 +4697,7 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
       )}
 
       {!isRep && tab === "unmatched" && (
-        <PayTable list={list} rows={rows} emptyText="No unannounced money"
+        <PayTable list={list} rows={rows} pager={pager} emptyText="No unannounced money"
           head={<><th>Date received</th><th>Customer</th><th>Company</th><th>Currency</th><th className="num">Received</th><th>Sender (bank)</th><th>QuickBooks</th><th>Entered by</th><th /></>}>
           {(r) => (
             <tr key={r.id} className="pay-row loose">
@@ -4884,6 +4949,7 @@ function AccountsTab({ accounts, actions, currentUserId }) {
   const [form, setForm] = useState({ role: "sale", name: "", username: "", password: "" });
   const [error, setError] = useState("");
   const [reveal, setReveal] = useState({});
+  const pager = usePager(accounts);
 
   const submit = () => {
     const name = form.name.trim();
@@ -4940,7 +5006,7 @@ function AccountsTab({ accounts, actions, currentUserId }) {
         <div className="account-head-row">
           <div>Role</div><div>Name</div><div>Username</div><div>Password</div><div />
         </div>
-        {accounts.map((acc) => {
+        {pager.rows.map((acc) => {
           const isSelf = acc.id === currentUserId;
           const lastAdmin = acc.role === "admin" && accounts.filter((a) => a.role === "admin").length <= 1;
           return (
@@ -4972,6 +5038,7 @@ function AccountsTab({ accounts, actions, currentUserId }) {
             </div>
           );
         })}
+        <Pager pager={pager} />
       </div>
     </div>
   );
