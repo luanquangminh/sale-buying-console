@@ -35,12 +35,15 @@ app.post("/sync", async (c) => {
   if (denied) return c.json({ ok: false, error: `${denied.kind} is not available to the ${user.role} role` }, 403);
   // a kind reached record by record: the record sent, and the one stored under that id, both have to be the user's
   const partial = changes.filter((ch) => isKind(ch.kind) && !kindWritable(ch.kind, user) && partlyAllowed(ch.kind, user));
-  for (const ch of partial) {
-    const stored = await c.env.DB.prepare("SELECT data FROM records WHERE kind = ? AND id = ?").bind(ch.kind, String(ch.id)).first<{ data: string }>();
-    const own = (!stored || recordWritable(ch.kind as any, user, JSON.parse(stored.data))) && (ch.deleted || recordWritable(ch.kind as any, user, ch.data));
-    if (!own) return c.json({ ok: false, error: `${ch.kind}: a ${user.role} may only write what is their own` }, 403);
+  if (partial.length) {
+    const stored = await storedOf(c.env.DB, partial.map((ch) => ({ kind: String(ch.kind), id: String(ch.id) })));
+    for (const ch of partial) {
+      const was = stored.get(`${ch.kind}:${ch.id}`);
+      const own = (!was || recordWritable(ch.kind as any, user, was)) && (ch.deleted || recordWritable(ch.kind as any, user, ch.data));
+      if (!own) return c.json({ ok: false, error: `${ch.kind}: a ${user.role} may only write what is their own` }, 403);
+    }
   }
-  const refused = await paymentRulesBroken(c.env.DB, changes);
+  const refused = await applyPaymentRules(c.env.DB, changes);
   if (refused) return c.json({ ok: false, error: refused }, 403);
   try {
     const version = await applyChanges(c.env.DB, body.changes, user);
@@ -50,28 +53,49 @@ app.post("/sync", async (c) => {
   }
 });
 
+const marks = (n: number) => Array(n).fill("?").join(",");
+
+/** The stored copies of these records, by `kind:id`, one query per kind (in chunks of 50). */
+async function storedOf(db: D1Database, refs: Array<{ kind: string; id: string }>) {
+  const out = new Map<string, any>();
+  for (const kind of new Set(refs.map((r) => r.kind))) {
+    const ids = refs.filter((r) => r.kind === kind).map((r) => r.id);
+    for (let i = 0; i < ids.length; i += 50) {
+      const chunk = ids.slice(i, i + 50);
+      const { results } = await db.prepare(`SELECT id, data FROM records WHERE kind = ? AND id IN (${marks(chunk.length)})`).bind(kind, ...chunk).all<{ id: string; data: string }>();
+      for (const r of results) out.set(`${kind}:${r.id}`, JSON.parse(r.data));
+    }
+  }
+  return out;
+}
+
+type Change = { kind?: unknown; id?: unknown; data?: any; deleted?: boolean };
+
 /**
- * Payments received, for every role: an expected payment the accountant has confirmed stays as the confirmation found it
- * (undo the confirmation first); a confirmation points at an expected payment that exists and has no other confirmation.
+ * Payments received, for every role, in one round trip: an expected payment the accountant has confirmed stays as the confirmation
+ * found it (undo the confirmation first); a confirmation points at an expected payment that exists and has no other confirmation.
+ * Each receipt is stamped with the rep of the expected payment it confirms, so a rep's snapshot can pick its own receipts.
  */
-async function paymentRulesBroken(db: D1Database, changes: Array<{ kind?: unknown; id?: unknown; data?: any; deleted?: boolean }>): Promise<string | null> {
-  const marks = (n: number) => Array(n).fill("?").join(",");
+async function applyPaymentRules(db: D1Database, changes: Change[]): Promise<string | null> {
   const touched = changes.filter((ch) => ch.kind === "expectedPayments").map((ch) => String(ch.id));
-  if (touched.length) {
-    const hit = await db.prepare(`SELECT id FROM records WHERE kind = 'receivedPayments' AND json_extract(data, '$.expectedId') IN (${marks(touched.length)}) LIMIT 1`).bind(...touched).first();
-    if (hit) return "expectedPayments: this payment has been confirmed by the accountant and can no longer be changed; undo the confirmation first";
+  const receipts = changes.filter((ch) => ch.kind === "receivedPayments" && !ch.deleted && ch.data);
+  const confirms = receipts.filter((ch) => ch.data.expectedId).map((ch) => ({ id: String(ch.id), expectedId: String(ch.data.expectedId) }));
+  if (!touched.length && !receipts.length) return null;
+  const expectedIds = confirms.map((x) => x.expectedId);
+  const stmts: D1PreparedStatement[] = [];
+  if (touched.length) stmts.push(db.prepare(`SELECT id FROM records WHERE kind = 'receivedPayments' AND json_extract(data, '$.expectedId') IN (${marks(touched.length)}) LIMIT 1`).bind(...touched));
+  if (expectedIds.length) stmts.push(db.prepare(`SELECT kind, id, json_extract(data, '$.expectedId') AS expectedId, json_extract(data, '$.saleId') AS saleId FROM records WHERE (kind = 'expectedPayments' AND id IN (${marks(expectedIds.length)})) OR (kind = 'receivedPayments' AND json_extract(data, '$.expectedId') IN (${marks(expectedIds.length)}))`).bind(...expectedIds, ...expectedIds));
+  const results = stmts.length ? await db.batch<{ kind: string; id: string; expectedId: string | null; saleId: string | null }>(stmts) : [];
+  if (touched.length && results[0].results.length) return "expectedPayments: this payment has been confirmed by the accountant and can no longer be changed; undo the confirmation first";
+  const rows = expectedIds.length ? results[touched.length ? 1 : 0].results : [];
+  const repOf = new Map(rows.filter((r) => r.kind === "expectedPayments").map((r) => [r.id, r.saleId || ""]));
+  if (confirms.some((x) => !repOf.has(x.expectedId))) return "receivedPayments: the expected payment this confirms no longer exists";
+  const confirmedBy = new Map<string, Set<string>>(); // expected id → the receipts pointing at it, stored and in this batch
+  for (const r of [...rows.filter((r) => r.kind === "receivedPayments").map((r) => ({ id: r.id, expectedId: String(r.expectedId) })), ...confirms]) {
+    const ids = confirmedBy.get(r.expectedId) ?? new Set<string>(); ids.add(r.id); confirmedBy.set(r.expectedId, ids);
   }
-  const confirms = changes.filter((ch) => ch.kind === "receivedPayments" && !ch.deleted && ch.data && ch.data.expectedId).map((ch) => ({ id: String(ch.id), expectedId: String(ch.data.expectedId) }));
-  if (confirms.length) {
-    const ids = confirms.map((x) => x.expectedId);
-    const { results: found } = await db.prepare(`SELECT id FROM records WHERE kind = 'expectedPayments' AND id IN (${marks(ids.length)})`).bind(...ids).all<{ id: string }>();
-    const exists = new Set(found.map((r) => r.id));
-    if (confirms.some((x) => !exists.has(x.expectedId))) return "receivedPayments: the expected payment this confirms no longer exists";
-    const { results: others } = await db.prepare(`SELECT id, json_extract(data, '$.expectedId') AS expectedId FROM records WHERE kind = 'receivedPayments' AND json_extract(data, '$.expectedId') IN (${marks(ids.length)})`).bind(...ids).all<{ id: string; expectedId: string }>();
-    if (confirms.some((x) => others.some((o) => o.expectedId === x.expectedId && o.id !== x.id))) return "receivedPayments: that expected payment has already been confirmed";
-    const seen = new Set<string>();
-    for (const x of confirms) { if (seen.has(x.expectedId)) return "receivedPayments: that expected payment has already been confirmed"; seen.add(x.expectedId); }
-  }
+  if ([...confirmedBy.values()].some((ids) => ids.size > 1)) return "receivedPayments: that expected payment has already been confirmed";
+  for (const ch of receipts) ch.data.saleId = ch.data.expectedId ? repOf.get(String(ch.data.expectedId)) || "" : "";
   return null;
 }
 

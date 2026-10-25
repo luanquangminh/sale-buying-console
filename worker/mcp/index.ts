@@ -6,6 +6,7 @@
  * API key = "<username>:<password>" of an app account, or the MCP_API_KEY secret (acts as admin).
  * Sent as X-API-Key, Authorization: Bearer, or ?key=.
  */
+import { FULL_ROLES } from "../records";
 import { StreamableHTTPTransport } from "@hono/mcp";
 import { Hono } from "hono";
 import { findAccount } from "../auth";
@@ -34,7 +35,7 @@ export const mcpApp = new Hono<AppEnv>();
 
 const handle = async (c: any) => {
   const user = await resolveUser(c.env, readKey(c));
-  if (user && (user.role === "warehouse" || user.role === "accountant")) return c.json({ jsonrpc: "2.0", error: { code: -32001, message: `MCP tools are not available to ${user.role} accounts` }, id: null }, 403);
+  if (user && !FULL_ROLES.includes(user.role)) return c.json({ jsonrpc: "2.0", error: { code: -32001, message: `MCP tools are not available to ${user.role} accounts` }, id: null }, 403);
   if (!user) {
     return c.json({ jsonrpc: "2.0", error: { code: -32001, message: "Unauthorized: send X-API-Key (or Authorization: Bearer, or ?key=) with <username>:<password> of an app account" }, id: null }, 401);
   }
