@@ -12,8 +12,9 @@ import { sortLanesByPod } from "./lanes";
 import { lineCover, pfiLineCover, pfiShortages, poShortages } from "./allocation";
 import { PAY_COMPANIES, diffTone, difference, fmtDiff, forSale, isConfirmed, splitExpected, toConfirmCount, unmatched } from "./paymentsReceived";
 import { homeFor, pathFor, sectionAllowed, stateFor } from "./routes";
-import { DEFAULT_PAGE_SIZE, PAGE_SIZES, needsPager, pageLabel, pageOf } from "./pager";
-import { BOOKING_STATUSES, BOOKING_STATUS_LABEL, BOOKING_STATUS_TONE, LOADING_METHODS, SHIPMENT_MODES, SHIPMENT_SUBTYPES, VEHICLE_SUBTYPES, bookingFromPfi, bookingOf, bookingStatus, emptyBooking, emptyPfiDelivery, etaSoon, etaSoonText, loadedForDelivery } from "./booking";
+import { PAGE_SIZES, firstPage, needsPager, nextPager, pageLabel, pageOf } from "./pager";
+import { BOOKING_STATUSES, BOOKING_STATUS_LABEL, BOOKING_STATUS_TONE, LOADING_METHODS, SHIPMENT_MODES, SHIPMENT_SUBTYPES, bookingFromPfi, bookingOf, bookingStatus, emptyBooking, etaSoon, etaSoonText, loadedForDelivery } from "./booking";
+import { VEHICLE_SUBTYPES, newPfi, pfiCreatedMessage } from "./pfi";
 import { placePanel } from "./popup";
 import { acknowledged, changeSinceSent, describeChanges, describeWas, lineChange, removedSinceSent, stampSent } from "./sentMark";
 import { groupBySale, hasSaleChange } from "./orderGroups";
@@ -71,7 +72,7 @@ const PO_VEHICLE_TYPES = [
   { value: "collection", label: "Collection" },
 ];
 const PO_SUBTYPES = ["20ft Dry", "20ft Reefer", "40ft Dry", "40ft Reefer", "Air Freight", "Collection"];
-const CONTAINER_TYPES = ["20ft Dry", "20ft Reefer", "40ft Dry", "40ft Reefer", "40ft HC Dry"];
+const CONTAINER_TYPES = SHIPMENT_SUBTYPES.container; // a lane is quoted per container size: the sizes a booking picks from
 const DOC_TYPES = ["COO", "HC", "BL", "SWB", "Free Sale", "PL", "INV", "EUR1"];
 const DOC_STATUSES = [
   { value: "not_applied", label: "Have not applied" },
@@ -2403,18 +2404,14 @@ function exportPfiWorkbook(pfi) {
 }
 
 /**
- * Page state for a list screen. A new filter text or page size starts on page 1; a row opened from elsewhere
- * (ensureIndex: its position in the list) pulls its page into view.
+ * Page state for a list screen: nextPager (pager.js) says where the page goes when the filter text changes or a row
+ * is opened from elsewhere (ensureIndex: its position in the list); a new page size starts on page 1.
  */
 function usePager(list, { resetKey = "", ensureIndex = -1 } = {}) {
-  const [at, setAt] = useState({ page: 1, key: resetKey, size: DEFAULT_PAGE_SIZE });
-  if (at.key !== resetKey) setAt({ ...at, page: 1, key: resetKey }); // set during render: React re-renders before anything is painted
-  const current = pageOf(list, at.page, at.size);
-  const setPage = (page) => setAt({ ...at, page });
-  const setSize = (size) => setAt({ ...at, page: 1, size });
-  const wanted = ensureIndex >= 0 ? Math.floor(ensureIndex / at.size) + 1 : 0;
-  React.useEffect(() => { if (wanted && wanted !== current.page) setPage(wanted); }, [wanted]); // eslint-disable-line react-hooks/exhaustive-deps
-  return { ...current, setPage, setSize };
+  const [at, setAt] = useState(() => firstPage(resetKey));
+  const next = nextPager(at, resetKey, ensureIndex >= 0 ? Math.floor(ensureIndex / at.size) + 1 : 0);
+  if (next !== at) setAt(next); // set during render: React re-renders before anything is painted
+  return { ...pageOf(list, next.page, next.size), setPage: (page) => setAt((a) => ({ ...a, page })), setSize: (size) => setAt((a) => ({ ...a, page: 1, size })) };
 }
 
 /** The bar under a paged list: where the page stands, Prev / Next, and how many rows a page holds. Hidden while the list fits one page. */
@@ -5710,16 +5707,10 @@ export default function App() {
   /* ---- PFI actions (Sale <-> Buyer, both directions notify) ---- */
 
   const addPfi = (saleId, saleName, data) => {
-    const newPfi = {
-      id: uid("pfi"), saleId, saleName, pfiNo: data.pfiNo,
-      customerId: data.customerId, customerName: data.customerName,
-      currency: data.currency, paymentTerm: data.paymentTerm, incoterm: data.incoterm,
-      createdAt: new Date().toISOString(),
-      products: [], delivery: emptyPfiDelivery(), documents: [], payments: [],
-    };
-    setPfisAs("sale")((prev) => ({ ...prev, [saleId]: [newPfi, ...(prev[saleId] || [])] }));
-    pushBuyerPfiFeed(newPfi.id, saleId, saleName, data.customerName, `Created PFI ${data.pfiNo} — track order status once products are added.`);
-    return newPfi.id;
+    const pfi = newPfi(uid("pfi"), new Date().toISOString(), { ...data, saleId, saleName });
+    setPfisAs("sale")((prev) => ({ ...prev, [saleId]: [pfi, ...(prev[saleId] || [])] }));
+    pushBuyerPfiFeed(pfi.id, saleId, saleName, pfi.customerName, pfiCreatedMessage(pfi.pfiNo));
+    return pfi.id;
   };
 
   const addProduct = (saleId, pfiId, row) => {

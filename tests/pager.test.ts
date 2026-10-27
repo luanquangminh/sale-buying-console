@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_PAGE_SIZE, PAGE_SIZES, needsPager, pageLabel, pageOf } from "../src/pager.js";
+import { firstPage, needsPager, nextPager, pageLabel, pageOf } from "../src/pager.js";
 
 const list = Array.from({ length: 59 }, (_, i) => i + 1);
 
@@ -19,9 +19,6 @@ describe("pageOf", () => {
   it("copes with an empty list", () => {
     expect(pageOf([], 1, 20)).toMatchObject({ rows: [], page: 1, pages: 1, total: 0 });
   });
-  it("starts on the smallest page size", () => {
-    expect(DEFAULT_PAGE_SIZE).toBe(PAGE_SIZES[0]);
-  });
 });
 
 describe("pageLabel and needsPager", () => {
@@ -33,5 +30,27 @@ describe("pageLabel and needsPager", () => {
     expect(needsPager(20)).toBe(false);
     expect(needsPager(21)).toBe(true);
     expect(needsPager(0)).toBe(false);
+  });
+});
+
+describe("nextPager", () => {
+  const at = { ...firstPage("a"), page: 3 };
+  it("keeps the state itself when nothing moved", () => {
+    expect(nextPager(at, "a", 0)).toBe(at);
+  });
+  it("starts a new filter text on page 1", () => {
+    expect(nextPager(at, "b", 0)).toMatchObject({ page: 1, key: "b", size: at.size });
+  });
+  it("pulls an opened row's page into view once; paging away sticks until the row is opened again", () => {
+    const pulled = nextPager(at, "a", 2);
+    expect(pulled).toMatchObject({ page: 2, pulled: 2 });
+    const away = { ...pulled, page: 3 };
+    expect(nextPager(away, "a", 2)).toBe(away);
+    const closed = nextPager(away, "a", 0);
+    expect(closed).toMatchObject({ page: 3, pulled: 0 });
+    expect(nextPager(closed, "a", 2)).toMatchObject({ page: 2, pulled: 2 });
+  });
+  it("a new filter text and an opened row in one render: the row's page wins", () => {
+    expect(nextPager(at, "b", 2)).toMatchObject({ page: 2, key: "b", pulled: 2 });
   });
 });

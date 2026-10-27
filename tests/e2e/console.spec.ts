@@ -2,6 +2,7 @@ import { expect, request, test, type Page } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 import * as XLSX from "xlsx";
 import { emptyBooking } from "../../src/booking.js";
+import { fmtDate } from "../../src/dates.js";
 import { A } from "./accounts";
 
 /*
@@ -86,23 +87,24 @@ const close = (page: Page) => page.getByRole("button", { name: "Close" }).click(
 const payRow = (page: Page, text: string) => page.locator(".pay-row", { hasText: text });
 const payField = (page: Page, label: string) => page.locator(`[aria-label="${label}"]`).last(); // the add form, or the open dialog
 const removePayRow = async (page: Page, row: ReturnType<Page["locator"]>) => { await row.locator(".btn-icon").last().click(); await row.getByRole("button", { name: /^Yes, / }).click(); };
-/** Rows wiped through the API as the admin, in one session: `pick` names them from the state, kind by kind, in the order they must go. */
-const wipeRows = async (baseURL: string, pick: (slices: any) => [string, any[]][]) => {
+/** One push through the API as the admin, in a session of its own: `changes` names the rows from the state the server holds; the server takes every kind in one batch. */
+const syncAsAdmin = async (baseURL: string, changes: (slices: any) => any[]) => {
   const api = await request.newContext({ baseURL });
   await api.post("/api/auth/login", { data: { username: A.admin.username, password: A.admin.password } });
   const { slices } = await (await api.get("/api/state")).json();
-  for (const [kind, rows] of pick(slices)) {
-    if (rows.length) expect((await api.post("/api/sync", { data: { changes: rows.map((r: any) => ({ kind, id: r.id, deleted: true })) } })).ok()).toBe(true);
-  }
+  const rows = changes(slices);
+  if (rows.length) expect((await api.post("/api/sync", { data: { changes: rows } })).ok()).toBe(true);
   await api.post("/api/auth/logout"); await api.dispose();
 };
-const wipePayments = (baseURL: string, names: string[]) => wipeRows(baseURL, (slices) => {
+const wiped = (kind: string, rows: any[]) => rows.map((r) => ({ kind, id: r.id, deleted: true }));
+/** Delivery Booking rows whose customer carries this text: left by an earlier run, or by an earlier step of this one. */
+const bookingsNamed = (slices: any, customer: string) => wiped("bookings", slices.bookings.filter((b: any) => String(b.customerName || "").includes(customer)));
+const wipeBookings = (baseURL: string, customer: string) => syncAsAdmin(baseURL, (slices) => bookingsNamed(slices, customer));
+const wipePayments = (baseURL: string, names: string[]) => syncAsAdmin(baseURL, (slices) => {
   const hit = (r: any) => names.some((n) => String(r.customer || "").includes(n));
   const expected = slices.expectedPayments.filter(hit); const ids = new Set(expected.map((e: any) => e.id));
-  return [["receivedPayments", slices.receivedPayments.filter((r: any) => hit(r) || ids.has(r.expectedId))], ["expectedPayments", expected]]; // receipts first: a confirmed payment cannot be removed
+  return [...wiped("receivedPayments", slices.receivedPayments.filter((r: any) => hit(r) || ids.has(r.expectedId))), ...wiped("expectedPayments", expected)]; // the receipts confirming an expected payment go with it
 });
-/** Delivery Booking rows whose customer carries this text: left by an earlier run, or by an earlier step of this one. */
-const wipeBookings = (baseURL: string, customer: string) => wipeRows(baseURL, (slices) => [["bookings", slices.bookings.filter((b: any) => String(b.customerName || "").includes(customer))]]);
 /** The admin makes a login of this role from the accounts file, unless it is there already. */
 const ensureAccount = async (page: Page, role: "warehouse" | "accountant") => {
   const who = A[role];
@@ -286,15 +288,13 @@ test("buyer handles the reorder request", async ({ page }) => {
   await expect(row).toHaveClass(/handled/);
 });
 
-test("admin: rep workspace, bookings with second-tab sync, accounts", async ({ page, context }) => {
+test("admin: rep workspace, bookings with second-tab sync, accounts", async ({ page, context, baseURL }) => {
+  await wipeBookings(baseURL!, "E2E Booking Ltd"); // left by a run whose last push never landed
   await signIn(page, A.admin.username, A.admin.password);
   await side(page, A.sale.name).click();
   await expect(page.locator(".cust-row").first()).toContainText("Acme Foods Ltd");
 
   await side(page, "Delivery Booking").click();
-  const stale = page.locator(".booking-row", { hasText: "E2E Booking Ltd" }); // left by a run whose last push never landed
-  while (await stale.count()) { await stale.first().click(); await page.locator(".lane-detail").getByRole("button", { name: "Delete" }).click(); }
-  await settled(page);
   await page.getByRole("button", { name: "Add booking" }).click();
   const grid = page.locator(".booking-grid").first();
   await grid.locator("input").nth(0).fill("E2E Booking Ltd");
@@ -466,22 +466,17 @@ test("the left menu stays put while the page scrolls", async ({ page }) => {
 
 test("Delivery Booking shows one page of bookings at a time; the find box and the page size change what a page holds", async ({ page, baseURL }) => {
   const PREFIX = "E2E Page Ltd";
-  await wipeBookings(baseURL!, PREFIX); // the screen must start from a known set
-  await signIn(page, A.admin.username, A.admin.password);
-
-  // 23 bookings in one push, each a millisecond newer than the last: the server lists newest first, so 23 leads page 1.
+  // One push: the rows of an earlier run go, and 23 bookings come, each a millisecond newer than the last. The server
+  // lists newest first, so 23 leads page 1; the screen starts from a known set.
   const stamp = Date.now();
-  const changes = Array.from({ length: 23 }, (_, i) => {
+  await syncAsAdmin(baseURL!, (slices) => [...bookingsNamed(slices, PREFIX), ...Array.from({ length: 23 }, (_, i) => {
     const nn = String(i + 1).padStart(2, "0");
     const id = `book-e2e-page-${nn}-${stamp}`;
     const createdAt = new Date(stamp + i).toISOString();
     return { kind: "bookings", id, createdAt, data: { ...emptyBooking(id, createdAt), customerName: `${PREFIX} ${nn}`, docNo: `P${nn}` } };
-  });
-  const created = await page.evaluate(async (changes) => (await fetch("/api/sync", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes }) })).status, changes);
-  expect(created).toBe(200);
+  })]);
 
-  await page.reload(); // the store takes the server's rows
-  await expect(page.getByText("Log out")).toBeVisible(SLOW);
+  await signIn(page, A.admin.username, A.admin.password); // the store takes the server's rows
   await side(page, "Delivery Booking").click();
   const rows = page.locator(".booking-row");
   const pager = page.locator('[aria-label="Pages"]');
@@ -1601,7 +1596,7 @@ test("suppliers: edit renames the supplier on its POs; delete waits until its PO
 });
 
 test("customer balance: invoices sit under their customer with the outstanding total; each invoice has its status", async ({ page }) => {
-  const dmy = (offsetDays: number) => { const [y, m, d] = isoDay(offsetDays).split("-"); return `${d}/${m}/${y}`; };
+  const dmy = (offsetDays: number) => fmtDate(isoDay(offsetDays));
   const typeDate = async (field: ReturnType<Page["locator"]>, value: string) => { const box = field.locator('.date-field input[type="text"]'); await box.fill(value); await box.press("Enter"); };
 
   for (const who of [A.sale, A.buyer, A.warehouse]) {
