@@ -56,13 +56,40 @@ await step("admin creates three accounts", async () => {
 
 await step("each role sees only its tabs", async () => {
   await login("exp-sale", EXP_PASS);
-  for (const t of ["Customer", "Order Tracking", "Container Rate"]) expect((await side(t).count()) === 1, `sale tab ${t}`);
+  for (const t of ["Customer", "Order Tracking", "Container Rate", "Payments Received"]) expect((await side(t).count()) === 1, `sale tab ${t}`);
   for (const t of ["Delivery Booking", "Documents", "Mai", "Jobs", "Accounts"]) expect((await side(t).count()) === 0, `sale must not see ${t}`);
   await login("exp-buyer", EXP_PASS);
   for (const t of ["Inbox", "Orders to update", "Documents", "PO Tracking", "Jobs", "Container Rate", "Delivery Booking"]) expect((await side(t).count()) === 1, `buyer tab ${t}`);
-  for (const t of ["Mai", "Accounts"]) expect((await side(t).count()) === 0, `buyer must not see ${t}`);
+  for (const t of ["Mai", "Accounts", "Payments Received"]) expect((await side(t).count()) === 0, `buyer must not see ${t}`);
   await login("exp-admin", EXP_PASS);
-  for (const t of ["Explorer Sale", "Buyer Space", "Mai", "Container Rate", "Delivery Booking", "Accounts"]) expect((await side(t).count()) === 1, `admin tab ${t}`);
+  for (const t of ["Explorer Sale", "Buyer Space", "Mai", "Container Rate", "Delivery Booking", "Payments Received", "Accounts"]) expect((await side(t).count()) === 1, `admin tab ${t}`);
+});
+
+await step("accountant: one tab, the ledger of the finance Excel", async () => {
+  await login(A.admin.username, A.admin.password); await side("Accounts").click();
+  const rows = page.locator(".account-row");
+  if (!(await rows.filter({ has: page.locator(`input[value="${A.accountant.username}"]`) }).count())) {
+    const form = page.locator(".add-form").first();
+    await form.locator("select").selectOption("accountant");
+    await form.locator("input").nth(0).fill(A.accountant.name || "accountant"); await form.locator("input").nth(1).fill(A.accountant.username); await form.locator("input").nth(2).fill(A.accountant.password);
+    await page.getByRole("button", { name: "Create account" }).click(); await settle();
+  }
+  await login(A.accountant.username, A.accountant.password);
+  expect((await page.locator(".side-item").count()) === 1, "one side item");
+  expect((await side("Payments Received").count()) === 1, "Payments Received tab");
+  expect(/Payments Received Tracking/.test(await page.locator(".page-title").innerText()), "title");
+  const month = new Date().toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+  expect(/active/.test((await pill(month).getAttribute("class")) || ""), `this month (${month}) open`);
+  for (const t of ["All", "To confirm", "Confirmed", "Unmatched"]) expect((await pill(t).count()) === 1, `filter pill ${t}`);
+  if (await page.locator(".pay-row").count()) {
+    const groups = await page.locator("th.pay-group").allInnerTexts();
+    expect(/finance/i.test(groups[0] || "") && /sales/i.test(groups[1] || ""), `group headers: ${groups.join(" | ")}`);
+  } else expect((await page.locator(".empty", { hasText: `No payment in ${month}` }).count()) === 1, "empty month text");
+  await page.getByRole("button", { name: "Add received payment" }).click();
+  await page.locator(".modal-panel").waitFor();
+  expect((await page.locator('.modal-panel [aria-label="Remark"]').count()) === 1, "remark field in the dialog");
+  await page.getByRole("button", { name: "Cancel" }).click(); await settle();
+  expect((await page.locator(".modal-panel").count()) === 0, "dialog closed");
 });
 
 await step("sale: customer, note, PFI 9101 with lines, collection date (2-digit year), payment, document, export, reload", async () => {
