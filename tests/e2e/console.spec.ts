@@ -2,6 +2,7 @@ import { expect, request, test, type Page } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 import * as XLSX from "xlsx";
 import { emptyBooking } from "../../src/booking.js";
+import { monthLabel } from "../../src/calendar.js";
 import { fmtDate } from "../../src/dates.js";
 import { A } from "./accounts";
 
@@ -2329,8 +2330,15 @@ test("payments received: a rep announces a payment, the accountant confirms it w
   await expect(page.locator(".side-item")).toHaveCount(1);
   await expect(page.locator(".side-item").first()).toContainText("Payments Received");
   await expect(page.locator(".page-title")).toContainText("Payments Received Tracking");
-  await expect(pillTab("To confirm")).toHaveClass(/active/);
-  await expect(row(JUARA)).toContainText(A.sale.name);
+  // The ledger of the finance Excel: this month open, every row shown, the finance columns on the left and the rep's on the right.
+  await expect(pillTab(monthLabel(`${isoDay(0).slice(0, 7)}-01`))).toHaveClass(/active/);
+  await expect(pillTab("All")).toHaveClass(/active/);
+  await expect(page.locator("th.pay-group")).toHaveText(["Details entered by Finance", "Details confirmed by Sales", ""]);
+  await expect(pillTab("To confirm").locator(".pill-count")).toBeVisible();
+  await expect(row(JUARA)).toContainText(A.sale.name); // Entered by: the rep
+  await expect(row(JUARA).locator("td").first()).toHaveText("—"); // nothing from the bank yet
+  await expect(row(JUARA).locator('[aria-label="Proof of payment"]')).toBeChecked();
+  await expect(row(SHALUXE).locator('[aria-label="Proof of payment"]')).not.toBeChecked();
   await expect(row(SHALUXE)).toContainText("2,400.00");
   await row(JUARA).getByRole("button", { name: "Confirm" }).click();
   await page.locator(".modal-panel").waitFor();
@@ -2345,13 +2353,18 @@ test("payments received: a rep announces a payment, the accountant confirms it w
   await page.locator('.modal-panel [aria-label="Sender name"]').fill("JUARA TRADE FZCO");
   await page.locator('.modal-panel [aria-label="Added to QuickBooks"]').check();
   await expect(page.locator('.modal-panel [aria-label="Added by"]')).toHaveValue(A.accountant.name || "");
+  await page.locator('.modal-panel [aria-label="Remark"]').fill("E2E: bank fee");
   await page.getByRole("button", { name: "Confirm payment" }).click();
-  await expect(pillTab("Confirmed")).toHaveClass(/active/);
+  await expect(page.locator(".modal-panel")).toHaveCount(0);
+  // The row stays where it is, now with the bank's side filled in; a gap tints its cell like the Excel.
   await expect(row(JUARA)).toContainText("13,560.00");
   await expect(row(JUARA)).toContainText("13,510.36");
   await expect(row(JUARA).locator(".pay-diff")).toHaveText("−49.64");
+  await expect(row(JUARA).locator("td.pay-off")).toHaveCount(1);
   await expect(row(JUARA)).toContainText("Done");
   await expect(row(JUARA)).toContainText(A.accountant.name || "");
+  await expect(row(JUARA)).toContainText("E2E: bank fee");
+  await expect(row(SHALUXE).locator("td.pay-off")).toHaveCount(0);
   await pillTab("To confirm").click();
   await expect(row(JUARA)).toHaveCount(0);
   await expect(row(SHALUXE)).toHaveCount(1);
@@ -2363,20 +2376,31 @@ test("payments received: a rep announces a payment, the accountant confirms it w
   await page.getByRole("button", { name: "Save" }).click();
   await expect(row(SHALUXE)).toContainText("2,450.00");
   // a row to drop: the accountant has no add form on To confirm, so it goes in through the API as a rep's would
-  await page.evaluate(async (customer) => { const now = new Date().toISOString(); const id = `xpay-e2e-${Date.now()}`; await fetch("/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes: [{ kind: "expectedPayments", id, createdAt: now, data: { id, saleId: "", saleName: "", date: "2026-10-25", company: "LTD", currency: "GBP", expectedAmount: 1, sender: "", customer, proof: false, invNo: "", createdBy: "e2e", createdAt: now, updatedAt: now } }] }) }); }, `${SHALUXE} dup`);
+  await page.evaluate(async ({ customer, date }) => { const now = new Date().toISOString(); const id = `xpay-e2e-${Date.now()}`; await fetch("/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes: [{ kind: "expectedPayments", id, createdAt: now, data: { id, saleId: "", saleName: "", date, company: "LTD", currency: "GBP", expectedAmount: 1, sender: "", customer, proof: false, invNo: "", createdBy: "e2e", createdAt: now, updatedAt: now } }] }) }); }, { customer: `${SHALUXE} dup`, date: isoDay(0) });
   await page.reload();
   await expect(row(`${SHALUXE} dup`)).toHaveCount(1);
   await removePayRow(page, row(`${SHALUXE} dup`));
   await expect(row(`${SHALUXE} dup`)).toHaveCount(0);
   await settled(page);
-  // Money nobody announced.
-  await pillTab("Unmatched").click();
+  // Money nobody announced goes in through its own dialog; its sales side stays empty.
+  await page.getByRole("button", { name: "Add received payment" }).click();
+  await page.locator(".modal-panel").waitFor();
   await field("Received amount").fill("592");
   await field("Sender name").fill("Akoto V B Sprout");
   await field("Customer name").fill(WALKIN);
-  await page.getByRole("button", { name: "Add received payment" }).click();
+  await page.getByRole("button", { name: "Save received payment" }).click();
   await expect(row(WALKIN)).toContainText("592.00");
   await expect(row(WALKIN)).toContainText("Not yet");
+  await expect(row(WALKIN).locator("td.sales-start")).toHaveText("—");
+  await pillTab("Unmatched").click();
+  await expect(row(WALKIN)).toHaveCount(1);
+  await expect(row(JUARA)).toHaveCount(0);
+  // The find box reaches the remark too (and every month); it narrows the rows the filter shows.
+  await pillTab("All").click();
+  await page.locator(".find-bar input").fill("bank fee");
+  await expect(row(JUARA)).toHaveCount(1);
+  await expect(row(WALKIN)).toHaveCount(0);
+  await page.locator(".find-bar input").fill("");
   await settled(page);
 
   // The rep: the confirmed one has moved, with the bank's figure and the difference; it can no longer be changed.
@@ -2421,6 +2445,7 @@ test("payments received: a rep announces a payment, the accountant confirms it w
   await page.locator(".modal-panel").waitFor();
   await page.getByRole("button", { name: "Confirm payment" }).click();
   await settled(page);
+  await pillTab("All").click();
   await removePayRow(page, row(JUARA)); // the whole row: confirmation and announcement
   await expect(row(JUARA)).toHaveCount(0);
   await settled(page);
@@ -2470,7 +2495,10 @@ test("a rep's stale edit of a payment the accountant has just confirmed is refus
     await row(acc, STALE).getByRole("button", { name: "Confirm" }).click();
     await acc.locator(".modal-panel").waitFor();
     await acc.getByRole("button", { name: "Confirm payment" }).click();
-    await expect(pillTab(acc, "Confirmed")).toHaveClass(/active/);
+    await expect(acc.locator(".modal-panel")).toHaveCount(0);
+    await expect(row(acc, STALE)).toHaveCount(0); // the ledger's To confirm filter no longer lists it
+    await pillTab(acc, "Confirmed").click();
+    await expect(row(acc, STALE)).toHaveCount(1);
     await settled(acc);
 
     // The rep saves the stale edit: refused by the server, said on screen, the list reloaded; the next edit still saves.

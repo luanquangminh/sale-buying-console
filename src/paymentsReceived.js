@@ -57,3 +57,30 @@ export function fmtDiff(diff) {
   return diff > 0 ? `+${abs}` : diff < 0 ? `−${abs}` : abs;
 }
 export const diffTone = (diff) => (diff === null || diff === undefined || diff === 0 ? "grey" : diff < 0 ? "red" : "green");
+
+/* The accountant's screen is the finance Excel: one ledger a month, the bank's side on the left, the rep's on the right. */
+
+export const monthOf = (iso) => String(iso || "").slice(0, 7);
+
+/**
+ * Every payment as one ledger row, oldest first like the Excel: `pending` (announced, nothing received yet), `confirmed`
+ * (announced and received) and `loose` (received, never announced). `date` places the row in a month: the bank's date once
+ * there is one, else the rep's, else the day it was entered.
+ */
+export function ledgerRows(expected, received) {
+  const { pending, confirmed } = splitExpected(expected, received);
+  const dateOf = (iso, rec) => iso || String(rec.createdAt || "").slice(0, 10);
+  const rows = [
+    ...pending.map((e) => ({ kind: "pending", id: e.id, date: dateOf(e.date, e), expected: e, received: null, diff: null, createdAt: e.createdAt || "" })),
+    ...confirmed.map((e) => ({ kind: "confirmed", id: e.id, date: dateOf(e.confirmation.receivedDate || e.date, e), expected: e, received: e.confirmation, diff: e.diff, createdAt: e.confirmation.createdAt || "" })),
+    ...unmatched(received, expected || []).map((r) => ({ kind: "loose", id: r.id, date: dateOf(r.receivedDate, r), expected: null, received: r, diff: null, createdAt: r.createdAt || "" })),
+  ];
+  return rows.sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt));
+}
+
+/** The months the ledger spans, newest first, today's month always among them; each with how many of its rows wait to be confirmed. */
+export function ledgerMonths(rows, todayIso) {
+  const m = new Map([[monthOf(todayIso), 0]]);
+  for (const r of rows) m.set(monthOf(r.date), (m.get(monthOf(r.date)) || 0) + (r.kind === "pending" ? 1 : 0));
+  return [...m].map(([month, toConfirm]) => ({ month, toConfirm })).sort((a, b) => b.month.localeCompare(a.month));
+}

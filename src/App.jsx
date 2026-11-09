@@ -10,7 +10,7 @@ import { fmtNumber, numOrNull, orderTotals, vatOption, VAT_OPTIONS } from "./mon
 import { DUE_TONE, dueLabel, dueState, groupByCustomer, PAY_STATUSES, PAY_STATUS_TONE, payStatus } from "./payments";
 import { sortLanesByPod } from "./lanes";
 import { lineCover, pfiLineCover, pfiShortages, poShortages } from "./allocation";
-import { PAY_COMPANIES, diffTone, difference, fmtDiff, forSale, isConfirmed, splitExpected, toConfirmCount, unmatched } from "./paymentsReceived";
+import { PAY_COMPANIES, diffTone, difference, fmtDiff, forSale, isConfirmed, ledgerMonths, ledgerRows, monthOf, splitExpected, toConfirmCount } from "./paymentsReceived";
 import { homeFor, pathFor, sectionAllowed, stateFor } from "./routes";
 import { PAGE_SIZES, firstPage, needsPager, nextPager, pageLabel, pageOf } from "./pager";
 import { BOOKING_STATUSES, BOOKING_STATUS_LABEL, BOOKING_STATUS_TONE, LOADING_METHODS, SHIPMENT_MODES, SHIPMENT_SUBTYPES, bookingFromPfi, bookingOf, bookingStatus, emptyBooking, etaSoon, etaSoonText, loadedForDelivery } from "./booking";
@@ -534,6 +534,27 @@ const GlobalStyle = () => (
     .pay-table th.num, .pay-table td.num { text-align:right; padding-right:18px; min-width:110px; white-space:nowrap; }
     .qb-cell { font-size:11.5px; color:#5B6770; white-space:nowrap; }
     .pay-confirm-del { display:inline-flex; gap:6px; align-items:center; }
+    .pay-ledger-bars { display:flex; gap:12px; flex-wrap:wrap; align-items:flex-start; }
+    .pay-ledger-bars .pill-tabs { margin-bottom:14px; flex-wrap:wrap; }
+    .pay-ledger th.pay-group { text-align:center; color:#fff; font-size:11px; letter-spacing:.06em; height:26px; padding:0 8px; line-height:26px; top:0; }
+    .pay-ledger th.pay-group.finance { background:#2F7A52; }
+    .pay-ledger th.pay-group.sales { background:#D97B2B; }
+    .pay-ledger th.pay-group.blank { background:#F7FBF8; }
+    .pay-ledger thead tr:last-child th { top:27px; white-space:normal; line-height:1.2; vertical-align:bottom; max-width:110px; }
+    .pay-ledger td { font-size:12.5px; }
+    .pay-ledger th.num, .pay-ledger td.num { min-width:96px; padding-right:12px; }
+    .pay-ledger td.wrap { white-space:normal; min-width:150px; max-width:220px; line-height:1.25; }
+    .pay-ledger th:first-child, .pay-ledger .ro:first-child { padding-left:12px; }
+    .pay-ledger th:last-child, .pay-ledger td:last-child { position:sticky; right:0; background:#fff; box-shadow:inset 1px 0 0 #E5E9E9; z-index:1; }
+    .pay-ledger th:last-child { background:#F7FBF8; z-index:2; }
+    .pay-ledger tr:hover td:last-child { background:#F7FBF8; }
+    .pay-ledger th.sales-start, .pay-ledger td.sales-start { border-left:2px solid #E5E9E9; }
+    .pay-ledger td.pay-off { background:#FBE3E3; }
+    .pay-ledger td.pay-off .pay-diff { color:#B23B3B; }
+    .pay-ledger tr.pending td:first-child { box-shadow:inset 3px 0 0 #D9A441; }
+    .pay-ledger .pay-sub { font-size:11px; color:#7C8891; font-weight:400; }
+    .pay-ledger input.pay-tick { width:16px; height:16px; min-width:0; margin:0; accent-color:#2F7A52; pointer-events:none; }
+    .chip.violet { background:#EADDF7; color:#5B2E91; }
     .pill-count { display:inline-block; min-width:18px; padding:0 5px; margin-left:4px; border-radius:9px; background:#2F7A52; color:#fff; font-size:10.5px; font-weight:700; line-height:18px; text-align:center; }
     .pill.active .pill-count { background:#fff; color:#2F7A52; }
     .cal-party { display:inline-block; flex:none; min-width:13px; text-align:center; font-size:9px; font-weight:700; line-height:13px; border-radius:2px; background:rgba(255,255,255,.75); color:#3A4147; margin-left:-1px; }
@@ -4545,7 +4566,7 @@ function WarehouseTab({ events, actions, userName, me, reps = [] }) {
    and the money nobody announced. Admin: both views. The data: expectedPayments (the rep's) and receivedPayments (the accountant's), see paymentsReceived.js. */
 
 const EMPTY_EXPECTED = { date: "", company: PAY_COMPANIES[0], currency: CURRENCIES[0], expectedAmount: "", sender: "", customer: "", proof: false, invNo: "" };
-const EMPTY_RECEIVED = { receivedDate: "", company: PAY_COMPANIES[0], currency: CURRENCIES[0], receivedAmount: "", sender: "", customer: "", qb: { date: "", time: "", done: false, addedBy: "" } };
+const EMPTY_RECEIVED = { receivedDate: "", company: PAY_COMPANIES[0], currency: CURRENCIES[0], receivedAmount: "", sender: "", customer: "", remark: "", qb: { date: "", time: "", done: false, addedBy: "" } };
 const fmtAmount = (n) => (numOrNull(n) === null ? "—" : fmtNumber(n));
 const amountOk = (v) => (numOrNull(v) ?? 0) > 0;
 /** A row in the shape of a form: the form's keys, filled from the row. */
@@ -4575,7 +4596,7 @@ function ReceivedFields({ value, onChange, expected }) {
   const diff = expected ? difference(expected, value) : null;
   return (
     <>
-      <div className="form-grid pay-grid" style={{ gridTemplateColumns: "130px 90px 90px 140px 1fr 1fr", marginBottom: 10 }}>
+      <div className="form-grid pay-grid" style={{ gridTemplateColumns: expected ? "130px 90px 90px 140px 1fr 1fr" : "130px 90px 90px 140px 1fr 1fr 1fr", marginBottom: 10 }}>
         <div><label>Date received</label><DateField value={value.receivedDate} onChange={(v) => set({ receivedDate: v })} /></div>
         <div><label>Company</label><select aria-label="Company" value={value.company} onChange={(e) => set({ company: e.target.value })}>{PAY_COMPANIES.map((c) => <option key={c} value={c}>{c}</option>)}</select></div>
         <div><label>Currency</label><select aria-label="Currency" value={value.currency} onChange={(e) => set({ currency: e.target.value })}>{CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}</select></div>
@@ -4586,6 +4607,7 @@ function ReceivedFields({ value, onChange, expected }) {
         </div>
         <div><label>Sender name</label><input aria-label="Sender name" placeholder="Name on the bank statement" value={value.sender} onChange={(e) => set({ sender: e.target.value })} /></div>
         {!expected && <div><label>Customer <span className="muted">(if known)</span></label><input aria-label="Customer name" placeholder="Customer" value={value.customer} onChange={(e) => set({ customer: e.target.value })} /></div>}
+        <div><label>Remark</label><input aria-label="Remark" placeholder="Anything worth noting" value={value.remark || ""} onChange={(e) => set({ remark: e.target.value })} /></div>
       </div>
       <div className="pay-qb">
         <div className="pay-qb-title">Add to QuickBooks</div>
@@ -4613,14 +4635,14 @@ const qbText = (qb) => {
   return `${qb.done ? "Done" : "Not yet"}${when ? ` · ${when}` : ""}${qb.addedBy ? ` · ${qb.addedBy}` : ""}`;
 };
 /** One list of payments: the card, the empty states, the table scaffold; each tab supplies its header cells and a row renderer. */
-function PayTable({ list, rows, pager, emptyText, head, children }) {
+function PayTable({ list, rows, pager, emptyText, head, className = "", children }) {
   const empty = (text) => <div className="empty"><CreditCard size={30} /><div style={{ fontWeight: 600 }}>{text}</div></div>;
   return (
     <div className="card">
       {list.length === 0 ? empty(emptyText) : rows.length === 0 ? empty("No payment matches that search") : (
         <>
           <div className="table-scroll">
-            <table className="data-table pay-table" style={{ minWidth: "auto" }}><thead><tr>{head}</tr></thead><tbody>{pager.rows.map(children)}</tbody></table>
+            <table className={`data-table pay-table ${className}`} style={{ minWidth: "auto" }}><thead>{head}</thead><tbody>{pager.rows.map(children)}</tbody></table>
           </div>
           <Pager pager={pager} />
         </>
@@ -4629,47 +4651,58 @@ function PayTable({ list, rows, pager, emptyText, head, children }) {
   );
 }
 
+/** The accountant's row filters: every row of the month, or one kind of them. */
+const LEDGER_FILTERS = [["all", "All"], ["pending", "To confirm"], ["confirmed", "Confirmed"], ["loose", "Unmatched"]];
+const curChip = (c) => <span className={`chip ${c === "EUR" ? "violet" : "blue"}`}>{c}</span>;
+
+/**
+ * Sale: their own expected payments, Expected (pending) and Confirmed. Accountant and Admin: the finance Excel — one ledger a month,
+ * every payment one row, the bank's side (finance) on the left and the rep's (sales) on the right; the pending ones wait for Confirm.
+ */
 function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actions, userName, reps = [] }) {
   const isRep = mode === "sale";
   const today = todayLocalIso();
   const freshExpected = (over = {}) => ({ ...EMPTY_EXPECTED, date: today, ...over });
   const freshReceived = (over = {}) => ({ ...EMPTY_RECEIVED, receivedDate: today, ...over, qb: { ...EMPTY_RECEIVED.qb, addedBy: userName || "", ...(over.qb || {}) } });
-  const [tab, setTab] = useState(isRep ? "expected" : "toconfirm");
+  const [tab, setTab] = useState(isRep ? "expected" : "all"); // the rep's sub-tab, or the accountant's row filter
+  const [month, setMonth] = useState(monthOf(today));
   const [form, setForm] = useState(freshExpected);
-  const [loose, setLoose] = useState(freshReceived); // the accountant's unannounced money
+  const [loose, setLoose] = useState(null); // the accountant's dialog for money nobody announced
   const [editing, setEditing] = useState(null); // { kind: "expected" | "received", row, draft, expected }
   const [confirming, setConfirming] = useState(null); // { expected, draft }
   const [removing, setRemoving] = useState(null); // the id whose delete awaits a second click
   const [find, setFind] = useState("");
   const repName = (id) => nameOf(reps, id);
-
-  const mine = React.useMemo(() => (isRep ? forSale(expected, saleId) : expected || []), [expected, isRep, saleId]);
-  const { pending, confirmed } = React.useMemo(() => splitExpected(mine, received), [mine, received]);
-  const unannounced = React.useMemo(() => (isRep ? [] : unmatched(received, expected || [])), [isRep, received, expected]); // a receipt whose expected payment is gone shows here too
-  const TABS = isRep
-    ? [["expected", "Expected", pending], ["confirmed", "Confirmed", confirmed]]
-    : [["toconfirm", "To confirm", pending], ["confirmed", "Confirmed", confirmed], ["unmatched", "Unmatched", unannounced]];
-  const list = (TABS.find(([key]) => key === tab) || TABS[0])[2];
   const fq = find.trim().toLowerCase();
-  const rows = fq ? list.filter((r) => [r.customer, r.sender, r.invNo, r.saleName, repName(r.saleId), r.expectedAmount, r.receivedAmount, r.confirmation && r.confirmation.sender].some((f) => String(f || "").toLowerCase().includes(fq))) : list;
-  const pager = usePager(rows, { resetKey: `${tab}|${find}` }); // another sub-tab starts on page 1
+  const has = (fields) => fields.some((f) => String(f || "").toLowerCase().includes(fq));
+
+  const scope = React.useMemo(() => (isRep ? forSale(expected, saleId) : expected || []), [expected, isRep, saleId]);
+  const { pending, confirmed } = React.useMemo(() => splitExpected(scope, received), [scope, received]);
+  const ledger = React.useMemo(() => (isRep ? [] : ledgerRows(expected, received)), [isRep, expected, received]);
+  const months = React.useMemo(() => ledgerMonths(ledger, today), [ledger, today]);
+  const inMonth = fq ? ledger : ledger.filter((r) => monthOf(r.date) === month); // a search spans every month
+  const countOf = (kind) => inMonth.filter((r) => r.kind === kind).length;
+  const list = isRep ? (tab === "confirmed" ? confirmed : pending) : tab === "all" ? inMonth : inMonth.filter((r) => r.kind === tab);
+  const rows = !fq ? list : isRep
+    ? list.filter((e) => has([e.customer, e.sender, e.invNo, e.expectedAmount, e.confirmation && e.confirmation.receivedAmount, e.confirmation && e.confirmation.sender]))
+    : list.filter(({ expected: e, received: r }) => has([...(e ? [e.customer, e.sender, e.invNo, e.saleName, repName(e.saleId), e.expectedAmount] : []), ...(r ? [r.customer, r.sender, r.receivedAmount, r.remark, r.confirmedBy, r.qb && r.qb.addedBy] : [])]));
+  const pager = usePager(rows, { resetKey: `${tab}|${month}|${find}` }); // another sub-tab or month starts on page 1
 
   const addExpected = () => {
     if (!amountOk(form.expectedAmount) || !form.customer.trim()) return;
     actions.addExpectedPayment({ ...form, saleId, saleName, createdBy: userName });
     setForm(freshExpected({ company: form.company, currency: form.currency }));
   };
-  const addLoose = () => {
-    if (!amountOk(loose.receivedAmount)) return;
+  const saveLoose = () => {
+    if (!loose || !amountOk(loose.receivedAmount)) return;
     actions.addReceivedPayment({ ...loose, expectedId: "", confirmedBy: userName });
-    setLoose(freshReceived({ company: loose.company, currency: loose.currency }));
+    setLoose(null);
   };
   const openConfirm = (e) => setConfirming({ expected: e, draft: freshReceived({ company: e.company, currency: e.currency, receivedAmount: e.expectedAmount, sender: e.sender || "" }) });
   const saveConfirm = () => {
     if (!confirming || !amountOk(confirming.draft.receivedAmount)) return;
     actions.addReceivedPayment({ ...confirming.draft, expectedId: confirming.expected.id, saleId: confirming.expected.saleId, customer: confirming.expected.customer, confirmedBy: userName });
     setConfirming(null);
-    setTab("confirmed");
   };
   const openEdit = (kind, row, exp = null) => setEditing({ kind, row, expected: exp, draft: draftOf(kind === "expected" ? EMPTY_EXPECTED : EMPTY_RECEIVED, row) });
   const saveEdit = () => {
@@ -4692,12 +4725,24 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
   };
   const remover = (onRemove, label) => (id) => <PayRemove id={id} label={label} removing={removing} onAsk={setRemoving} onCancel={() => setRemoving(null)} onRemove={onRemove} />;
   const removeExpectedCtl = remover(removeExpected); const removeReceivedCtl = remover(removeReceived); const removeConfirmedCtl = remover(removeConfirmed);
+  const ledgerEmpty = fq ? "No payment matches that search" : tab === "pending" ? "Nothing to confirm" : tab === "confirmed" ? "Nothing confirmed" : tab === "loose" ? "No unannounced money" : `No payment in ${monthLabel(`${month}-01`)}`;
 
   return (
     <div>
-      <div className="pill-tabs">
-        {TABS.map(([key, label, l]) => <div key={key} className={`pill ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>{label} {l.length > 0 && <span className="pill-count">{l.length}</span>}</div>)}
-      </div>
+      {isRep ? (
+        <div className="pill-tabs">
+          {[["expected", "Expected", pending], ["confirmed", "Confirmed", confirmed]].map(([key, label, l]) => <div key={key} className={`pill ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>{label} {l.length > 0 && <span className="pill-count">{l.length}</span>}</div>)}
+        </div>
+      ) : (
+        <div className="pay-ledger-bars">
+          <div className="pill-tabs pay-months" aria-label="Months">
+            {months.map((m) => <div key={m.month} className={`pill ${month === m.month ? "active" : ""}`} onClick={() => setMonth(m.month)}>{monthLabel(`${m.month}-01`)} {m.toConfirm > 0 && <span className="pill-count">{m.toConfirm}</span>}</div>)}
+          </div>
+          <div className="pill-tabs" aria-label="Rows">
+            {LEDGER_FILTERS.map(([key, label]) => <div key={key} className={`pill ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>{label} {key !== "all" && countOf(key) > 0 && <span className="pill-count">{countOf(key)}</span>}</div>)}
+          </div>
+        </div>
+      )}
 
       {isRep && tab === "expected" && (
         <div className="card" style={{ marginBottom: 14 }}>
@@ -4710,29 +4755,18 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
           </div>
         </div>
       )}
-      {!isRep && tab === "unmatched" && (
-        <div className="card" style={{ marginBottom: 14 }}>
-          <div className="add-form" style={{ borderBottom: "none" }}>
-            <ReceivedFields value={loose} onChange={setLoose} expected={null} />
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10 }}>
-              <button className="btn btn-accent" disabled={!amountOk(loose.receivedAmount)} onClick={addLoose}><Plus size={14} /> Add received payment</button>
-              <span className="muted" style={{ fontSize: 12 }}>Money on the bank statement that no rep announced.</span>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="overview-bar">
-        <FindBar value={find} onChange={setFind} placeholder="Find by customer, sender, INV or rep…" total={list.length} shown={rows.length} />
+        <FindBar value={find} onChange={setFind} placeholder={isRep ? "Find by customer, sender, INV or amount…" : "Find by customer, sender, INV, rep, remark or amount — every month…"} total={list.length} shown={rows.length} />
+        {!isRep && <button className="btn btn-accent" onClick={() => setLoose(freshReceived())}><Plus size={14} /> Add received payment</button>}
       </div>
 
-      {(tab === "expected" || tab === "toconfirm") && (
-        <PayTable list={list} rows={rows} pager={pager} emptyText={isRep ? "Nothing expected right now" : "Nothing to confirm"}
-          head={<><th>Date</th>{!isRep && <th>Sale rep</th>}<th>Customer</th><th>Company</th><th>Currency</th><th className="num">Expected</th><th>Sender</th><th>Proof</th><th>INV</th><th /></>}>
+      {isRep && tab === "expected" && (
+        <PayTable list={list} rows={rows} pager={pager} emptyText="Nothing expected right now"
+          head={<tr><th>Date</th><th>Customer</th><th>Company</th><th>Currency</th><th className="num">Expected</th><th>Sender</th><th>Proof</th><th>INV</th><th /></tr>}>
           {(e) => (
             <tr key={e.id} className="pay-row pending">
               <td className="ro">{fmtDate(e.date) || "—"}</td>
-              {!isRep && <td className="ro">{e.saleName || repName(e.saleId) || "—"}</td>}
               <td className="ro" style={{ fontWeight: 600 }}>{e.customer || "—"}</td>
               <td className="ro">{e.company}</td>
               <td className="ro">{e.currency}</td>
@@ -4740,22 +4774,18 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
               <td className="ro">{e.sender || "—"}</td>
               <td><span className={`chip ${e.proof ? "green" : "gray"}`}>{e.proof ? "Yes" : "No"}</span></td>
               <td className="ro">{e.invNo || "—"}</td>
-              <td style={{ whiteSpace: "nowrap" }}>
-                {!isRep && <><button className="btn btn-sm btn-accent" onClick={() => openConfirm(e)}>Confirm</button>{" "}</>}
-                <button className="btn btn-sm" onClick={() => openEdit("expected", e)}>Edit</button>{" "}{removeExpectedCtl(e.id)}
-              </td>
+              <td style={{ whiteSpace: "nowrap" }}><button className="btn btn-sm" onClick={() => openEdit("expected", e)}>Edit</button>{" "}{removeExpectedCtl(e.id)}</td>
             </tr>
           )}
         </PayTable>
       )}
 
-      {tab === "confirmed" && (
+      {isRep && tab === "confirmed" && (
         <PayTable list={list} rows={rows} pager={pager} emptyText="Nothing confirmed yet"
-          head={<><th>Date received</th>{!isRep && <th>Sale rep</th>}<th>Customer</th><th>Company</th><th>Currency</th><th className="num">Expected</th><th className="num">Received</th><th className="num">Difference</th><th>Sender (bank)</th><th>QuickBooks</th><th>Confirmed by</th>{!isRep && <th />}</>}>
+          head={<tr><th>Date received</th><th>Customer</th><th>Company</th><th>Currency</th><th className="num">Expected</th><th className="num">Received</th><th className="num">Difference</th><th>Sender (bank)</th><th>QuickBooks</th><th>Confirmed by</th></tr>}>
           {(e) => (
             <tr key={e.id} className="pay-row confirmed">
               <td className="ro">{fmtDate(e.confirmation.receivedDate) || "—"}</td>
-              {!isRep && <td className="ro">{e.saleName || repName(e.saleId) || "—"}</td>}
               <td className="ro" style={{ fontWeight: 600 }}>{e.customer || "—"}<div className="muted" style={{ fontSize: 11 }}>expected {fmtDate(e.date)}{e.invNo ? ` · INV ${e.invNo}` : ""}</div></td>
               <td className="ro">{e.confirmation.company}</td>
               <td className="ro">{e.confirmation.currency}</td>
@@ -4765,37 +4795,52 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
               <td className="ro">{e.confirmation.sender || "—"}</td>
               <td className="ro qb-cell">{qbText(e.confirmation.qb)}</td>
               <td className="ro">{e.confirmation.confirmedBy || "—"}</td>
-              {!isRep && (
-                <td style={{ whiteSpace: "nowrap" }}>
-                  <button className="btn btn-sm" onClick={() => openEdit("received", e.confirmation, e)}>Edit</button>{" "}
-                  <button className="btn btn-sm" title="Back to To confirm: the confirmation is removed, the rep's announcement stays" onClick={() => undoConfirmation(e)}>Undo</button>{" "}
-                  {removeConfirmedCtl(e.id)}
-                </td>
-              )}
             </tr>
           )}
         </PayTable>
       )}
 
-      {!isRep && tab === "unmatched" && (
-        <PayTable list={list} rows={rows} pager={pager} emptyText="No unannounced money"
-          head={<><th>Date received</th><th>Customer</th><th>Company</th><th>Currency</th><th className="num">Received</th><th>Sender (bank)</th><th>QuickBooks</th><th>Entered by</th><th /></>}>
-          {(r) => (
-            <tr key={r.id} className="pay-row loose">
-              <td className="ro">{fmtDate(r.receivedDate) || "—"}</td>
-              <td className="ro" style={{ fontWeight: 600 }}>{r.customer || "—"}</td>
-              <td className="ro">{r.company}</td>
-              <td className="ro">{r.currency}</td>
-              <td className="ro num sm-mono">{fmtAmount(r.receivedAmount)}</td>
-              <td className="ro">{r.sender || "—"}</td>
-              <td className="ro qb-cell">{qbText(r.qb)}</td>
-              <td className="ro">{r.confirmedBy || "—"}</td>
-              <td style={{ whiteSpace: "nowrap" }}><button className="btn btn-sm" onClick={() => openEdit("received", r)}>Edit</button>{" "}{removeReceivedCtl(r.id)}</td>
+      {!isRep && (
+        <PayTable list={list} rows={rows} pager={pager} emptyText={ledgerEmpty} className="pay-ledger"
+          head={<>
+            <tr><th className="pay-group finance" colSpan={5}>Details entered by Finance</th><th className="pay-group sales" colSpan={9}>Details confirmed by Sales</th><th className="pay-group blank" /></tr>
+            <tr><th>Date</th><th>Company</th><th>Currency</th><th className="num">Amount received</th><th>Sender</th><th className="sales-start">Date of confirmation</th><th>Customer</th><th>Currency</th><th className="num">Amount expected</th><th className="num">Amount different</th><th>Proof of payment</th><th>Entered by</th><th>Date &amp; time added in QB</th><th>Remark</th><th /></tr>
+          </>}>
+          {({ kind, id, expected: e, received: r, diff }) => (
+            <tr key={id} className={`pay-row ${kind}`}>
+              <td className="ro">{r ? fmtDate(r.receivedDate) || "—" : "—"}</td>
+              <td>{r ? <span className="chip blue">{r.company}</span> : "—"}</td>
+              <td>{r ? curChip(r.currency) : "—"}</td>
+              <td className="ro num sm-mono">{r ? fmtAmount(r.receivedAmount) : "—"}</td>
+              <td className="ro wrap">{r ? r.sender || "—" : "—"}</td>
+              <td className="ro sales-start">{e ? fmtDate(e.date) || "—" : "—"}</td>
+              <td className="ro wrap" style={{ fontWeight: 600 }}>{(e ? e.customer : r.customer) || "—"}{e && e.invNo && <div className="pay-sub">INV {e.invNo}</div>}</td>
+              <td>{e ? curChip(e.currency) : "—"}</td>
+              <td className="ro num sm-mono">{e ? fmtAmount(e.expectedAmount) : "—"}</td>
+              <td className={`num ${diff ? "pay-off" : ""}`}>{e && r ? <PayDiff value={diff} /> : "—"}</td>
+              <td>{e ? <input type="checkbox" className="pay-tick" aria-label="Proof of payment" checked={!!e.proof} readOnly /> : "—"}</td>
+              <td className="ro">{e ? e.saleName || repName(e.saleId) || "—" : r.confirmedBy || "—"}</td>
+              <td className="ro qb-cell">{r ? qbText(r.qb) : "—"}</td>
+              <td className="ro wrap">{r ? r.remark || "—" : "—"}</td>
+              <td style={{ whiteSpace: "nowrap" }}>
+                {kind === "pending" && <><button className="btn btn-sm btn-accent" onClick={() => openConfirm(e)}>Confirm</button>{" "}<button className="btn btn-sm" onClick={() => openEdit("expected", e)}>Edit</button>{" "}{removeExpectedCtl(e.id)}</>}
+                {kind === "confirmed" && <><button className="btn btn-sm" onClick={() => openEdit("received", r, e)}>Edit</button>{" "}<button className="btn btn-sm" title="Back to To confirm: the confirmation is removed, the rep's announcement stays" onClick={() => undoConfirmation(e)}>Undo</button>{" "}{removeConfirmedCtl(e.id)}</>}
+                {kind === "loose" && <><button className="btn btn-sm" onClick={() => openEdit("received", r)}>Edit</button>{" "}{removeReceivedCtl(r.id)}</>}
+              </td>
             </tr>
           )}
         </PayTable>
       )}
 
+      {loose && (
+        <Modal title="Received payment" subtitle="Money on the bank statement that no rep announced" onClose={() => setLoose(null)}>
+          <ReceivedFields value={loose} onChange={setLoose} expected={null} />
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 14 }}>
+            <button className="btn btn-accent" disabled={!amountOk(loose.receivedAmount)} onClick={saveLoose}><Save size={14} /> Save received payment</button>
+            <button className="btn btn-ghost" onClick={() => setLoose(null)}>Cancel</button>
+          </div>
+        </Modal>
+      )}
       {confirming && (
         <Modal title={`Confirm payment — ${confirming.expected.customer || "customer"}`} subtitle={`${confirming.expected.saleName || repName(confirming.expected.saleId)} expects ${confirming.expected.currency} ${fmtAmount(confirming.expected.expectedAmount)} from ${confirming.expected.sender || "—"} · announced ${fmtDate(confirming.expected.date)}`} onClose={() => setConfirming(null)}>
           <ReceivedFields value={confirming.draft} onChange={(draft) => setConfirming({ ...confirming, draft })} expected={confirming.expected} />
@@ -5587,7 +5632,7 @@ export default function App() {
   });
   const receivedFields = (d) => ({
     receivedDate: d.receivedDate || todayLocalIso(), company: PAY_COMPANIES.includes(d.company) ? d.company : PAY_COMPANIES[0], currency: CURRENCIES.includes(d.currency) ? d.currency : CURRENCIES[0],
-    receivedAmount: money(d.receivedAmount), sender: text(d.sender), customer: text(d.customer),
+    receivedAmount: money(d.receivedAmount), sender: text(d.sender), customer: text(d.customer), remark: text(d.remark),
     qb: { date: (d.qb && d.qb.date) || "", time: (d.qb && d.qb.time) || "", done: !!(d.qb && d.qb.done), addedBy: text(d.qb && d.qb.addedBy) },
   });
   const addExpectedPayment = (data) => {
