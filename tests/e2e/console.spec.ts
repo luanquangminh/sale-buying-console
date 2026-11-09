@@ -484,6 +484,11 @@ test("documents: a Loaded PFI's papers show on the buyer's Documents tab; the st
   const status = coos.nth(open).locator('[aria-label="Document status"]');
   await status.selectOption("done");
   await expect(status).toHaveValue("done");
+  const dl = page.waitForEvent("download"); // the sale's invoice file, downloaded from the buyer's tab
+  await detail.locator(".doc-file-link", { hasText: "invoice-3200" }).first().click();
+  const file = await dl;
+  expect(file.suggestedFilename()).toBe("invoice-3200.txt");
+  expect(await (await import("node:fs/promises")).readFile((await file.path())!, "utf8")).toContain("INVOICE 3200");
   await page.getByLabel("Show done").check(); // all Done or not, the PFI stays listed
   await expect(docRow).toBeVisible();
   expect(await doneCount()).toBe(before + 1);
@@ -495,6 +500,122 @@ test("documents: a Loaded PFI's papers show on the buyer's Documents tab; the st
   await expect(docs.locator(".doc-card", { hasText: COO_NOTE }).first()).toBeVisible();
   await expect(docs.locator(".doc-status-row", { hasText: "Done" })).toHaveCount(before + 1); // one more paper Done than the buyer found
   await close(page);
+});
+
+test("documents, in detail: a PFI reaches the tab only once Loaded; the sale's INV number survives the buyer's save; a PFI with every paper Done leaves the tab until Show done; the admin sets statuses there too", async ({ browser, baseURL }) => {
+  const COO_NOTE = "E2E: 1 original"; const HC_NOTE = "E2E: vet stamp";
+  await wipeBookings(baseURL!, "Acme Foods Ltd"); // the Loaded save below adds a booking; one from an earlier run would make two
+  const saleCtx = await browser.newContext(); const sale = await saleCtx.newPage(); watchPushes(sale);
+  const buyerCtx = await browser.newContext(); const buyer = await buyerCtx.newPage(); watchPushes(buyer);
+  const pfiRow = sale.locator(".pfi-list-row", { hasText: "PFI 3901" });
+  const removePfi = async () => {
+    await openDetail(sale, pfiRow);
+    await sale.getByRole("button", { name: "Delete PFI" }).click();
+    await sale.getByRole("button", { name: "Yes, delete" }).click();
+    await expect(pfiRow).toHaveCount(0);
+  };
+  const saleDocs = sale.locator(".detail-body .section-card", { hasText: "Documents" });
+  const invNo = saleDocs.locator('[aria-label="INV no."]');
+  const loaded = sale.locator(".detail-body .mini-field", { hasText: "Loaded or not" }).locator("select");
+  const docRow = buyer.locator(".docs-row", { hasText: "PFI 3901" });
+
+  // 1. The sale makes PFI 3901 with two papers, neither applied yet.
+  await signIn(sale, A.sale.username, A.sale.password);
+  await side(sale, "Order Tracking").click();
+  if (await pfiRow.count()) await removePfi(); // left by an aborted run
+  await sale.getByRole("button", { name: "Add PFI" }).click();
+  const pfiForm = sale.locator(".add-form").first();
+  await pfiForm.locator("input").nth(0).fill("3901");
+  await pfiForm.locator("select").first().selectOption({ label: "Acme Foods Ltd" });
+  await sale.getByRole("button", { name: "Create PFI" }).click();
+  await sale.locator(".detail-body").waitFor();
+  const docForm = saleDocs.locator(".mini-form-row");
+  for (const [type, note] of [["COO", COO_NOTE], ["HC", HC_NOTE]]) {
+    await docForm.locator("select").selectOption(type);
+    await docForm.locator("textarea").fill(note);
+    await docForm.getByRole("button", { name: "Add" }).click();
+    await expect(saleDocs.locator(".doc-card", { hasText: note })).toHaveCount(1);
+  }
+  await save(sale);
+  await close(sale);
+
+  // 2. Not Loaded: the buyer's tab does not list it.
+  await signIn(buyer, A.buyer.username, A.buyer.password);
+  await side(buyer, "Documents").click();
+  await expect(buyer).toHaveURL(/\/buyer\/documents$/);
+  await expect(buyer.locator(".card")).toContainText(/No Loaded PFI has documents to apply|PFI/, SLOW); // the tab has rendered
+  await expect(docRow).toHaveCount(0);
+
+  // 3. The sale sets it Loaded; the buyer opens it (its draft has no INV number yet); only then the sale types the INV number.
+  await openDetail(sale, pfiRow);
+  await loaded.selectOption("loaded");
+  await save(sale);
+  await close(sale);
+  await buyer.reload(); // delivery is shared and saved as the draft has it: the buyer must open the Loaded record, not a stale one
+  await side(buyer, "Orders to update").click();
+  await openDetail(buyer, await order(buyer, "PFI 3901"));
+  await expect(buyer.locator(".detail-body .mini-field", { hasText: "Loaded or not" }).locator("select")).toHaveValue("loaded");
+  await expect(buyer.locator(".detail-body .section-card", { hasText: "Documents" })).toContainText("INV no. —");
+  await openDetail(sale, pfiRow);
+  await invNo.fill("INV-3901");
+  await save(sale);
+  await close(sale);
+
+  // 4. The buyer saves its stale draft with the COO Done: the sale's INV number stays, the status lands.
+  await buyer.locator(".detail-body .doc-card", { hasText: COO_NOTE }).locator("select").selectOption("done");
+  await save(buyer);
+  await close(buyer);
+  await openDetail(sale, pfiRow);
+  await expect(invNo).toHaveValue("INV-3901");
+  await expect(saleDocs.locator(".doc-card", { hasText: COO_NOTE }).locator(".doc-status-row")).toContainText("Done");
+  await expect(saleDocs.locator(".doc-card", { hasText: HC_NOTE }).locator(".doc-status-row")).not.toContainText("Done");
+  await close(sale);
+
+  // 5. Loaded now: the tab lists it with the INV number and the count; the find box narrows; every paper Done hides it until Show done.
+  await buyer.reload(); // the buyer's own copy is the draft it pushed; the merged record (with the INV number) comes with the next fetch
+  await side(buyer, "Documents").click();
+  await expect(docRow).toBeVisible(SLOW);
+  await expect(docRow).toContainText("INV-3901");
+  await expect(docRow.locator(".chip")).toHaveText(/1 of 2 done/i);
+  const find = buyer.getByPlaceholder("Find by PFI, INV no., customer, sale");
+  await find.fill("INV-3901");
+  await expect(buyer.locator(".docs-row")).toHaveCount(1);
+  await find.fill("");
+  await docRow.click();
+  const detail = buyer.locator(".docs-detail");
+  await expect(detail).toContainText("PFI 3901 · INV INV-3901");
+  await detail.locator(".doc-card", { hasText: HC_NOTE }).locator('[aria-label="Document status"]').selectOption("done");
+  await expect(docRow).toHaveCount(0); // all Done, Show done unticked
+  await buyer.getByLabel("Show done").check();
+  await expect(docRow).toBeVisible();
+  await expect(docRow.locator(".chip")).toHaveText(/2 of 2 done/i);
+  await expect(docRow.locator(".chip")).toHaveClass(/green/);
+  await settled(buyer);
+
+  // 6. The admin reaches the tab by its address and sets a status there too; a sale is sent home from it.
+  await signIn(sale, A.admin.username, A.admin.password);
+  await sale.goto("/buyer/documents");
+  await expect(sale).toHaveURL(/\/buyer\/documents$/);
+  await expect(pill(sale, "Documents")).toHaveClass(/active/);
+  await sale.getByLabel("Show done").check();
+  const adminRow = sale.locator(".docs-row", { hasText: "PFI 3901" });
+  await expect(adminRow).toBeVisible(SLOW);
+  await adminRow.click();
+  await sale.locator(".docs-detail .doc-card", { hasText: HC_NOTE }).locator('[aria-label="Document status"]').selectOption("applied");
+  await expect(adminRow.locator(".chip")).toHaveText(/1 of 2 done/i);
+  await settled(sale);
+  await signIn(sale, A.sale.username, A.sale.password);
+  await sale.goto("/buyer/documents");
+  await expect.poll(() => new URL(sale.url()).pathname).not.toMatch(/\/buyer\/documents$/);
+  await expect(sale.getByText("Log out")).toBeVisible(SLOW);
+
+  // 7. Cleanup: the PFI goes, and the booking its Loaded save made.
+  await side(sale, "Order Tracking").click();
+  await removePfi();
+  await settled(sale);
+  await wipeBookings(baseURL!, "Acme Foods Ltd");
+  await settled(buyer);
+  await buyerCtx.close(); await saleCtx.close();
 });
 
 test("the left menu stays put while the page scrolls", async ({ page }) => {

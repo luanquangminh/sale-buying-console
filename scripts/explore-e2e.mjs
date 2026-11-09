@@ -57,9 +57,9 @@ await step("admin creates three accounts", async () => {
 await step("each role sees only its tabs", async () => {
   await login("exp-sale", EXP_PASS);
   for (const t of ["Customer", "Order Tracking", "Container Rate"]) expect((await side(t).count()) === 1, `sale tab ${t}`);
-  for (const t of ["Delivery Booking", "Mai", "Jobs", "Accounts"]) expect((await side(t).count()) === 0, `sale must not see ${t}`);
+  for (const t of ["Delivery Booking", "Documents", "Mai", "Jobs", "Accounts"]) expect((await side(t).count()) === 0, `sale must not see ${t}`);
   await login("exp-buyer", EXP_PASS);
-  for (const t of ["Inbox", "Orders to update", "PO Tracking", "Jobs", "Container Rate", "Delivery Booking"]) expect((await side(t).count()) === 1, `buyer tab ${t}`);
+  for (const t of ["Inbox", "Orders to update", "Documents", "PO Tracking", "Jobs", "Container Rate", "Delivery Booking"]) expect((await side(t).count()) === 1, `buyer tab ${t}`);
   for (const t of ["Mai", "Accounts"]) expect((await side(t).count()) === 0, `buyer must not see ${t}`);
   await login("exp-admin", EXP_PASS);
   for (const t of ["Explorer Sale", "Buyer Space", "Mai", "Container Rate", "Delivery Booking", "Accounts"]) expect((await side(t).count()) === 1, `admin tab ${t}`);
@@ -230,7 +230,7 @@ await step("booking as buyer: all fields, 2-digit year, status, search by sale n
   await field("Rate").locator('input[type="number"]').fill("2100");
   const lb = field("Loading booked"); await lb.locator('input[type="text"]').fill("3/11/26"); await lb.locator('input[type="text"]').press("Enter");
   await field("Loading time").locator('input[type="time"]').fill("09:30");
-  await field("Status").locator("select").selectOption("loaded");
+  await page.getByLabel("Status set by hand").selectOption("loaded"); // since v1.17 the Status field is the computed chip; the hand-set value has its own select
   await page.getByRole("button", { name: "Done editing" }).click(); await settle();
   const row = page.locator(".booking-row", { hasText: "Exp Booking Ltd" });
   const txt = (await row.innerText()).replace(/\n/g, " | ");
