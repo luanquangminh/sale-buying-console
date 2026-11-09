@@ -546,27 +546,24 @@ test("documents, in detail: a PFI reaches the tab only once Loaded; the sale's I
   await expect(buyer.locator(".card")).toContainText(/No Loaded PFI has documents to apply|PFI/, SLOW); // the tab has rendered
   await expect(docRow).toHaveCount(0);
 
-  // 3. The sale sets it Loaded; the buyer opens it (its draft has no INV number yet); only then the sale types the INV number.
-  await openDetail(sale, pfiRow);
-  await loaded.selectOption("loaded");
-  await save(sale);
-  await close(sale);
-  await buyer.reload(); // delivery is shared and saved as the draft has it: the buyer must open the Loaded record, not a stale one
+  // 3. The buyer opens the PFI first: its draft knows neither the INV number nor Loaded. Only then the sale sets both.
   await side(buyer, "Orders to update").click();
   await openDetail(buyer, await order(buyer, "PFI 3901"));
-  await expect(buyer.locator(".detail-body .mini-field", { hasText: "Loaded or not" }).locator("select")).toHaveValue("loaded");
+  await expect(buyer.locator(".detail-body .mini-field", { hasText: "Loaded or not" }).locator("select")).toHaveValue("not_loaded");
   await expect(buyer.locator(".detail-body .section-card", { hasText: "Documents" })).toContainText("INV no. —");
   await openDetail(sale, pfiRow);
   await invNo.fill("INV-3901");
+  await loaded.selectOption("loaded");
   await save(sale);
   await close(sale);
 
-  // 4. The buyer saves its stale draft with the COO Done: the sale's INV number stays, the status lands.
+  // 4. The buyer saves its stale draft with the COO Done: the INV number and the Loaded flag the sale set meanwhile stay, the status lands.
   await buyer.locator(".detail-body .doc-card", { hasText: COO_NOTE }).locator("select").selectOption("done");
   await save(buyer);
   await close(buyer);
   await openDetail(sale, pfiRow);
   await expect(invNo).toHaveValue("INV-3901");
+  await expect(loaded).toHaveValue("loaded"); // delivery is shared: the stale draft did not undo the sale's Loaded (merge.js)
   await expect(saleDocs.locator(".doc-card", { hasText: COO_NOTE }).locator(".doc-status-row")).toContainText("Done");
   await expect(saleDocs.locator(".doc-card", { hasText: HC_NOTE }).locator(".doc-status-row")).not.toContainText("Done");
   await close(sale);

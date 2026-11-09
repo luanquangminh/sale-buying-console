@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeOtherRole } from "../src/merge.js";
+import { mergeDelivery, mergeOtherRole } from "../src/merge.js";
 
 const line = (id: string, extra: Record<string, unknown> = {}) => ({ id, product: `P${id}`, quantity: 10, rate: 1, orderStatus: "not_ordered", receivedQuantity: "", ...extra });
 const draft = { id: "F", products: [line("a", { product: "Pa (sale edit)" }), line("b")], documents: [{ id: "d1", type: "COO", status: "not_applied" }], payments: [], delivery: { type: "delivery" } };
@@ -36,5 +36,29 @@ describe("mergeOtherRole", () => {
   });
   it("is a no-op without a fresh record", () => {
     expect(mergeOtherRole(draft, null, "sale")).toBe(draft);
+  });
+});
+
+describe("delivery is shared: the block edited later wins, and a known base makes it per field", () => {
+  const stale = { type: "delivery", loaded: "not_loaded", pod: "Tema", updatedAt: "2026-11-01T10:00:00.000Z" };
+  const loaded = { type: "delivery", loaded: "loaded", pod: "Tema", updatedAt: "2026-11-02T10:00:00.000Z" };
+  it("a draft without a newer edit takes the newest record's delivery, for either role", () => {
+    expect(mergeOtherRole({ ...draft, delivery: stale }, { ...fresh, delivery: loaded }, "buyer").delivery).toEqual(loaded);
+    expect(mergeOtherRole({ ...draft, delivery: stale }, { ...fresh, delivery: loaded }, "sale").delivery).toEqual(loaded);
+  });
+  it("a draft edited later keeps its delivery; records from before the stamp fall back to the draft", () => {
+    const later = { ...stale, pod: "Lagos", updatedAt: "2026-11-03T10:00:00.000Z" };
+    expect(mergeDelivery(later, loaded)).toBe(later);
+    const unstamped = { type: "delivery", loaded: "not_loaded" };
+    expect(mergeDelivery(unstamped, { type: "delivery", loaded: "loaded" })).toBe(unstamped);
+    expect(mergeDelivery(unstamped, loaded)).toBe(loaded);
+    expect(mergeDelivery(undefined, loaded)).toBe(loaded);
+  });
+  it("with the record the draft started from, only the fields edited since are kept over the newest record", () => {
+    const base = { delivery: stale };
+    const edited = { ...stale, pod: "Lagos", updatedAt: "2026-11-03T10:00:00.000Z" }; // the buyer typed a POD into its stale draft
+    expect(mergeDelivery(edited, loaded, base)).toEqual({ ...loaded, pod: "Lagos", updatedAt: "2026-11-03T10:00:00.000Z" });
+    expect(mergeDelivery(stale, loaded, base)).toEqual(loaded); // nothing edited: the newest record as it is
+    expect(mergeOtherRole({ ...draft, delivery: edited }, { ...fresh, delivery: loaded }, "buyer", { delivery: stale }).delivery).toMatchObject({ loaded: "loaded", pod: "Lagos" });
   });
 });

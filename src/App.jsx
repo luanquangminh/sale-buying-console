@@ -2478,6 +2478,7 @@ function PfiDetail({ pfi, viewer, actions, pos, highlightProductId }) {
     }
     // Same PFI, new data (a poll or a save). Untouched draft → take it all; edited draft → refresh only what the POs derive.
     const wasDirty = strippedRecord(draft) !== strippedRecord(lastPfi.current) || allocPatches.length > 0 || reorderToggles.length > 0;
+    const base = lastPfi.current; // what the draft was last synced against: the delivery merge keeps only the fields edited since
     lastPfi.current = pfi;
     if (!wasDirty) { setDraft(pfi); return; }
     // Fresh receipts from the POs, with this draft's unsaved receipt edits and "attach to line" moves laid back on top.
@@ -2494,7 +2495,7 @@ function PfiDetail({ pfi, viewer, actions, pos, highlightProductId }) {
     });
     setAllocPatches((prev) => prev.filter((x) => placed.some((e) => e.r.poLineId === x.poLineId && e.r.pfiId === x.pfiId))); // PO row gone remotely → nothing left to save
     setDraft((d0) => {
-      const d = mergeOtherRole(d0, pfi, viewer); // the other role's fields come from the newest record; this role's edits stay
+      const d = mergeOtherRole(d0, pfi, viewer, base); // the other role's fields come from the newest record; this role's edits stay
       const known = new Set(d.products.map((p) => p.id));
       const fixed = placed.map((x) => (x.lineId && !known.has(x.lineId) ? { ...x, lineId: null } : x)); // move target deleted → unmatched
       return {
@@ -2604,7 +2605,7 @@ function PfiDetail({ pfi, viewer, actions, pos, highlightProductId }) {
       <PfiDeliverySection
         delivery={draft.delivery}
         role={isSale ? "sale" : "buyer"}
-        onChange={(patch) => setDraft((d) => ({ ...d, delivery: { ...d.delivery, ...patch } }))}
+        onChange={(patch) => setDraft((d) => ({ ...d, delivery: { ...d.delivery, ...patch, updatedAt: new Date().toISOString() } }))} // stamped: a later edit wins over a stale draft (merge.js)
       />
       <DocumentsSection
         documents={draft.documents}
