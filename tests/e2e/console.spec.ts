@@ -2588,7 +2588,7 @@ test("payments received, in detail: the accountant's ledger places a row by the 
     await expect(row(acc, LOOSE_D)).toContainText("E2E: no announcement");
     await expect(row(acc, LOOSE_D).locator(".qb-cell")).toHaveText(`Done · ${fmtDate(lastDay(3))} 09:30 · E2E Finance`);
     await expect(row(acc, LOOSE_D)).toContainText("E2E Finance"); // Entered by: who typed it
-    await row(acc, LAST_A).locator('[aria-label="Proof of payment"]').click({ force: true }); // the tick is the rep's: it does not flip here
+    await row(acc, LAST_A).locator('[aria-label="Proof of payment"]').dispatchEvent("click"); // the tick is the rep's: a click on it does not flip it (a forced pointer click would land on whatever overlays the cell)
     await expect(row(acc, LAST_A).locator('[aria-label="Proof of payment"]')).not.toBeChecked();
 
     // 4. The row filters within the month.
