@@ -13,6 +13,7 @@ describe("pathFor: every screen has an address", () => {
   });
   it("names the buyer's pages and the single pages", () => {
     expect(pathFor({ topSection: "buyerspace", buyerSubTab: "fulfillment" }, "buyer")).toBe("/buyer/orders-to-update");
+    expect(pathFor({ topSection: "buyerspace", buyerSubTab: "documents" }, "buyer")).toBe("/buyer/documents");
     expect(pathFor({ topSection: "buyerspace" }, "admin")).toBe("/buyer/inbox");
     expect(pathFor({ topSection: "paymentsReceived" }, "accountant")).toBe("/accounting/payments-received");
     expect(pathFor({ topSection: "payments" }, "admin")).toBe("/admin/customer-balance");
@@ -27,7 +28,8 @@ describe("stateFor: an address back to the screen, for the role", () => {
     const cases: Array<[any, string]> = [
       [{ topSection: "customer", subSection: "payments" }, "sale"],
       [{ topSection: "customer", subSection: "orders", selectedSaleId: "sale-2" }, "admin"],
-      [{ topSection: "buyerspace", buyerSubTab: "po" }, "buyer"],
+      [{ topSection: "buyerspace", buyerSubTab: "po" }, "buyer"], [{ topSection: "buyerspace", buyerSubTab: "documents" }, "buyer"],
+      [{ topSection: "buyerspace", buyerSubTab: "documents" }, "admin"],
       [{ topSection: "mai" }, "admin"], [{ topSection: "accounts" }, "admin"], [{ topSection: "payments" }, "admin"],
       [{ topSection: "paymentsReceived" }, "accountant"], [{ topSection: "delivery" }, "buyer"], [{ topSection: "warehouse" }, "warehouse"],
       [{ topSection: "booking" }, "buyer"], [{ topSection: "agent" }, "sale"],
@@ -36,6 +38,7 @@ describe("stateFor: an address back to the screen, for the role", () => {
   });
   it("sends a role home from a page it may not open, or from an address that names nothing", () => {
     expect(stateFor("/buyer/inbox", "sale", { reps })).toBe(null);
+    expect(stateFor("/buyer/documents", "sale", { reps })).toBe(null); // the Documents tab is the buyer's
     expect(stateFor("/admin/accounts", "buyer", { reps })).toBe(null);
     expect(stateFor("/customers", "accountant", { reps })).toBe(null);
     expect(stateFor("/orders", "warehouse", { reps })).toBe(null);
@@ -59,7 +62,7 @@ describe("stateFor: an address back to the screen, for the role", () => {
   });
   it("lists every address once in the site map, and each one parses for every role named on it and for no other", () => {
     expect(new Set(SITE_MAP.map((r) => r.path)).size).toBe(SITE_MAP.length);
-    expect(SITE_MAP.length).toBe(18);
+    expect(SITE_MAP.length).toBe(19);
     for (const { path, roles } of SITE_MAP) {
       expect(roles.length).toBeGreaterThan(0);
       for (const role of ["admin", "sale", "buyer", "warehouse", "accountant"]) {

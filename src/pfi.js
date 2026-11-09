@@ -22,7 +22,7 @@ export function emptyPfiDelivery() {
 
 /** A new PFI from its header; lines, documents and payments come later. A field added here reaches the UI and the MCP tool alike. */
 export function newPfi(id, at, { saleId, saleName, pfiNo, customerId, customerName, currency, paymentTerm = "", incoterm }) {
-  return { id, saleId, saleName, pfiNo, customerId, customerName, currency, paymentTerm, incoterm, createdAt: at, products: [], delivery: emptyPfiDelivery(), documents: [], payments: [] };
+  return { id, saleId, saleName, pfiNo, customerId, customerName, currency, paymentTerm, incoterm, invNo: "", createdAt: at, products: [], delivery: emptyPfiDelivery(), documents: [], payments: [] };
 }
 
 /** The line the buyer's feed gets when a PFI is made. */

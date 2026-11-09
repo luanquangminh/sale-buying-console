@@ -27,6 +27,13 @@ describe("mergeOtherRole", () => {
     const bdraft = { ...draft, products: [line("a", { floorStock: 45 }), line("b")] };
     expect(mergeOtherRole(bdraft, stocked, "buyer").products[0]).toMatchObject({ product: "Pa", floorStock: 45 });
   });
+  it("the INV number is the sale's: a buyer save takes it from the newest record, a sale save keeps its own draft", () => {
+    const numbered = { ...fresh, invNo: "INV-100" };
+    expect(mergeOtherRole(draft, numbered, "buyer").invNo).toBe("INV-100");
+    expect(mergeOtherRole({ ...draft, invNo: "INV-stale" }, numbered, "buyer").invNo).toBe("INV-100");
+    expect(mergeOtherRole({ ...draft, invNo: "INV-200" }, numbered, "sale").invNo).toBe("INV-200");
+    expect(mergeOtherRole({ ...draft, invNo: "INV-200" }, fresh, "buyer").invNo).toBe("INV-200"); // a record from before the field: the draft's stays
+  });
   it("is a no-op without a fresh record", () => {
     expect(mergeOtherRole(draft, null, "sale")).toBe(draft);
   });

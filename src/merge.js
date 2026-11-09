@@ -3,7 +3,8 @@
  * and payments; Buyer owns the order-tracking fields on each line and each document's status.
  * When one role saves while the other has the same PFI open, the saver must not write stale
  * values of the other role's fields. mergeOtherRole() lays the other role's fields from the newest
- * record over a draft. Delivery is shared and stays as the draft has it.
+ * record over a draft. Delivery is shared and stays as the draft has it. The INV number is the Sale's, typed
+ * after the PFI exists, so a Buyer save takes it from the newest record too.
  */
 
 export const BUYER_LINE_FIELDS = ["orderStatus", "estimatedDeliveryDate", "receivedQuantity", "receivedDate", "bbdReceived", "floorStock"];
@@ -23,5 +24,5 @@ export function mergeOtherRole(draft, fresh, viewer) {
   // buyer: take Sale's line list, document list and payments from the newest record; keep Buyer's own edits per line and document
   const products = fLines.map((f) => { const d = dLines.find((x) => x.id === f.id); return d ? { ...f, ...pick(d, BUYER_LINE_FIELDS) } : f; });
   const documents = (fresh.documents || []).map((f) => { const d = (draft.documents || []).find((x) => x.id === f.id); return d && "status" in d ? { ...f, status: d.status } : f; });
-  return { ...draft, products, documents, payments: fresh.payments || draft.payments };
+  return { ...draft, products, documents, payments: fresh.payments || draft.payments, ...("invNo" in fresh ? { invNo: fresh.invNo } : {}) };
 }

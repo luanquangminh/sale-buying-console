@@ -448,6 +448,55 @@ test("a delivery saved as Loaded lands in Delivery Booking with its POD and addr
   await settled(page);
 });
 
+test("documents: a Loaded PFI's papers show on the buyer's Documents tab; the status the buyer sets lands on the sale's PFI", async ({ page, baseURL }) => {
+  const COO_NOTE = "E2E: 2 originals, chamber stamp";
+  await wipeBookings(baseURL!, "Acme Foods Ltd"); // the Loaded save below adds a booking; one from an earlier run would make two
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Order Tracking").click();
+  const row = page.locator(".pfi-list-row", { hasText: "PFI 3200" });
+  await openDetail(page, row);
+  const docs = page.locator(".detail-body .section-card", { hasText: "Documents" });
+  await docs.locator('[aria-label="INV no."]').fill("INV-3200-E2E");
+  const form = docs.locator(".mini-form-row");
+  await form.locator("select").selectOption("COO");
+  await form.locator("textarea").fill(COO_NOTE);
+  await form.getByRole("button", { name: "Add" }).click();
+  await expect(docs.locator(".doc-card", { hasText: COO_NOTE }).first()).toBeVisible();
+  await page.locator(".detail-body .mini-field", { hasText: "Loaded or not" }).locator("select").selectOption("loaded");
+  await save(page);
+  await close(page);
+
+  await signIn(page, A.buyer.username, A.buyer.password);
+  await side(page, "Documents").click();
+  await expect(page).toHaveURL(/\/buyer\/documents$/);
+  const docRow = page.locator(".docs-row", { hasText: "PFI 3200" });
+  await expect(docRow).toBeVisible(SLOW);
+  await expect(docRow).toContainText("INV-3200-E2E");
+  const doneCount = async () => Number((await docRow.innerText()).match(/(\d+) of \d+ done/i)![1]); // the row's chip; innerText carries the chip's uppercase
+  const before = await doneCount();
+  await docRow.click();
+  const detail = page.locator(".docs-detail");
+  await expect(detail).toContainText("PFI 3200");
+  await expect(detail).toContainText("INV-3200-E2E");
+  const coos = detail.locator(".doc-card", { hasText: COO_NOTE }); // earlier runs left theirs as Done: take the one still open
+  const open = await coos.evaluateAll((els) => els.findIndex((el) => el.querySelector("select")?.value !== "done"));
+  expect(open).toBeGreaterThanOrEqual(0);
+  const status = coos.nth(open).locator('[aria-label="Document status"]');
+  await status.selectOption("done");
+  await expect(status).toHaveValue("done");
+  await page.getByLabel("Show done").check(); // all Done or not, the PFI stays listed
+  await expect(docRow).toBeVisible();
+  expect(await doneCount()).toBe(before + 1);
+  await settled(page);
+
+  await signIn(page, A.sale.username, A.sale.password); // the sale reads the status, it cannot edit it
+  await side(page, "Order Tracking").click();
+  await openDetail(page, row);
+  await expect(docs.locator(".doc-card", { hasText: COO_NOTE }).first()).toBeVisible();
+  await expect(docs.locator(".doc-status-row", { hasText: "Done" })).toHaveCount(before + 1); // one more paper Done than the buyer found
+  await close(page);
+});
+
 test("the left menu stays put while the page scrolls", async ({ page }) => {
   await page.setViewportSize({ width: 1200, height: 560 }); // shorter than the menu and than the page, so both would scroll if nothing held them
   await signIn(page, A.admin.username, A.admin.password);

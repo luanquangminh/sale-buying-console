@@ -21,6 +21,7 @@ import { groupBySale, hasSaleChange } from "./orderGroups";
 import { applyReceipts, matchPfiLine, stripDerived } from "./receipts";
 import { mergeOtherRole } from "./merge";
 import { addMonths, inMonth, monthGrid, monthLabel, startOfMonth, todayLocalIso } from "./calendar";
+import { DOC_STATUSES, DOC_STATUS_LABEL, DOC_STATUS_TONE, DOC_TYPES, awaitingDocuments, docProgress } from "./documents";
 import {
   Building2, Send, FileText, LogOut, ChevronRight, Plus,
   Users, Package, ShieldCheck, Inbox, Truck, Upload, Download,
@@ -55,7 +56,6 @@ const ORDER_STATUSES = [
 ];
 const ORDER_STATUS_LABEL = Object.fromEntries(ORDER_STATUSES.map((s) => [s.value, s.label]));
 const ORDER_STATUS_TONE = { not_ordered: "grey", sending_order: "amber", ordered: "blue", received: "green", floor_stock: "green", removed: "removed" };
-const DOC_STATUS_TONE = { not_applied: "grey", applied: "amber", waiting_delivery: "blue" };
 const ROLLUP_TONE = { "Not ordered": "grey", Ordering: "amber", Ordered: "blue", "Partly received": "amber", Received: "green", "Floor stock": "green", Removed: "removed" };
 const PFI_DELIVERY_TYPES = [
   { value: "delivery", label: "Delivery to customer" },
@@ -73,13 +73,6 @@ const PO_VEHICLE_TYPES = [
 ];
 const PO_SUBTYPES = ["20ft Dry", "20ft Reefer", "40ft Dry", "40ft Reefer", "Air Freight", "Collection"];
 const CONTAINER_TYPES = SHIPMENT_SUBTYPES.container; // a lane is quoted per container size: the sizes a booking picks from
-const DOC_TYPES = ["COO", "HC", "BL", "SWB", "Free Sale", "PL", "INV", "EUR1"];
-const DOC_STATUSES = [
-  { value: "not_applied", label: "Have not applied" },
-  { value: "applied", label: "Applied" },
-  { value: "waiting_delivery", label: "Waiting for Document Delivery" },
-];
-const DOC_STATUS_LABEL = Object.fromEntries(DOC_STATUSES.map((s) => [s.value, s.label]));
 const FIELD_LABEL = {
   orderStatus: "Order status",
   estimatedDeliveryDate: "Estimated delivery date",
@@ -445,9 +438,16 @@ const GlobalStyle = () => (
     .lane-row.open { background:#D7EADD; border-left-color:#2F7A52; border-bottom-color:#BFE3CB; }
     .lane-detail { background:#FCFEFC; border-left:3px solid #2F7A52; border-bottom:1px solid #E5E9E9; padding:16px 20px 18px; }
 
+    .docs-head-row { display:grid; grid-template-columns:.9fr 1fr 1.4fr 1fr .9fr 28px; gap:10px; padding:10px 18px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#7C8891; border-bottom:1px solid #E5E9E9; }
+    .docs-row { display:grid; grid-template-columns:.9fr 1fr 1.4fr 1fr .9fr 28px; gap:10px; padding:13px 18px; align-items:center; border-bottom:1px solid #EEF0EF; cursor:pointer; font-size:13.5px; border-left:3px solid transparent; }
+    .docs-row:hover { background:#F7FBF8; }
+    .docs-row.open { background:#D7EADD; border-left-color:#2F7A52; border-bottom-color:#BFE3CB; }
+    .docs-detail { background:#FCFEFC; border-left:3px solid #2F7A52; border-bottom:1px solid #E5E9E9; padding:16px 20px 18px; }
+    .docs-detail .doc-card { background:#fff; }
+
     @media (max-width: 860px) {
-      .lane-head-row { display:none; }
-      .lane-row { grid-template-columns:1fr; gap:4px; }
+      .lane-head-row, .docs-head-row { display:none; }
+      .lane-row, .docs-row { grid-template-columns:1fr; gap:4px; }
     }
 
     .mini-form-row { display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-top:8px; }
@@ -2210,7 +2210,7 @@ function PfiDeliverySection({ delivery, role, onChange }) {
   );
 }
 
-function DocumentsSection({ documents, canAdd, canEditStatus, onAdd, onStatusChange }) {
+function DocumentsSection({ documents, canAdd, canEditStatus, onAdd, onStatusChange, invNo = "", onInvNoChange }) {
   const [type, setType] = useState(DOC_TYPES[0]);
   const [content, setContent] = useState("");
   const [fileMeta, setFileMeta] = useState(null);
@@ -2244,7 +2244,16 @@ function DocumentsSection({ documents, canAdd, canEditStatus, onAdd, onStatusCha
 
   return (
     <div className="section-card">
-      <div className="section-title"><span>Documents</span></div>
+      <div className="section-title">
+        <span>Documents</span>
+        {canAdd ? (
+          <label className="muted" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, textTransform: "none", letterSpacing: 0 }}>INV no.
+            <input aria-label="INV no." placeholder="INV" value={invNo || ""} onChange={(e) => onInvNoChange(e.target.value)} style={{ border: "1px solid #D8E6DC", borderRadius: 3, padding: "5px 8px", fontSize: 12.5, fontFamily: "inherit", width: 160 }} />
+          </label>
+        ) : (
+          <span className="muted" style={{ fontSize: 11, textTransform: "none", letterSpacing: 0 }}>INV no. {invNo || "—"}</span>
+        )}
+      </div>
       {documents.length === 0 && <div className="muted" style={{ marginBottom: 10 }}>No documents yet.</div>}
       {documents.map((d) => (
         <div key={d.id} className="doc-card">
@@ -2601,6 +2610,8 @@ function PfiDetail({ pfi, viewer, actions, pos, highlightProductId }) {
         documents={draft.documents}
         canAdd={isSale}
         canEditStatus={!isSale}
+        invNo={draft.invNo || ""}
+        onInvNoChange={(invNo) => setDraft((d) => ({ ...d, invNo }))}
         onAdd={(doc) => setDraft((d) => ({ ...d, documents: [doc, ...d.documents] }))}
         onStatusChange={(docId, status) => setDraft((d) => ({
           ...d, documents: d.documents.map((x) => (x.id === docId ? { ...x, status } : x)),
@@ -2810,6 +2821,97 @@ function ReorderPanel({ reorders, onOpen, onHandled, onDismiss }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The Buyer's Documents tab: every Loaded PFI whose papers are not all Done, newest first. Opening a PFI shows each
+ * document with the Sale's note and file; a status change saves at once through the store (the Buyer owns the status).
+ */
+function DocumentsTab({ pfisBySale, actions }) {
+  const [find, setFind] = useState("");
+  const [showDone, setShowDone] = useState(false);
+  const [expanded, setExpanded] = useState(null);
+  const rows = awaitingDocuments(pfisBySale, { showDone });
+  const q = find.trim().toLowerCase();
+  const visible = q
+    ? rows.filter(({ pfi }) => [pfi.pfiNo, pfi.invNo, pfi.customerName, pfi.saleName].some((f) => String(f || "").toLowerCase().includes(q)))
+    : rows;
+  const pager = usePager(visible, { resetKey: find, ensureIndex: visible.findIndex((r) => r.pfi.id === expanded) });
+
+  return (
+    <div>
+      <div className="overview-bar">
+        <FindBar value={find} onChange={setFind} placeholder="Find by PFI, INV no., customer, sale" total={rows.length} shown={visible.length} />
+        <label className="muted" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, cursor: "pointer" }}>
+          <input type="checkbox" checked={showDone} onChange={(e) => setShowDone(e.target.checked)} /> Show done
+        </label>
+      </div>
+
+      <div className="card">
+        {rows.length === 0 ? (
+          <div className="empty">
+            <FileText size={30} />
+            <div style={{ fontWeight: 600 }}>No Loaded PFI has documents to apply.</div>
+          </div>
+        ) : visible.length === 0 ? (
+          <div className="empty">
+            <FileText size={30} />
+            <div style={{ fontWeight: 600 }}>No PFI matches that search</div>
+          </div>
+        ) : (
+          <>
+            <div className="docs-head-row">
+              <div>PFI</div><div>INV no.</div><div>Customer</div><div>Sale</div><div>Documents</div><div />
+            </div>
+            {pager.rows.map(({ pfi, saleId }) => {
+              const isOpen = expanded === pfi.id;
+              const { done, total } = docProgress(pfi.documents);
+              return (
+                <React.Fragment key={pfi.id}>
+                  <div className={`docs-row ${isOpen ? "open" : ""}`} onClick={() => setExpanded(isOpen ? null : pfi.id)}>
+                    <div className="pfi-code" style={{ marginTop: 0 }}>PFI {pfi.pfiNo}</div>
+                    <div className="muted sm-mono">{pfi.invNo || "—"}</div>
+                    <div className="company-name">{pfi.customerName}</div>
+                    <div className="muted">{pfi.saleName}</div>
+                    <div><span className={`chip ${done === total ? "green" : "amber"}`}>{done} of {total} done</span></div>
+                    <ChevronRight size={16} className={`chev ${isOpen ? "open" : ""}`} />
+                  </div>
+                  {isOpen && (
+                    <div className="docs-detail" onClick={(e) => e.stopPropagation()}>
+                      <div style={{ fontWeight: 700, marginBottom: 2 }}>PFI {pfi.pfiNo} · INV {pfi.invNo || "—"}</div>
+                      <div className="muted" style={{ fontSize: 12.5, marginBottom: 12 }}>{pfi.customerName} · {pfi.saleName}</div>
+                      {pfi.documents.map((d) => (
+                        <div key={d.id} className="doc-card">
+                          <div style={{ flex: 1 }}>
+                            <span className="doc-type-badge">{d.type}</span>
+                            {d.content && <div className="doc-content"><span className="muted" style={{ fontSize: 11 }}>Note from sale: </span>{d.content}</div>}
+                            {d.fileName && (
+                              <a className="doc-file-link" href={d.fileUrl} download={d.fileName} target="_blank" rel="noreferrer">
+                                <Paperclip size={12} /> {d.fileName}
+                              </a>
+                            )}
+                          </div>
+                          <select
+                            aria-label="Document status"
+                            className={`tone-${DOC_STATUS_TONE[d.status || "not_applied"]}`}
+                            value={d.status || "not_applied"}
+                            onChange={(e) => actions.updateDocumentStatus(saleId, pfi.id, d.id, e.target.value)}
+                          >
+                            {DOC_STATUSES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </React.Fragment>
+              );
+            })}
+            <Pager pager={pager} />
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -5096,6 +5198,7 @@ function Shell({ user, onLogout, store }) {
     : 0;
   const fulfillmentUnseenCount = store.feedBuyerPfi.filter((f) => !f.seenByBuyer).length;
   const openReorderCount = store.reorders.filter((r) => !r.handled).length;
+  const docsAwaitingCount = awaitingDocuments(store.pfisBySale).length;
   const toConfirmCountAll = can("paymentsReceived") ? toConfirmCount(store.expectedPayments, store.receivedPayments) : 0;
 
   const openPfiFromCustomer = (pfiId) => {
@@ -5177,6 +5280,10 @@ function Shell({ user, onLogout, store }) {
               <div className={`side-item ${topSection === "buyerspace" && buyerSubTab === "fulfillment" ? "active" : ""}`} onClick={() => { setTopSection("buyerspace"); setBuyerSubTab("fulfillment"); }}>
                 <Truck size={14} /> Orders to update
                 {(fulfillmentUnseenCount + openReorderCount) > 0 && <span className="badge-mini">{fulfillmentUnseenCount + openReorderCount}</span>}
+              </div>
+              <div className={`side-item ${topSection === "buyerspace" && buyerSubTab === "documents" ? "active" : ""}`} onClick={() => { setTopSection("buyerspace"); setBuyerSubTab("documents"); }}>
+                <FileText size={14} /> Documents
+                {docsAwaitingCount > 0 && <span className="badge-mini">{docsAwaitingCount}</span>}
               </div>
               <div className={`side-item ${topSection === "buyerspace" && buyerSubTab === "po" ? "active" : ""}`} onClick={() => { setTopSection("buyerspace"); setBuyerSubTab("po"); }}>
                 <Package size={14} /> PO Tracking
@@ -5414,17 +5521,19 @@ function Shell({ user, onLogout, store }) {
               <div className="page-header">
                 <div>
                   <div className="page-title sm-display">Buyer Space{isAdmin ? " — Admin view" : ""}</div>
-                  <div className="page-sub">Info requests, PFI orders to fulfill, POs to suppliers, and jobs with Buyer's Notes</div>
+                  <div className="page-sub">Info requests, PFI orders to fulfill, documents to apply, POs to suppliers, and jobs with Buyer's Notes</div>
                 </div>
               </div>
               <div className="pill-tabs">
                 <div className={`pill ${buyerSubTab === "feed" ? "active" : ""}`} onClick={() => setBuyerSubTab("feed")}>Inbox</div>
                 <div className={`pill ${buyerSubTab === "fulfillment" ? "active" : ""}`} onClick={() => setBuyerSubTab("fulfillment")}>Orders to update</div>
+                <div className={`pill ${buyerSubTab === "documents" ? "active" : ""}`} onClick={() => setBuyerSubTab("documents")}>Documents</div>
                 <div className={`pill ${buyerSubTab === "po" ? "active" : ""}`} onClick={() => setBuyerSubTab("po")}>PO Tracking</div>
                 <div className={`pill ${buyerSubTab === "jobs" ? "active" : ""}`} onClick={() => setBuyerSubTab("jobs")}>Jobs</div>
               </div>
               {buyerSubTab === "feed" && <BuyerFeed feed={store.feed} answerFeedItem={store.answerFeedItem} deleteFeedItem={store.deleteFeedItem} />}
               {buyerSubTab === "fulfillment" && <BuyerFulfillment pfisBySale={store.pfisBySale} feedBuyerPfi={store.feedBuyerPfi} actions={store} pos={store.pos} reorders={store.reorders} />}
+              {buyerSubTab === "documents" && <DocumentsTab pfisBySale={store.pfisBySale} actions={store} />}
               {buyerSubTab === "po" && <PoTrackingArea suppliers={store.suppliers} pos={store.pos} actions={store} allPfiOptions={allPfiOptions} />}
               {buyerSubTab === "jobs" && <JobsTab jobs={store.buyerJobs} actions={store} userName={user.name} />}
             </>

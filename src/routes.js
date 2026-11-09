@@ -5,7 +5,7 @@
  */
 
 const SALE_PAGES = { customer: "customers", orders: "orders", payments: "payments-received" };
-const BUYER_PAGES = { feed: "inbox", fulfillment: "orders-to-update", po: "po-tracking", jobs: "jobs" };
+const BUYER_PAGES = { feed: "inbox", fulfillment: "orders-to-update", documents: "documents", po: "po-tracking", jobs: "jobs" };
 const SINGLE_PAGES = {
   mai: "/admin/mai",
   payments: "/admin/customer-balance",
