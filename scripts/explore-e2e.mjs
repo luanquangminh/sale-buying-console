@@ -79,17 +79,37 @@ await step("accountant: one tab, the ledger of the finance Excel", async () => {
   expect((await side("Payments Received").count()) === 1, "Payments Received tab");
   expect(/Payments Received Tracking/.test(await page.locator(".page-title").innerText()), "title");
   const month = new Date().toLocaleDateString("en-GB", { month: "long", year: "numeric" });
-  expect(/active/.test((await pill(month).getAttribute("class")) || ""), `this month (${month}) open`);
-  for (const t of ["All", "To confirm", "Confirmed", "Unmatched"]) expect((await pill(t).count()) === 1, `filter pill ${t}`);
+  const ym = new Date().toISOString().slice(0, 7);
+  expect((await page.locator('[aria-label="Month"]').inputValue()) === ym, `this month (${month}) open in the month list`);
+  expect(new RegExp(`^${month}`).test(await page.locator('[aria-label="Month"] option:checked').innerText()), `the month list reads ${month}`);
+  for (const t of ["All", "To confirm", "Unmatched"]) expect((await pill(t).count()) === 1, `filter pill ${t}`);
+  expect((await pill("Confirmed").count()) === 0, "no Confirmed filter: All holds them");
   if (await page.locator(".pay-row").count()) {
     const groups = await page.locator("th.pay-group").allInnerTexts();
-    expect(/finance/i.test(groups[0] || "") && /sales/i.test(groups[1] || ""), `group headers: ${groups.join(" | ")}`);
+    expect(/finance/i.test(groups[0] || "") && /sales/i.test(groups[1] || "") && /difference/i.test(groups[2] || ""), `group headers: ${groups.join(" | ")}`);
+    expect(!/remark/i.test((await page.locator(".pay-ledger thead").innerText()) || ""), "no Remark column");
   } else expect((await page.locator(".empty", { hasText: `No payment in ${month}` }).count()) === 1, "empty month text");
+  expect((await page.getByRole("button", { name: "Export" }).count()) === 1, "Export button");
+  await page.getByRole("button", { name: "Export" }).click();
+  await page.locator(".modal-panel").waitFor();
+  expect((await page.locator(".modal-panel .date-field").count()) === 2, "export dialog: from and to");
+  await page.getByRole("button", { name: "Cancel" }).click(); await settle();
   await page.getByRole("button", { name: "Add received payment" }).click();
   await page.locator(".modal-panel").waitFor();
-  expect((await page.locator('.modal-panel [aria-label="Remark"]').count()) === 1, "remark field in the dialog");
+  expect((await page.locator('.modal-panel [aria-label="Remark"]').count()) === 0, "no remark field in the dialog");
+  expect((await page.locator('.modal-panel [aria-label="Added by"] option').allInnerTexts()).join(",") === "—,Mai,Karan", "Added by is a choice of Mai or Karan");
+  expect((await page.locator('.modal-panel [aria-label="Added to QuickBooks"]').count()) === 0, "no Done tick");
   await page.getByRole("button", { name: "Cancel" }).click(); await settle();
   expect((await page.locator(".modal-panel").count()) === 0, "dialog closed");
+});
+
+await step("sale: Payments Received has an Unmatched pill for the money nobody announced", async () => {
+  await login("exp-sale", EXP_PASS);
+  await side("Payments Received").click();
+  for (const t of ["Expected", "Confirmed", "Unmatched"]) expect((await pill(t).count()) === 1, `rep pill ${t}`);
+  await pill("Unmatched").click(); await settle();
+  expect((await page.locator(".pay-row").count()) > 0 || (await page.locator(".empty", { hasText: "No unmatched money" }).count()) === 1, "unmatched list or its empty text");
+  expect((await page.getByRole("button", { name: "Add received payment" }).count()) === 0, "a rep cannot enter the bank's side");
 });
 
 await step("sale: customer, note, PFI 9101 with lines, collection date (2-digit year), payment, document, export, reload", async () => {

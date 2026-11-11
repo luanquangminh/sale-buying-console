@@ -4,6 +4,7 @@ import * as XLSX from "xlsx";
 import { emptyBooking } from "../../src/booking.js";
 import { monthLabel } from "../../src/calendar.js";
 import { fmtDate } from "../../src/dates.js";
+import { LEDGER_COLUMNS } from "../../src/paymentsReceived.js";
 import { A } from "./accounts";
 
 /*
@@ -2330,10 +2331,12 @@ test("payments received: a rep announces a payment, the accountant confirms it w
   await expect(page.locator(".side-item")).toHaveCount(1);
   await expect(page.locator(".side-item").first()).toContainText("Payments Received");
   await expect(page.locator(".page-title")).toContainText("Payments Received Tracking");
-  // The ledger of the finance Excel: this month open, every row shown, the finance columns on the left and the rep's on the right.
-  await expect(pillTab(monthLabel(`${isoDay(0).slice(0, 7)}-01`))).toHaveClass(/active/);
+  // The ledger of the finance Excel: this month open, every row shown, the finance columns on the left, the rep's on the right, the gap apart.
+  await expect(page.locator('[aria-label="Month"]')).toHaveValue(isoDay(0).slice(0, 7));
+  await expect(page.locator('[aria-label="Month"] option:checked')).toHaveText(new RegExp(`^${monthLabel(`${isoDay(0).slice(0, 7)}-01`)}`));
   await expect(pillTab("All")).toHaveClass(/active/);
-  await expect(page.locator("th.pay-group")).toHaveText(["Details entered by Finance", "Details confirmed by Sales", ""]);
+  await expect(pillTab("Confirmed")).toHaveCount(0); // All holds the confirmed rows
+  await expect(page.locator("th.pay-group")).toHaveText(["Details entered by Finance", "Details confirmed by Sales", "Difference", ""]);
   await expect(pillTab("To confirm").locator(".pill-count")).toBeVisible();
   await expect(row(JUARA)).toContainText(A.sale.name); // Entered by: the rep
   await expect(row(JUARA).locator("td").first()).toHaveText("—"); // nothing from the bank yet
@@ -2351,9 +2354,10 @@ test("payments received: a rep announces a payment, the accountant confirms it w
   await expect(page.locator(".modal-panel .pay-diff")).toContainText("−49.64");
   await expect(page.locator(".modal-panel .pay-diff")).toHaveClass(/tone-red/);
   await page.locator('.modal-panel [aria-label="Sender name"]').fill("JUARA TRADE FZCO");
-  await page.locator('.modal-panel [aria-label="Added to QuickBooks"]').check();
-  await expect(page.locator('.modal-panel [aria-label="Added by"]')).toHaveValue(A.accountant.name || "");
-  await page.locator('.modal-panel [aria-label="Remark"]').fill("E2E: bank fee");
+  await expect(page.locator('.modal-panel [aria-label="Added by"]')).toHaveValue(""); // a choice, nobody by default
+  await expect(page.locator('.modal-panel [aria-label="Added by"] option')).toHaveText(["—", "Mai", "Karan"]);
+  await page.locator('.modal-panel [aria-label="Added by"]').selectOption("Mai");
+  await expect(page.locator('.modal-panel [aria-label="Remark"]')).toHaveCount(0);
   await page.getByRole("button", { name: "Confirm payment" }).click();
   await expect(page.locator(".modal-panel")).toHaveCount(0);
   // The row stays where it is, now with the bank's side filled in; a gap tints its cell like the Excel.
@@ -2361,9 +2365,7 @@ test("payments received: a rep announces a payment, the accountant confirms it w
   await expect(row(JUARA)).toContainText("13,510.36");
   await expect(row(JUARA).locator(".pay-diff")).toHaveText("−49.64");
   await expect(row(JUARA).locator("td.pay-off")).toHaveCount(1);
-  await expect(row(JUARA)).toContainText("Done");
-  await expect(row(JUARA)).toContainText(A.accountant.name || "");
-  await expect(row(JUARA)).toContainText("E2E: bank fee");
+  await expect(row(JUARA).locator(".qb-cell")).toHaveText("Mai"); // the name alone: no date or time typed, no "Done"
   await expect(row(SHALUXE).locator("td.pay-off")).toHaveCount(0);
   await pillTab("To confirm").click();
   await expect(row(JUARA)).toHaveCount(0);
@@ -2390,16 +2392,16 @@ test("payments received: a rep announces a payment, the accountant confirms it w
   await field("Customer name").fill(WALKIN);
   await page.getByRole("button", { name: "Save received payment" }).click();
   await expect(row(WALKIN)).toContainText("592.00");
-  await expect(row(WALKIN)).toContainText("Not yet");
+  await expect(row(WALKIN).locator(".qb-cell")).toHaveText("—");
   await expect(row(WALKIN).locator("td.sales-start")).toHaveText("—");
   await pillTab("Unmatched").click();
   await expect(row(WALKIN)).toHaveCount(1);
   await expect(row(JUARA)).toHaveCount(0);
-  // The find box reaches the remark too (and every month); it narrows the rows the filter shows.
+  // The find box reaches the bank's sender too (and every month); it narrows the rows the filter shows.
   await pillTab("All").click();
-  await page.locator(".find-bar input").fill("bank fee");
-  await expect(row(JUARA)).toHaveCount(1);
-  await expect(row(WALKIN)).toHaveCount(0);
+  await page.locator(".find-bar input").fill("Akoto");
+  await expect(row(WALKIN)).toHaveCount(1);
+  await expect(row(JUARA)).toHaveCount(0);
   await page.locator(".find-bar input").fill("");
   await settled(page);
 
@@ -2412,20 +2414,27 @@ test("payments received: a rep announces a payment, the accountant confirms it w
   await pillTab("Confirmed").click();
   await expect(row(JUARA)).toContainText("13,510.36");
   await expect(row(JUARA).locator(".pay-diff")).toHaveText("−49.64");
-  await expect(row(JUARA)).toContainText("Done");
+  await expect(row(JUARA).locator(".qb-cell")).toHaveText("Mai");
   await expect(row(JUARA).getByRole("button")).toHaveCount(0);
-  await expect(row(WALKIN)).toHaveCount(0); // the unannounced money is the accountant's business
+  await expect(row(WALKIN)).toHaveCount(0);
+  await pillTab("Unmatched").click(); // the unannounced money shows to every rep, to claim; the bank's side is not theirs to change
+  await expect(row(WALKIN)).toContainText("592.00");
+  await expect(row(WALKIN).locator(".chip")).toHaveText("Unclaimed");
+  await expect(row(WALKIN).getByRole("button", { name: "Confirm payment" })).toHaveCount(1);
+  await expect(row(WALKIN).getByRole("button", { name: "Edit" })).toHaveCount(0);
   const state = await page.evaluate(async () => (await fetch("/api/state")).json());
   const mine = state.slices.expectedPayments.find((e: any) => e.customer === "E2E Pay Juara Trade");
   const refused = await page.evaluate(async (e) => (await fetch("/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes: [{ kind: "expectedPayments", id: e.id, createdAt: e.createdAt, data: { ...e, expectedAmount: 1 } }] }) })).status, mine);
   expect(refused).toBe(403);
-  expect(JSON.stringify(state)).not.toContain("E2E Pay Walk-in");
+  const walk = state.slices.receivedPayments.find((r: any) => r.customer === "E2E Pay Walk-in");
+  expect(walk.expectedId).toBe("");
+  expect(await page.evaluate(async (r) => (await fetch("/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes: [{ kind: "receivedPayments", id: r.id, createdAt: r.createdAt, data: { ...r, receivedAmount: 1 } }] }) })).status, walk)).toBe(403);
+  await pillTab("Expected").click();
 
   // The admin: the accountant's page, and the rep's page inside the rep's workspace.
   await signIn(page, A.admin.username, A.admin.password);
   await side(page, "Payments Received").click();
   await expect(row(SHALUXE)).toHaveCount(1);
-  await pillTab("Confirmed").click();
   await expect(row(JUARA).locator(".pay-diff")).toHaveText("−49.64");
   await pillTab("Unmatched").click();
   await expect(row(WALKIN)).toHaveCount(1);
@@ -2436,9 +2445,8 @@ test("payments received: a rep announces a payment, the accountant confirms it w
 
   // Tidy up through the screens once (undo, delete whole and the deletes are controls too), then make sure nothing is left.
   await signIn(page, A.accountant.username, A.accountant.password);
-  await pillTab("Confirmed").click();
   await row(JUARA).getByRole("button", { name: "Undo" }).click(); // back to To confirm, the announcement kept
-  await expect(row(JUARA)).toHaveCount(0);
+  await expect(row(JUARA).locator("td").first()).toHaveText("—");
   await pillTab("To confirm").click();
   await expect(row(JUARA)).toHaveCount(1);
   await row(JUARA).getByRole("button", { name: "Confirm" }).click();
@@ -2497,7 +2505,7 @@ test("a rep's stale edit of a payment the accountant has just confirmed is refus
     await acc.getByRole("button", { name: "Confirm payment" }).click();
     await expect(acc.locator(".modal-panel")).toHaveCount(0);
     await expect(row(acc, STALE)).toHaveCount(0); // the ledger's To confirm filter no longer lists it
-    await pillTab(acc, "Confirmed").click();
+    await pillTab(acc, "All").click();
     await expect(row(acc, STALE)).toHaveCount(1);
     await settled(acc);
 
@@ -2534,8 +2542,8 @@ test("payments received, in detail: the accountant's ledger places a row by the 
   const pageRow = (i: number) => `${P} Page ${String(i).padStart(2, "0")}`;
   const prev = (() => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; })();
   const lastDay = (day: number) => `${prev}-${String(day).padStart(2, "0")}`;
-  const thisMonth = monthLabel(`${isoDay(0).slice(0, 7)}-01`); const lastMonth = monthLabel(`${prev}-01`);
-  const accName = A.accountant.name || "accountant";
+  const thisMonth = isoDay(0).slice(0, 7); const lastMonth = monthLabel(`${prev}-01`);
+  const monthBox = (p: Page) => p.locator('[aria-label="Month"]'); const monthOption = (p: Page, label: string) => p.locator('[aria-label="Month"] option', { hasText: label });
   const accCtx = await browser.newContext(); const acc = await accCtx.newPage(); watchPushes(acc);
   const admCtx = await browser.newContext(); const adm = await admCtx.newPage(); watchPushes(adm);
   const row = payRow; const pillTab = pill;
@@ -2555,23 +2563,23 @@ test("payments received, in detail: the accountant's ledger places a row by the 
         xp("xpay-e2e-ledger-a", LAST_A, lastDay(5), { currency: "EUR", expectedAmount: 2000, proof: false }),
         xp("xpay-e2e-ledger-c", THIS_C, isoDay(0), { expectedAmount: 3000 }),
         ...Array.from({ length: 22 }, (_, i) => xp(`xpay-e2e-ledger-p${i}`, pageRow(i + 1), lastDay(20), { expectedAmount: 10 + i })),
-        { kind: "receivedPayments", id: "rpay-e2e-ledger-d", createdAt: now, data: { id: "rpay-e2e-ledger-d", expectedId: "", saleId: "", receivedDate: lastDay(3), company: "LTD", currency: "GBP", receivedAmount: 250, sender: "E2E LEDGER BANK D", customer: LOOSE_D, remark: "E2E: no announcement", qb: { date: lastDay(3), time: "09:30", done: true, addedBy: "E2E Finance" }, confirmedBy: "E2E Finance", createdAt: now, updatedAt: now } },
+        { kind: "receivedPayments", id: "rpay-e2e-ledger-d", createdAt: now, data: { id: "rpay-e2e-ledger-d", expectedId: "", saleId: "", receivedDate: lastDay(3), company: "LTD", currency: "GBP", receivedAmount: 250, sender: "E2E LEDGER BANK D", customer: LOOSE_D, qb: { date: lastDay(3), time: "09:30", addedBy: "E2E Finance" }, confirmedBy: "E2E Finance", createdAt: now, updatedAt: now } },
       ];
     });
 
-    // 2. The accountant lands on this month and sees only its rows; the badge and the month pills count every pending row.
+    // 2. The accountant lands on this month and sees only its rows; the badge and the month list count every pending row.
     await signIn(acc, A.accountant.username, A.accountant.password);
-    await expect(pillTab(acc, thisMonth)).toHaveClass(/active/);
+    await expect(monthBox(acc)).toHaveValue(thisMonth);
     await expect(row(acc, THIS_C)).toHaveCount(1);
     await expect(firstCell(acc, THIS_C)).toHaveText("—");
     await expect(row(acc, LAST_B)).toHaveCount(0);
     await expect(acc.locator(".side-item .badge-mini").first()).toHaveText(/\d+/);
     expect(Number(await acc.locator(".side-item .badge-mini").first().innerText())).toBeGreaterThanOrEqual(25);
-    await expect(pillTab(acc, lastMonth).locator(".pill-count")).toHaveText(/\d+/);
-    expect(Number(await pillTab(acc, lastMonth).locator(".pill-count").innerText())).toBeGreaterThanOrEqual(24);
+    await expect(monthOption(acc, lastMonth)).toHaveText(/· \d+ to confirm$/);
+    expect(Number((await monthOption(acc, lastMonth).innerText()).match(/· (\d+) to confirm/)![1])).toBeGreaterThanOrEqual(24);
 
     // 3. Last month: 25 rows make a pager; shown at once they keep the Excel's order (oldest first, the unannounced receipt in its place by the bank's date).
-    await pillTab(acc, lastMonth).click();
+    await monthBox(acc).selectOption(prev);
     await expect(acc.locator('[aria-label="Pages"]')).toHaveCount(1);
     await acc.locator('[aria-label="Rows per page"]').selectOption("100");
     await expect(acc.locator(".pay-row").filter({ hasText: P })).toHaveCount(25);
@@ -2585,8 +2593,7 @@ test("payments received, in detail: the accountant's ledger places a row by the 
     await expect(row(acc, LAST_A).locator('[aria-label="Proof of payment"]')).not.toBeChecked();
     await expect(row(acc, LAST_A).locator(".chip.violet")).toHaveText(/EUR/i);
     await expect(row(acc, LOOSE_D).locator("td.sales-start")).toHaveText("—"); // nobody announced it: the sales half is empty
-    await expect(row(acc, LOOSE_D)).toContainText("E2E: no announcement");
-    await expect(row(acc, LOOSE_D).locator(".qb-cell")).toHaveText(`Done · ${fmtDate(lastDay(3))} 09:30 · E2E Finance`);
+    await expect(row(acc, LOOSE_D).locator(".qb-cell")).toHaveText(`${fmtDate(lastDay(3))} 09:30 · E2E Finance`); // the QuickBooks note sits on the finance half
     await expect(row(acc, LOOSE_D)).toContainText("E2E Finance"); // Entered by: who typed it
     await row(acc, LAST_A).locator('[aria-label="Proof of payment"]').dispatchEvent("click"); // the tick is the rep's: a click on it does not flip it (a forced pointer click would land on whatever overlays the cell)
     await expect(row(acc, LAST_A).locator('[aria-label="Proof of payment"]')).not.toBeChecked();
@@ -2598,7 +2605,7 @@ test("payments received, in detail: the accountant's ledger places a row by the 
     await expect(row(acc, LAST_B)).toHaveCount(1); await expect(row(acc, LOOSE_D)).toHaveCount(0);
     await pillTab(acc, "All").click();
 
-    // 5. Confirm with the bank's date in the same month, a gap, the QuickBooks entry and a remark: the row fills in place.
+    // 5. Confirm with the bank's date in the same month, a gap and the QuickBooks entry: the row fills in place.
     await row(acc, LAST_B).getByRole("button", { name: "Confirm" }).click();
     await acc.locator(".modal-panel").waitFor();
     await typeDate(acc, 0, lastDay(28));
@@ -2606,16 +2613,14 @@ test("payments received, in detail: the accountant's ledger places a row by the 
     await acc.locator('.modal-panel [aria-label="Sender name"]').fill("E2E LEDGER BANK B");
     await typeDate(acc, 1, isoDay(0));
     await acc.locator('.modal-panel [aria-label="QuickBooks time"]').fill("14:05");
-    await acc.locator('.modal-panel [aria-label="Added to QuickBooks"]').check();
-    await acc.locator('.modal-panel [aria-label="Remark"]').fill("E2E: FX fee");
+    await acc.locator('.modal-panel [aria-label="Added by"]').selectOption("Karan");
     await acc.getByRole("button", { name: "Confirm payment" }).click();
     await expect(acc.locator(".modal-panel")).toHaveCount(0);
     await expect(firstCell(acc, LAST_B)).toHaveText(fmtDate(lastDay(28)));
     await expect(row(acc, LAST_B)).toContainText("980.50");
     await expect(row(acc, LAST_B).locator(".pay-diff")).toHaveText("−19.50");
     await expect(row(acc, LAST_B).locator("td.pay-off")).toHaveCount(1);
-    await expect(row(acc, LAST_B).locator(".qb-cell")).toHaveText(`Done · ${fmtDate(isoDay(0))} 14:05 · ${accName}`);
-    await expect(row(acc, LAST_B)).toContainText("E2E: FX fee");
+    await expect(row(acc, LAST_B).locator(".qb-cell")).toHaveText(`${fmtDate(isoDay(0))} 14:05 · Karan`);
     await expect(row(acc, LAST_B).getByRole("button", { name: "Confirm" })).toHaveCount(0);
 
     // 6. The bank's date decides the month: dated today, the row moves to this month; the rep's date stays on the sales half.
@@ -2625,18 +2630,19 @@ test("payments received, in detail: the accountant's ledger places a row by the 
     await typeDate(acc, 0, isoDay(0));
     await acc.getByRole("button", { name: "Save" }).click();
     await expect(row(acc, LAST_B)).toHaveCount(0);
-    await pillTab(acc, thisMonth).click();
+    await monthBox(acc).selectOption(thisMonth);
     await expect(row(acc, LAST_B)).toContainText("980.50");
     await expect(row(acc, LAST_B).locator("td.sales-start")).toHaveText(fmtDate(lastDay(1)));
 
-    // 7. The find box reaches the other months; the remark of an unannounced receipt is edited from the row.
+    // 7. The find box reaches the other months; an unannounced receipt is edited from the row.
     await acc.locator(".find-bar input").fill("Ledger Loose");
     await expect(row(acc, LOOSE_D)).toHaveCount(1);
     await row(acc, LOOSE_D).getByRole("button", { name: "Edit" }).click();
     await acc.locator(".modal-panel").waitFor();
-    await acc.locator('.modal-panel [aria-label="Remark"]').fill("E2E: matched later");
+    await expect(acc.locator(".modal-title")).toHaveText("Received payment");
+    await acc.locator('.modal-panel [aria-label="Sender name"]').fill("E2E LEDGER BANK D CORRECTED");
     await acc.getByRole("button", { name: "Save" }).click();
-    await expect(row(acc, LOOSE_D)).toContainText("E2E: matched later");
+    await expect(row(acc, LOOSE_D)).toContainText("E2E LEDGER BANK D CORRECTED");
     await acc.locator(".find-bar input").fill("");
     await expect(row(acc, LOOSE_D)).toHaveCount(0); // this month only again
     await settled(acc);
@@ -2644,9 +2650,9 @@ test("payments received, in detail: the accountant's ledger places a row by the 
     // 8. Two sessions: the admin watches last month while the accountant confirms; the admin's Undo travels back the same way.
     await signIn(adm, A.admin.username, A.admin.password);
     await side(adm, "Payments Received").click();
-    await pillTab(adm, lastMonth).click();
+    await monthBox(adm).selectOption(prev);
     await expect(firstCell(adm, LAST_A)).toHaveText("—");
-    await pillTab(acc, lastMonth).click();
+    await monthBox(acc).selectOption(prev);
     await row(acc, LAST_A).getByRole("button", { name: "Confirm" }).click();
     await acc.locator(".modal-panel").waitFor();
     await typeDate(acc, 0, lastDay(6));
@@ -2666,7 +2672,7 @@ test("payments received, in detail: the accountant's ledger places a row by the 
     await pillTab(adm, "Confirmed").click();
     await expect(row(adm, LAST_B)).toContainText("980.50");
     await expect(row(adm, LAST_B).locator(".pay-diff")).toHaveText("−19.50");
-    await expect(row(adm, LAST_B)).toContainText("Done");
+    await expect(row(adm, LAST_B).locator(".qb-cell")).toHaveText(`${fmtDate(isoDay(0))} 14:05 · Karan`);
     await expect(row(adm, LAST_B).getByRole("button")).toHaveCount(0);
     await pillTab(adm, "Expected").click();
     await adm.locator('[aria-label="Rows per page"]').selectOption("100"); // 24 rows: the oldest sits on page 2 otherwise
@@ -2678,14 +2684,200 @@ test("payments received, in detail: the accountant's ledger places a row by the 
     // 10. Cleanup through the API, then the ledger is empty of it.
     await wipePayments(baseURL!, [P]);
     await acc.reload();
-    await expect(pillTab(acc, thisMonth)).toHaveClass(/active/);
+    await expect(monthBox(acc)).toHaveValue(thisMonth);
     await expect(row(acc, THIS_C)).toHaveCount(0);
-    const last = pillTab(acc, lastMonth); // a month with no row left has no pill
-    if (await last.count()) { await last.click(); await expect(acc.locator(".pay-row").filter({ hasText: P })).toHaveCount(0); }
+    if (await monthOption(acc, lastMonth).count()) { await monthBox(acc).selectOption(prev); await expect(acc.locator(".pay-row").filter({ hasText: P })).toHaveCount(0); } // a month with no row left is not listed
   } finally {
     await wipePayments(baseURL!, [P]);
     await accCtx.close(); await admCtx.close();
   }
+});
+
+test("unmatched money: the accountant enters a receipt nobody announced, every rep sees it and one claims it, the accountant confirms the claim from Unmatched, the row stays under All and reaches the rep's Confirmed, Undo brings it back, the export holds it, a second claim is refused", async ({ page, baseURL }) => {
+  const U = "E2E Unmatched"; const FIRST = `${U} First`; const CLAIM = `${U} Claimed Co`; const OTHER = `${U} Other`; const SENDER = "E2E UNMATCHED BANK";
+  const row = (text: string) => payRow(page, text); const field = (label: string) => payField(page, label); const pillTab = (text: string) => pill(page, text);
+  const thisMonth = isoDay(0).slice(0, 7); const { from, to } = { from: `${thisMonth}-01`, to: `${thisMonth}-${String(new Date(Number(thisMonth.slice(0, 4)), Number(thisMonth.slice(5, 7)), 0).getDate()).padStart(2, "0")}` };
+  const dateField = (n: number) => page.locator('.modal-panel .date-field input[type="text"]').nth(n);
+  const typeDate = async (n: number, iso: string) => { await dateField(n).fill(fmtDate(iso)); await dateField(n).press("Enter"); };
+  await ensureAccount(page, "accountant");
+  await wipePayments(baseURL!, [U]);
+
+  // 1. The accountant enters two receipts nobody announced; the first already went into QuickBooks (date, time, who).
+  await signIn(page, A.accountant.username, A.accountant.password);
+  await page.getByRole("button", { name: "Add received payment" }).click();
+  await page.locator(".modal-panel").waitFor();
+  await field("Currency").selectOption("GBP");
+  await field("Received amount").fill("2500");
+  await field("Sender name").fill(SENDER);
+  await field("Customer name").fill(FIRST);
+  await typeDate(1, isoDay(0)); // 0 = Date received, 1 = the QuickBooks date
+  await field("QuickBooks time").fill("10:15");
+  await field("Added by").selectOption("Karan");
+  await page.getByRole("button", { name: "Save received payment" }).click();
+  await expect(page.locator(".modal-panel")).toHaveCount(0);
+  await expect(row(FIRST).locator(".qb-cell")).toHaveText(`${fmtDate(isoDay(0))} 10:15 · Karan`);
+  await page.getByRole("button", { name: "Add received payment" }).click();
+  await page.locator(".modal-panel").waitFor();
+  await field("Currency").selectOption("GBP");
+  await field("Received amount").fill("300");
+  await field("Sender name").fill(`${SENDER} 2`);
+  await field("Customer name").fill(OTHER);
+  await page.getByRole("button", { name: "Save received payment" }).click();
+  await expect(row(OTHER)).toContainText("300.00");
+  await pillTab("Unmatched").click();
+  await expect(row(FIRST)).toHaveCount(1); await expect(row(OTHER)).toHaveCount(1);
+  await pillTab("To confirm").click();
+  await expect(row(FIRST)).toHaveCount(0); // nobody claims it yet: nothing for the accountant to confirm
+  await settled(page);
+
+  // 2. The rep: both under Unmatched, unclaimed; Confirm payment on the first opens the expected fields filled from the bank's side, which the rep adjusts.
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Payments Received").click();
+  await expect(pillTab("Unmatched").locator(".pill-count")).toHaveText(/\d+/);
+  await pillTab("Unmatched").click();
+  await expect(row(FIRST).locator(".chip")).toHaveText("Unclaimed");
+  await expect(row(FIRST)).toContainText("2,500.00");
+  await expect(row(OTHER).locator(".chip")).toHaveText("Unclaimed");
+  await row(FIRST).getByRole("button", { name: "Confirm payment" }).click();
+  await page.locator(".modal-panel").waitFor();
+  await expect(page.locator(".modal-title")).toContainText(SENDER);
+  await expect(page.locator(".modal-sub")).toContainText("2,500.00");
+  await expect(page.locator('.modal-panel [aria-label="Expected amount"]')).toHaveValue("2500");
+  await expect(page.locator('.modal-panel [aria-label="Currency"]')).toHaveValue("GBP"); // the bank's currency, not the form's default
+  await expect(page.locator('.modal-panel [aria-label="Sender name"]')).toHaveValue(SENDER);
+  await expect(page.locator('.modal-panel [aria-label="Customer name"]')).toHaveValue(FIRST);
+  await expect(page.locator('.modal-panel [aria-label="Received amount"]')).toHaveCount(0); // the bank's side is not the rep's to type
+  await page.locator('.modal-panel [aria-label="Customer name"]').fill(CLAIM);
+  await page.locator('.modal-panel [aria-label="Expected amount"]').fill("2520");
+  await page.locator('.modal-panel [aria-label="INV no."]').fill("U-01");
+  await page.locator('.modal-panel [aria-label="Payment proof"]').check();
+  await page.locator(".modal-panel").getByRole("button", { name: "Confirm payment" }).click();
+  await expect(page.locator(".modal-panel")).toHaveCount(0);
+  await expect(row(CLAIM).locator(".chip")).toHaveText(`Claimed by ${A.sale.name}`); // it stays listed until the accountant confirms
+  await expect(row(CLAIM).getByRole("button", { name: "Confirm payment" })).toHaveCount(0);
+  await expect(row(CLAIM).getByRole("button", { name: "Edit" })).toHaveCount(1);
+  await expect(row(OTHER).locator(".chip")).toHaveText("Unclaimed");
+  await pillTab("Expected").click();
+  await expect(row(CLAIM)).toHaveCount(0); // a claim is not an announcement
+  await pillTab("Confirmed").click();
+  await expect(row(CLAIM)).toHaveCount(0);
+  await settled(page);
+
+  // 3. A second claim on the same money is refused by the server (another rep's, pushed through the API).
+  const api = await request.newContext({ baseURL: baseURL! });
+  await api.post("/api/auth/login", { data: { username: A.admin.username, password: A.admin.password } });
+  const { slices } = await (await api.get("/api/state")).json();
+  const receipt = slices.receivedPayments.find((r: any) => r.customer === FIRST && !r.expectedId);
+  expect(receipt).toBeTruthy();
+  const now = new Date().toISOString();
+  const rival = await api.post("/api/sync", { data: { changes: [{ kind: "expectedPayments", id: `xpay-e2e-rival-${Date.now()}`, createdAt: now, data: { id: `xpay-e2e-rival-${Date.now()}`, saleId: "", saleName: "Rival", date: isoDay(0), company: "LTD", currency: "GBP", expectedAmount: 2500, sender: SENDER, customer: `${U} Rival`, proof: false, invNo: "", receivedId: receipt.id, createdBy: "e2e", createdAt: now, updatedAt: now } }] } });
+  expect(rival.status()).toBe(403);
+  expect(await rival.text()).toContain("claimed");
+  await api.post("/api/auth/logout"); await api.dispose();
+
+  // 4. The accountant: the claimed row sits under Unmatched and under To confirm, the rep's half filled, the bank's half as entered; Confirm links them.
+  await signIn(page, A.accountant.username, A.accountant.password);
+  await pillTab("Unmatched").click();
+  await expect(row(CLAIM)).toContainText(`Claimed by ${A.sale.name}`);
+  await expect(row(CLAIM).locator("td").first()).toHaveText(fmtDate(isoDay(0)));
+  await expect(row(CLAIM).locator("td.sales-start")).toHaveText(fmtDate(isoDay(0)));
+  await expect(row(CLAIM)).toContainText("2,500.00"); await expect(row(CLAIM)).toContainText("2,520.00");
+  await expect(row(CLAIM)).toContainText("INV U-01");
+  await expect(row(CLAIM).locator(".pay-diff")).toHaveText("−20.00");
+  await expect(row(CLAIM).locator("td.pay-off")).toHaveCount(1);
+  await expect(row(CLAIM).locator('[aria-label="Proof of payment"]')).toBeChecked();
+  await expect(row(CLAIM).locator(".qb-cell")).toHaveText(`${fmtDate(isoDay(0))} 10:15 · Karan`);
+  await expect(row(CLAIM)).toContainText(A.sale.name); // Entered by: the rep who claims it
+  await expect(row(OTHER)).toHaveCount(1);
+  await pillTab("To confirm").click();
+  await expect(row(CLAIM)).toHaveCount(1); await expect(row(OTHER)).toHaveCount(0);
+  await row(CLAIM).getByRole("button", { name: "Confirm" }).click();
+  await page.locator(".modal-panel").waitFor();
+  await expect(page.locator(".modal-title")).toContainText(CLAIM);
+  await expect(page.locator(".modal-sub")).toContainText("claims this receipt");
+  await expect(page.locator('.modal-panel [aria-label="Received amount"]')).toHaveValue("2500");
+  await expect(page.locator(".modal-panel .pay-diff")).toContainText("−20.00");
+  await expect(page.locator('.modal-panel [aria-label="Added by"]')).toHaveValue("Karan"); // what was typed when the money came in
+  await page.locator('.modal-panel [aria-label="Received amount"]').fill("2520"); // the bank's figure corrected: the gap closes
+  await expect(page.locator(".modal-panel .pay-diff")).toContainText("0.00");
+  await page.getByRole("button", { name: "Confirm payment" }).click();
+  await expect(page.locator(".modal-panel")).toHaveCount(0);
+  await expect(row(CLAIM)).toHaveCount(0); // confirmed: it leaves To confirm …
+  await pillTab("Unmatched").click();
+  await expect(row(CLAIM)).toHaveCount(0); // … and Unmatched …
+  await expect(row(OTHER)).toHaveCount(1);
+  await pillTab("All").click();
+  await expect(row(CLAIM)).toHaveCount(1); // … and stays whole under All
+  await expect(row(CLAIM).locator("td").first()).toHaveText(fmtDate(isoDay(0)));
+  await expect(row(CLAIM)).toContainText("2,520.00");
+  await expect(row(CLAIM).locator(".pay-diff")).toHaveText("0.00");
+  await expect(row(CLAIM).locator(".qb-cell")).toHaveText(`${fmtDate(isoDay(0))} 10:15 · Karan`);
+  await expect(row(CLAIM).getByRole("button", { name: "Confirm" })).toHaveCount(0);
+  await expect(row(CLAIM).getByRole("button", { name: "Undo" })).toHaveCount(1);
+  await settled(page);
+
+  // 5. Export: this month by default, the sheet carries the screen's two header rows and the row with both halves.
+  await page.getByRole("button", { name: "Export" }).click();
+  await page.locator(".modal-panel").waitFor();
+  await expect(page.locator(".modal-title")).toHaveText("Export to Excel");
+  await expect(dateField(0)).toHaveValue(fmtDate(from)); await expect(dateField(1)).toHaveValue(fmtDate(to));
+  await expect(page.locator(".modal-panel .muted")).toContainText(/\d+ payments? in this span/);
+  const download = page.waitForEvent("download");
+  await page.locator(".modal-panel").getByRole("button", { name: "Export" }).click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe(`payments-received_${from}_${to}.xlsx`);
+  const wb = XLSX.read(await (await import("node:fs/promises")).readFile((await file.path())!));
+  const aoa = XLSX.utils.sheet_to_json<any[]>(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: "" });
+  expect(wb.SheetNames).toEqual(["Payments received"]);
+  expect(aoa[0].slice(0, 13)).toEqual(["Details entered by Finance", "", "", "", "", "", "Details confirmed by Sales", "", "", "", "", "", "Difference"]);
+  expect(aoa[1]).toEqual(LEDGER_COLUMNS);
+  const exported = aoa.find((r) => r[7] === CLAIM)!;
+  expect(exported).toEqual([fmtDate(isoDay(0)), "LTD", "GBP", 2520, SENDER, `${fmtDate(isoDay(0))} 10:15 · Karan`, fmtDate(isoDay(0)), CLAIM, "GBP", 2520, "Yes", A.sale.name, 0]);
+  expect(aoa.find((r) => r[7] === OTHER)!.slice(0, 7)).toEqual([fmtDate(isoDay(0)), "LTD", "GBP", 300, `${SENDER} 2`, "", ""]);
+  await expect(page.locator(".modal-panel")).toHaveCount(0);
+
+  // 6. The rep's Confirmed carries it like any confirmed payment; Unmatched no longer lists that receipt.
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Payments Received").click();
+  await pillTab("Confirmed").click();
+  await expect(row(CLAIM)).toContainText("2,520.00");
+  await expect(row(CLAIM)).toContainText(`claimed ${fmtDate(isoDay(0))}`);
+  await expect(row(CLAIM).locator(".qb-cell")).toHaveText(`${fmtDate(isoDay(0))} 10:15 · Karan`);
+  await pillTab("Unmatched").click();
+  await expect(row(CLAIM)).toHaveCount(0); await expect(row(FIRST)).toHaveCount(0);
+  await expect(row(OTHER)).toHaveCount(1);
+
+  // 7. Undo by the accountant: the receipt keeps its figures and is claimed again, under Unmatched for both.
+  await signIn(page, A.accountant.username, A.accountant.password);
+  await row(CLAIM).getByRole("button", { name: "Undo" }).click();
+  await expect(row(CLAIM).getByRole("button", { name: "Confirm" })).toHaveCount(1);
+  await expect(row(CLAIM)).toContainText("2,520.00");
+  await pillTab("Unmatched").click();
+  await expect(row(CLAIM)).toContainText(`Claimed by ${A.sale.name}`);
+  await settled(page);
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Payments Received").click();
+  await pillTab("Unmatched").click();
+  await expect(row(CLAIM).locator(".chip")).toContainText("Claimed by");
+  await pillTab("Confirmed").click();
+  await expect(row(CLAIM)).toHaveCount(0);
+
+  // 8. Tidy through the accountant's screen: a claimed row goes with its claim, an unclaimed one alone; the rep is left with nothing of it.
+  await signIn(page, A.accountant.username, A.accountant.password);
+  await pillTab("Unmatched").click();
+  await removePayRow(page, row(CLAIM));
+  await expect(row(CLAIM)).toHaveCount(0);
+  await removePayRow(page, row(OTHER));
+  await expect(row(OTHER)).toHaveCount(0);
+  await pillTab("All").click();
+  await expect(row(CLAIM)).toHaveCount(0);
+  await settled(page);
+  await signIn(page, A.sale.username, A.sale.password);
+  await side(page, "Payments Received").click();
+  await expect(row(CLAIM)).toHaveCount(0); // the claim went with the receipt: no stray announcement
+  await pillTab("Unmatched").click();
+  await expect(row(CLAIM)).toHaveCount(0); await expect(row(OTHER)).toHaveCount(0);
+  await wipePayments(baseURL!, [U]);
 });
 
 test("every screen has its own address: it follows the sidebar, survives a reload, opens from a pasted link, and sends a role home from a page it may not open", async ({ page }) => {
