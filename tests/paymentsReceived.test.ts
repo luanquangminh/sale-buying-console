@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { LEDGER_COLUMNS, LEDGER_GROUPS, PAY_COMPANIES, QB_ADDERS, confirmationOf, difference, diffTone, enteredBy, fmtDiff, forSale, inFilter, inSpan, isConfirmed, ledgerMonths, ledgerRows, ledgerSheet, monthOf, monthRange, newestFirst, qbText, splitExpected, toConfirmCount, unmatched, unmatchedRows } from "../src/paymentsReceived.js";
+import { LEDGER_COLUMNS, LEDGER_GROUPS, PAY_COMPANIES, QB_ADDERS, adderTone, confirmationOf, difference, diffTone, enteredBy, fmtDiff, forSale, inFilter, inSpan, isConfirmed, ledgerMonths, ledgerRows, ledgerSheet, monthOf, monthRange, newestFirst, qbText, splitExpected, toConfirmCount, unmatched, unmatchedRows } from "../src/paymentsReceived.js";
 
 const exp = (id: string, extra: Record<string, unknown> = {}) => ({ id, saleId: "sale-1", saleName: "Anna", date: "2026-10-20", company: "LTD", currency: "GBP", expectedAmount: 13560, sender: "Juara Trade", customer: "Juara Trade Fzco", proof: true, createdAt: "2026-10-20T09:00:00.000Z", ...extra });
 const rec = (id: string, expectedId: string | "" = "", extra: Record<string, unknown> = {}) => ({ id, expectedId, receivedDate: "2026-10-21", company: "LTD", currency: "GBP", receivedAmount: 13510.36, sender: "JUARA TRADE - FZCO", qb: { date: "", time: "", addedBy: "" }, confirmedBy: "Finance", createdAt: "2026-10-21T10:00:00.000Z", ...extra });
 
 describe("payments received: what confirms what", () => {
-  it("offers the two companies of the Excel, and the two names that enter QuickBooks", () => { expect(PAY_COMPANIES).toEqual(["LTD", "LLC"]); expect(QB_ADDERS).toEqual(["Mai", "Karan"]); });
+  it("offers the two companies of the Excel, and the two accountants' names, Mai's tinted pink", () => {
+    expect(PAY_COMPANIES).toEqual(["LTD", "LLC"]); expect(QB_ADDERS).toEqual(["Mai", "Karan"]);
+    expect([adderTone("Mai"), adderTone("Karan"), adderTone(""), adderTone(undefined)]).toEqual(["pink", "", "", ""]);
+  });
   it("an expected payment is confirmed by the received one that points at it", () => {
     const e = exp("e1"); const r = rec("r1", "e1");
     expect(confirmationOf(e, [rec("r0"), r])).toBe(r);
@@ -96,28 +99,28 @@ describe("payments received: money nobody announced, claimed by a rep", () => {
   });
   it("the ledger shows the claimed receipt as one row of its own kind, dated by the bank, under To confirm and Unmatched both", () => {
     const rows = ledgerRows([claim, exp("e1", { date: "2026-11-01" })], [loose, other]);
-    expect(rows.map((r) => [r.kind, r.id, r.date])).toEqual([["pending", "e1", "2026-11-01"], ["claimed", "r5", "2026-11-03"], ["loose", "r6", "2026-11-04"]]);
+    expect(rows.map((r) => [r.kind, r.id, r.date])).toEqual([["loose", "r6", "2026-11-04"], ["claimed", "r5", "2026-11-03"], ["pending", "e1", "2026-11-01"]]);
     const claimedRow = rows[1];
     expect([claimedRow.expected!.id, claimedRow.received!.id, claimedRow.diff]).toEqual(["e5", "r5", -8]);
-    expect(rows.filter((r) => inFilter(r.kind, "pending")).map((r) => r.id)).toEqual(["e1", "r5"]);
-    expect(rows.filter((r) => inFilter(r.kind, "loose")).map((r) => r.id)).toEqual(["r5", "r6"]);
+    expect(rows.filter((r) => inFilter(r.kind, "pending")).map((r) => r.id)).toEqual(["r5", "e1"]);
+    expect(rows.filter((r) => inFilter(r.kind, "loose")).map((r) => r.id)).toEqual(["r6", "r5"]);
     expect(rows.filter((r) => inFilter(r.kind, "all")).length).toBe(3);
     expect(ledgerMonths(rows, "2026-11-09")).toEqual([{ month: "2026-11", toConfirm: 2 }]);
-    expect(enteredBy(claimedRow)).toBe("Anna"); expect(enteredBy(rows[2])).toBe("Finance"); expect(enteredBy({ expected: { saleId: "s1", saleName: "" }, received: null } as any, (id: string) => (id === "s1" ? "Zed" : ""))).toBe("Zed");
+    expect(enteredBy(claimedRow)).toBe("Anna"); expect(enteredBy(rows[0])).toBe(""); expect(enteredBy({ expected: { saleId: "s1", saleName: "" }, received: null } as any, (id: string) => (id === "s1" ? "Zed" : ""))).toBe("Zed");
   });
 });
 
 describe("payments received: the accountant's ledger, like the finance Excel", () => {
-  const expected = [exp("e1", { date: "2026-10-30" }), exp("e2", { date: "2026-11-02", saleId: "sale-2", saleName: "Bob" }), exp("e3", { date: "2026-11-05", createdAt: "2026-11-05T09:00:00.000Z" }), exp("e4", { date: "2026-11-05", createdAt: "2026-11-05T08:00:00.000Z" })];
+  const expected = [exp("e1", { date: "2026-10-30" }), exp("e2", { date: "2026-11-02", saleId: "sale-2", saleName: "Bob", valuationDate: "2026-11-10" }), exp("e3", { date: "2026-11-05", createdAt: "2026-11-05T09:00:00.000Z" }), exp("e4", { date: "2026-11-05", createdAt: "2026-11-05T08:00:00.000Z" })];
   const received = [rec("r1", "e1", { receivedDate: "2026-11-03" }), rec("r2", "", { receivedDate: "2026-11-01" }), rec("r9", "e-gone", { receivedDate: "2026-10-02" })];
-  it("one row a payment: pending, confirmed, and the money nobody announced, oldest first", () => {
+  it("one row a payment: pending, confirmed, and the money nobody announced, newest first", () => {
     const rows = ledgerRows(expected, received);
     expect(rows.map((r) => [r.kind, r.id, r.date])).toEqual([
-      ["loose", "r9", "2026-10-02"], // a receipt whose announcement is gone counts as unannounced
-      ["loose", "r2", "2026-11-01"],
-      ["pending", "e2", "2026-11-02"],
+      ["pending", "e3", "2026-11-05"], ["pending", "e4", "2026-11-05"], // same day: the one entered last comes first
       ["confirmed", "e1", "2026-11-03"], // announced in October, the bank's date puts it in November
-      ["pending", "e4", "2026-11-05"], ["pending", "e3", "2026-11-05"], // same day: the one entered first comes first
+      ["pending", "e2", "2026-11-02"],
+      ["loose", "r2", "2026-11-01"],
+      ["loose", "r9", "2026-10-02"], // a receipt whose announcement is gone counts as unannounced
     ]);
     const e1 = rows.find((r) => r.id === "e1")!;
     expect([e1.expected!.customer, e1.received!.id, e1.diff]).toEqual(["Juara Trade Fzco", "r1", -49.64]);
@@ -136,17 +139,18 @@ describe("payments received: the accountant's ledger, like the finance Excel", (
     expect(monthRange("2026-11")).toEqual({ from: "2026-11-01", to: "2026-11-30" });
     expect(monthRange("2026-02")).toEqual({ from: "2026-02-01", to: "2026-02-28" }); expect(monthRange("2028-02").to).toBe("2028-02-29");
   });
-  it("the export: the two header rows of the screen, the rows between the dates, amounts as numbers", () => {
-    const rows = ledgerRows(expected, [rec("r1", "e1", { receivedDate: "2026-11-03", qb: { date: "2026-11-04", time: "14:05", addedBy: "Mai" } }), ...received.slice(1)]);
+  it("the export: the two header rows of the screen, the rows between the dates newest first, amounts as numbers", () => {
+    const rows = ledgerRows(expected, [rec("r1", "e1", { receivedDate: "2026-11-03", enteredBy: "Karan", qb: { date: "2026-11-04", time: "14:05", addedBy: "Mai" } }), ...received.slice(1)]);
     const { aoa, merges, cols } = ledgerSheet(rows, "2026-11-01", "2026-11-03", (id: string) => (id === "sale-2" ? "Bob" : ""));
     expect(LEDGER_GROUPS.map((g) => g[1]).reduce((a, b) => a + b, 0)).toBe(LEDGER_COLUMNS.length);
-    expect(aoa[0]).toEqual(["Details entered by Finance", "", "", "", "", "", "Details confirmed by Sales", "", "", "", "", "", "Difference"]);
-    expect(merges).toEqual([{ s: { r: 0, c: 0 }, e: { r: 0, c: 5 } }, { s: { r: 0, c: 6 }, e: { r: 0, c: 11 } }, { s: { r: 0, c: 12 }, e: { r: 0, c: 12 } }]);
+    expect(LEDGER_COLUMNS).toEqual(["Date", "Company", "Currency", "Sender name", "Amount received", "Entered by", "Date", "Company", "Currency", "Customer name", "Amount expected", "Valuation date", "Proof of payment", "Entered by", "Amount different", "Added in QB"]);
+    expect(aoa[0]).toEqual(["Details entered by Finance", "", "", "", "", "", "Details confirmed by Sales", "", "", "", "", "", "", "", "Difference", "QuickBooks"]);
+    expect(merges).toEqual([{ s: { r: 0, c: 0 }, e: { r: 0, c: 5 } }, { s: { r: 0, c: 6 }, e: { r: 0, c: 13 } }, { s: { r: 0, c: 14 }, e: { r: 0, c: 14 } }, { s: { r: 0, c: 15 }, e: { r: 0, c: 15 } }]);
     expect(aoa[1]).toEqual(LEDGER_COLUMNS);
     expect(aoa.slice(2)).toEqual([
-      ["01/11/2026", "LTD", "GBP", 13510.36, "JUARA TRADE - FZCO", "", "", "", "", "", "", "Finance", ""], // r2: nobody announced it
-      ["", "", "", "", "", "", "02/11/2026", "Juara Trade Fzco", "GBP", 13560, "Yes", "Bob", ""], // e2: nothing received yet
-      ["03/11/2026", "LTD", "GBP", 13510.36, "JUARA TRADE - FZCO", "04/11/2026 14:05 · Mai", "30/10/2026", "Juara Trade Fzco", "GBP", 13560, "Yes", "Anna", -49.64], // e1 confirmed
+      ["03/11/2026", "LTD", "GBP", "JUARA TRADE - FZCO", 13510.36, "Karan", "30/10/2026", "LTD", "GBP", "Juara Trade Fzco", 13560, "", "Yes", "Anna", -49.64, "04/11/2026 14:05 · Mai"], // e1 confirmed: both halves, the gap, the QuickBooks note last
+      ["", "", "", "", "", "", "02/11/2026", "LTD", "GBP", "Juara Trade Fzco", 13560, "10/11/2026", "Yes", "Bob", "", ""], // e2: nothing received yet, the money dated later
+      ["01/11/2026", "LTD", "GBP", "JUARA TRADE - FZCO", 13510.36, "", "", "", "", "", "", "", "", "", "", ""], // r2: nobody announced it, nobody named on either half
     ]);
     expect(cols.length).toBe(LEDGER_COLUMNS.length);
     expect(ledgerSheet(rows, "", "").aoa.length).toBe(2 + rows.length); // no dates: everything

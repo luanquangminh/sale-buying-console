@@ -86,8 +86,10 @@ await step("accountant: one tab, the ledger of the finance Excel", async () => {
   expect((await pill("Confirmed").count()) === 0, "no Confirmed filter: All holds them");
   if (await page.locator(".pay-row").count()) {
     const groups = await page.locator("th.pay-group").allInnerTexts();
-    expect(/finance/i.test(groups[0] || "") && /sales/i.test(groups[1] || "") && /difference/i.test(groups[2] || ""), `group headers: ${groups.join(" | ")}`);
-    expect(!/remark/i.test((await page.locator(".pay-ledger thead").innerText()) || ""), "no Remark column");
+    expect(/finance/i.test(groups[0] || "") && /sales/i.test(groups[1] || "") && /difference/i.test(groups[2] || "") && /quickbooks/i.test(groups[3] || ""), `group headers: ${groups.join(" | ")}`);
+    const thead = (await page.locator(".pay-ledger thead").innerText()) || "";
+    expect(!/remark/i.test(thead), "no Remark column");
+    expect(!/Date of confirmation/i.test(thead) && /Valuation date/.test(thead) && /Added in QB/.test(thead), "the sales date reads Date; Valuation date and Added in QB are columns");
   } else expect((await page.locator(".empty", { hasText: `No payment in ${month}` }).count()) === 1, "empty month text");
   expect((await page.getByRole("button", { name: "Export" }).count()) === 1, "Export button");
   await page.getByRole("button", { name: "Export" }).click();
@@ -98,6 +100,7 @@ await step("accountant: one tab, the ledger of the finance Excel", async () => {
   await page.locator(".modal-panel").waitFor();
   expect((await page.locator('.modal-panel [aria-label="Remark"]').count()) === 0, "no remark field in the dialog");
   expect((await page.locator('.modal-panel [aria-label="Added by"] option').allInnerTexts()).join(",") === "—,Mai,Karan", "Added by is a choice of Mai or Karan");
+  expect((await page.locator('.modal-panel [aria-label="Entered by"] option').allInnerTexts()).join(",") === "—,Mai,Karan", "Entered by is a choice of Mai or Karan");
   expect((await page.locator('.modal-panel [aria-label="Added to QuickBooks"]').count()) === 0, "no Done tick");
   await page.getByRole("button", { name: "Cancel" }).click(); await settle();
   expect((await page.locator(".modal-panel").count()) === 0, "dialog closed");
@@ -107,6 +110,8 @@ await step("sale: Payments Received has an Unmatched pill for the money nobody a
   await login("exp-sale", EXP_PASS);
   await side("Payments Received").click();
   for (const t of ["Expected", "Confirmed", "Unmatched"]) expect((await pill(t).count()) === 1, `rep pill ${t}`);
+  expect((await page.locator(".add-form .date-field").count()) === 2, "the rep's form: Date and Valuation date");
+  expect((await page.locator('.add-form [aria-label="Company"] option').allInnerTexts()).join(",") === "LTD,LLC", "the rep picks the company too");
   await pill("Unmatched").click(); await settle();
   expect((await page.locator(".pay-row").count()) > 0 || (await page.locator(".empty", { hasText: "No unmatched money" }).count()) === 1, "unmatched list or its empty text");
   expect((await page.getByRole("button", { name: "Add received payment" }).count()) === 0, "a rep cannot enter the bank's side");

@@ -10,8 +10,10 @@ import { fmtDate } from "./dates";
 import { fmtNumber, numOrNull, round2 } from "./money";
 
 export const PAY_COMPANIES = ["LTD", "LLC"];
-/** Who enters receipts into QuickBooks: the choices of the Added by box. */
+/** The accountants: the choices of Entered by (who typed the receipt) and Added by (who put it into QuickBooks). */
 export const QB_ADDERS = ["Mai", "Karan"];
+/** How a name is tinted where it shows: Mai light pink, the rest plain. */
+export const adderTone = (name) => (name === QB_ADDERS[0] ? "pink" : "");
 
 /** Newest first by the given date field, then by when it was entered. */
 const byNewest = (key) => (a, b) => String(b[key] || "").localeCompare(String(a[key] || "")) || String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
@@ -93,7 +95,7 @@ export function monthRange(month) {
 }
 
 /**
- * Every payment as one ledger row, oldest first like the Excel: `pending` (announced, nothing received yet), `confirmed`
+ * Every payment as one ledger row, newest first: `pending` (announced, nothing received yet), `confirmed`
  * (announced and received), `loose` (received, nobody announced or claims it) and `claimed` (received, a rep claims it, the
  * accountant has not confirmed). `date` places the row in a month: the bank's date once there is one, else the rep's, else
  * the day it was entered.
@@ -106,7 +108,7 @@ export function ledgerRows(expected, received) {
     ...confirmed.map((e) => ({ kind: "confirmed", id: e.id, date: dateOf(e.confirmation.receivedDate || e.date, e), expected: e, received: e.confirmation, diff: e.diff, createdAt: e.confirmation.createdAt || "" })),
     ...unmatchedRows(received, expected || []).map(({ receipt: r, claim: c }) => ({ kind: c ? "claimed" : "loose", id: r.id, date: dateOf(r.receivedDate, r), expected: c, received: r, diff: c ? difference(c, r) : null, createdAt: r.createdAt || "" })),
   ];
-  return rows.sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt));
+  return rows.sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
 }
 
 /** The accountant's row filters: To confirm is what awaits the accountant, Unmatched the money nobody announced; a claimed row is both. */
@@ -120,13 +122,13 @@ export function ledgerMonths(rows, todayIso) {
   return [...m].map(([month, toConfirm]) => ({ month, toConfirm })).sort((a, b) => b.month.localeCompare(a.month));
 }
 
-/** Who entered the sales half: the rep who announced or claimed it; for money nobody did, the accountant who typed it. */
-export const enteredBy = ({ expected: e, received: r }, repName = () => "") => (e ? e.saleName || repName(e.saleId) || "" : (r && r.confirmedBy) || "");
+/** Who entered the sales half: the rep who announced or claimed it; "" for money nobody did (the finance half names the accountant). */
+export const enteredBy = ({ expected: e }, repName = () => "") => (e ? e.saleName || repName(e.saleId) || "" : "");
 
 /* The export: the ledger between two dates as the Excel sheet, the same two header rows and columns as the screen. */
 export const inSpan = (row, from, to) => (!from || row.date >= from) && (!to || row.date <= to);
-export const LEDGER_GROUPS = [["Details entered by Finance", 6], ["Details confirmed by Sales", 6], ["Difference", 1]];
-export const LEDGER_COLUMNS = ["Date", "Company", "Currency", "Amount received", "Sender", "Date & time added in QB", "Date of confirmation", "Customer", "Currency", "Amount expected", "Proof of payment", "Entered by", "Amount different"];
+export const LEDGER_GROUPS = [["Details entered by Finance", 6], ["Details confirmed by Sales", 8], ["Difference", 1], ["QuickBooks", 1]];
+export const LEDGER_COLUMNS = ["Date", "Company", "Currency", "Sender name", "Amount received", "Entered by", "Date", "Company", "Currency", "Customer name", "Amount expected", "Valuation date", "Proof of payment", "Entered by", "Amount different", "Added in QB"];
 export function ledgerSheet(rows, from, to, repName = () => "") {
   const groups = []; const merges = [];
   for (const [label, span] of LEDGER_GROUPS) { merges.push({ s: { r: 0, c: groups.length }, e: { r: 0, c: groups.length + span - 1 } }); groups.push(label, ...Array(span - 1).fill("")); }
@@ -134,9 +136,10 @@ export function ledgerSheet(rows, from, to, repName = () => "") {
   const body = rows.filter((row) => inSpan(row, from, to)).map((row) => {
     const { expected: e, received: r, diff } = row;
     return [
-      r ? fmtDate(r.receivedDate) : "", r ? r.company : "", r ? r.currency : "", r ? num(r.receivedAmount) : "", r ? r.sender || "" : "", r ? qbText(r.qb) : "",
-      e ? fmtDate(e.date) : "", (e ? e.customer : r.customer) || "", e ? e.currency : "", e ? num(e.expectedAmount) : "", e ? (e.proof ? "Yes" : "No") : "", enteredBy(row, repName), diff === null || diff === undefined ? "" : diff,
+      r ? fmtDate(r.receivedDate) : "", r ? r.company : "", r ? r.currency : "", r ? r.sender || "" : "", r ? num(r.receivedAmount) : "", r ? r.enteredBy || "" : "",
+      e ? fmtDate(e.date) : "", e ? e.company : "", e ? e.currency : "", (e ? e.customer : r.customer) || "", e ? num(e.expectedAmount) : "", e ? fmtDate(e.valuationDate) : "", e ? (e.proof ? "Yes" : "No") : "", enteredBy(row, repName),
+      diff === null || diff === undefined ? "" : diff, r ? qbText(r.qb) : "",
     ];
   });
-  return { aoa: [groups, LEDGER_COLUMNS, ...body], merges, cols: [12, 9, 9, 15, 28, 24, 14, 34, 9, 15, 9, 14, 14].map((wch) => ({ wch })) };
+  return { aoa: [groups, LEDGER_COLUMNS, ...body], merges, cols: [12, 9, 9, 28, 15, 11, 12, 9, 9, 34, 15, 13, 9, 14, 14, 24].map((wch) => ({ wch })) };
 }
