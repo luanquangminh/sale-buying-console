@@ -1,6 +1,6 @@
 /*
  * A PFI is edited by two roles, each on its own fields: Sale owns the lines themselves, documents
- * and payments; Buyer owns the order-tracking fields on each line and each document's status.
+ * and payments; Buyer owns the order-tracking fields on each line and, on each document, the status and the issued file.
  * When one role saves while the other has the same PFI open, the saver must not write stale
  * values of the other role's fields. mergeOtherRole() lays the other role's fields from the newest
  * record over a draft. The INV number is the Sale's, typed after the PFI exists, so a Buyer save takes it from
@@ -8,6 +8,7 @@
  */
 
 export const BUYER_LINE_FIELDS = ["orderStatus", "estimatedDeliveryDate", "receivedQuantity", "receivedDate", "bbdReceived", "floorStock"];
+export const BUYER_DOC_FIELDS = ["status", "issuedFileName", "issuedFileUrl"];
 
 const pick = (obj, keys) => Object.fromEntries(keys.filter((k) => k in obj).map((k) => [k, obj[k]]));
 
@@ -33,13 +34,13 @@ export function mergeOtherRole(draft, fresh, viewer, base) {
   const dLines = draft.products || [];
   const fLines = fresh.products || [];
   if (viewer === "sale") {
-    // keep Sale's lines as drafted; take Buyer's tracking fields and document statuses from the newest record
+    // keep Sale's lines as drafted; take Buyer's tracking fields and document fields from the newest record
     const products = dLines.map((p) => { const f = fLines.find((x) => x.id === p.id); return f ? { ...p, ...pick(f, BUYER_LINE_FIELDS) } : p; });
-    const documents = (draft.documents || []).map((d) => { const f = (fresh.documents || []).find((x) => x.id === d.id); return f && "status" in f ? { ...d, status: f.status } : d; });
+    const documents = (draft.documents || []).map((d) => { const f = (fresh.documents || []).find((x) => x.id === d.id); return f ? { ...d, ...pick(f, BUYER_DOC_FIELDS) } : d; });
     return { ...draft, products, documents, delivery };
   }
   // buyer: take Sale's line list, document list and payments from the newest record; keep Buyer's own edits per line and document
   const products = fLines.map((f) => { const d = dLines.find((x) => x.id === f.id); return d ? { ...f, ...pick(d, BUYER_LINE_FIELDS) } : f; });
-  const documents = (fresh.documents || []).map((f) => { const d = (draft.documents || []).find((x) => x.id === f.id); return d && "status" in d ? { ...f, status: d.status } : f; });
+  const documents = (fresh.documents || []).map((f) => { const d = (draft.documents || []).find((x) => x.id === f.id); return d ? { ...f, ...pick(d, BUYER_DOC_FIELDS) } : f; });
   return { ...draft, products, documents, delivery, payments: fresh.payments || draft.payments, ...("invNo" in fresh ? { invNo: fresh.invNo } : {}) };
 }

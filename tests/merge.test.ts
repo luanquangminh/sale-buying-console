@@ -21,6 +21,15 @@ describe("mergeOtherRole", () => {
     expect(m.documents.map((d: any) => [d.id, d.status])).toEqual([["d1", "waiting_delivery"], ["d2", "not_applied"]]);
     expect(m.payments).toEqual([{ id: "p1", amount: 5 }]);
   });
+  it("the issued file on a document is the buyer's: a sale save keeps it, a buyer save carries it, a sale draft cannot set it", () => {
+    const issued = { ...fresh, documents: [{ id: "d1", type: "COO", status: "applied", issuedFileName: "coo.pdf", issuedFileUrl: "/api/files/f1" }, { id: "d2", type: "HC", status: "not_applied" }] };
+    expect(mergeOtherRole(draft, issued, "sale").documents).toEqual([{ id: "d1", type: "COO", status: "applied", issuedFileName: "coo.pdf", issuedFileUrl: "/api/files/f1" }]);
+    expect(mergeOtherRole({ ...draft, documents: [{ id: "d1", type: "COO", status: "applied", issuedFileName: "sale.pdf", issuedFileUrl: "/x" }] }, issued, "sale").documents[0]).toMatchObject({ issuedFileName: "coo.pdf" });
+    const bdraft = { ...draft, documents: [{ id: "d1", type: "COO", status: "done", issuedFileName: "coo-v2.pdf", issuedFileUrl: "/api/files/f2" }] };
+    expect(mergeOtherRole(bdraft, issued, "buyer").documents).toEqual([{ id: "d1", type: "COO", status: "done", issuedFileName: "coo-v2.pdf", issuedFileUrl: "/api/files/f2" }, { id: "d2", type: "HC", status: "not_applied" }]);
+    const removed = { ...draft, documents: [{ id: "d1", type: "COO", status: "applied", issuedFileName: "", issuedFileUrl: "" }] };
+    expect(mergeOtherRole(removed, issued, "buyer").documents[0]).toMatchObject({ issuedFileName: "", issuedFileUrl: "" });
+  });
   it("the floor stock box is the buyer's: a sale save keeps it, a buyer save carries it", () => {
     const stocked = { ...fresh, products: [line("a", { floorStock: 30 }), line("b"), line("c")] };
     expect(mergeOtherRole(draft, stocked, "sale").products[0]).toMatchObject({ product: "Pa (sale edit)", floorStock: 30 });

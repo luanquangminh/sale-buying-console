@@ -21,7 +21,7 @@ import { groupBySale, hasSaleChange } from "./orderGroups";
 import { applyReceipts, matchPfiLine, stripDerived } from "./receipts";
 import { mergeOtherRole } from "./merge";
 import { addMonths, inMonth, monthGrid, monthLabel, startOfMonth, todayLocalIso } from "./calendar";
-import { DOC_STATUSES, DOC_STATUS_LABEL, DOC_STATUS_TONE, DOC_TYPES, awaitingDocuments, docProgress } from "./documents";
+import { DOC_STATUSES, DOC_STATUS_LABEL, DOC_STATUS_TONE, DOC_TYPES, awaitingDocuments, docProgress, needsApplying } from "./documents";
 import {
   Building2, Send, FileText, LogOut, ChevronRight, Plus,
   Users, Package, ShieldCheck, Inbox, Truck, Upload, Download,
@@ -460,6 +460,9 @@ const GlobalStyle = () => (
     .doc-type-badge { font-size:10px; font-weight:700; background:#2F7A52; color:#fff; padding:2px 8px; border-radius:3px; letter-spacing:.04em; flex-shrink:0; }
     .doc-content { font-size:12.5px; line-height:1.5; margin-top:6px; }
     .doc-file-link { font-size:11.5px; color:#1F5B3D; display:inline-flex; align-items:center; gap:4px; margin-top:6px; }
+    .doc-issued { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:6px; font-size:11.5px; }
+    .doc-issued .doc-file-link { margin-top:0; }
+    .doc-issued input[type="file"] { font-size:11px; width:auto; }
     .doc-status-row { margin-top:8px; display:flex; align-items:center; gap:8px; }
 
     .reorder-btn { font-size:10.5px; padding:3px 8px; border-radius:3px; border:1px solid #C64B4B; color:#C64B4B; background:#fff; cursor:pointer; font-weight:700; display:inline-flex; align-items:center; gap:4px; }
@@ -2292,15 +2295,26 @@ function DocumentsSection({ documents, canAdd, canEditStatus, onAdd, onStatusCha
                 <Paperclip size={12} /> {d.fileName}
               </a>
             )}
-            <div className="doc-status-row">
-              {canEditStatus ? (
-                <select className={`tone-${DOC_STATUS_TONE[d.status || "not_applied"]}`} value={d.status || "not_applied"} onChange={(e) => onStatusChange(d.id, e.target.value)}>
-                  {DOC_STATUSES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-                </select>
-              ) : (
-                <span className={`ro tone-${DOC_STATUS_TONE[d.status || "not_applied"]}`}>{DOC_STATUS_LABEL[d.status || "not_applied"]}</span>
-              )}
-            </div>
+            {needsApplying(d) ? (
+              <>
+                {d.issuedFileName && (
+                  <div className="doc-issued"><span className="muted">From buyer:</span>
+                    <a className="doc-file-link doc-issued-link" href={d.issuedFileUrl} download={d.issuedFileName} target="_blank" rel="noreferrer"><Paperclip size={12} /> {d.issuedFileName}</a>
+                  </div>
+                )}
+                <div className="doc-status-row">
+                  {canEditStatus ? (
+                    <select className={`tone-${DOC_STATUS_TONE[d.status || "not_applied"]}`} value={d.status || "not_applied"} onChange={(e) => onStatusChange(d.id, e.target.value)}>
+                      {DOC_STATUSES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+                    </select>
+                  ) : (
+                    <span className={`ro tone-${DOC_STATUS_TONE[d.status || "not_applied"]}`}>{DOC_STATUS_LABEL[d.status || "not_applied"]}</span>
+                  )}
+                </div>
+              </>
+            ) : (
+              !d.fileName && <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>No file attached yet</div> // a file to hand over, not a paper to apply for
+            )}
           </div>
         </div>
       ))}
@@ -2853,9 +2867,36 @@ function ReorderPanel({ reorders, onOpen, onHandled, onDismiss }) {
   );
 }
 
+/** The buyer's copy of a paper once it is issued: attached, replaced or removed here; the sale downloads it from the PFI. */
+function IssuedFile({ doc, onChange }) {
+  const [busy, setBusy] = useState(false);
+  const ref = useRef(null);
+  const handle = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setBusy(true);
+    try { const res = await api.uploadFile(file); onChange({ name: res.fileName, url: res.url }); }
+    catch (err) { console.error(err); alert("Could not upload that file. Please try again."); }
+    finally { setBusy(false); if (ref.current) ref.current.value = ""; }
+  };
+  return (
+    <div className="doc-issued">
+      {doc.issuedFileName ? (
+        <>
+          <span className="muted">Issued:</span>
+          <a className="doc-file-link doc-issued-link" href={doc.issuedFileUrl} download={doc.issuedFileName} target="_blank" rel="noreferrer"><Paperclip size={12} /> {doc.issuedFileName}</a>
+          <button className="btn btn-sm btn-ghost" onClick={() => onChange(null)}>Remove</button>
+        </>
+      ) : <span className="muted">Issued paper for the sale:</span>}
+      <input ref={ref} type="file" aria-label={`Issued ${doc.type}`} disabled={busy} onChange={handle} />
+    </div>
+  );
+}
+
 /**
- * The Buyer's Documents tab: every Loaded PFI whose papers are not all Done, newest first. Opening a PFI shows each
- * document with the Sale's note and file; a status change saves at once through the store (the Buyer owns the status).
+ * The Buyer's Documents tab: every Loaded PFI with a paper still to apply, newest first. Opening a PFI shows each document:
+ * the invoice and packing list as the Sale's files to download, the others with the Sale's note, the issued file to attach
+ * and the status; each change saves at once through the store (the Buyer owns the status and the issued file).
  */
 function DocumentsTab({ pfisBySale, actions }) {
   const [find, setFind] = useState("");
@@ -2903,7 +2944,7 @@ function DocumentsTab({ pfisBySale, actions }) {
                     <div className="muted sm-mono">{pfi.invNo || "—"}</div>
                     <div className="company-name">{pfi.customerName}</div>
                     <div className="muted">{pfi.saleName}</div>
-                    <div><span className={`chip ${done === total ? "green" : "amber"}`}>{done} of {total} done</span></div>
+                    <div>{total === 0 ? <span className="chip gray">Files only</span> : <span className={`chip ${done === total ? "green" : "amber"}`}>{done} of {total} done</span>}</div>
                     <ChevronRight size={16} className={`chev ${isOpen ? "open" : ""}`} />
                   </div>
                   {isOpen && (
@@ -2915,20 +2956,23 @@ function DocumentsTab({ pfisBySale, actions }) {
                           <div style={{ flex: 1 }}>
                             <span className="doc-type-badge">{d.type}</span>
                             {d.content && <div className="doc-content"><span className="muted" style={{ fontSize: 11 }}>Note from sale: </span>{d.content}</div>}
-                            {d.fileName && (
+                            {d.fileName ? (
                               <a className="doc-file-link" href={d.fileUrl} download={d.fileName} target="_blank" rel="noreferrer">
                                 <Paperclip size={12} /> {d.fileName}
                               </a>
-                            )}
+                            ) : !needsApplying(d) && <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>No file from the sale yet</div>}
+                            {needsApplying(d) && <IssuedFile doc={d} onChange={(file) => actions.setDocumentFile(saleId, pfi.id, d.id, file)} />}
                           </div>
-                          <select
-                            aria-label="Document status"
-                            className={`tone-${DOC_STATUS_TONE[d.status || "not_applied"]}`}
-                            value={d.status || "not_applied"}
-                            onChange={(e) => actions.updateDocumentStatus(saleId, pfi.id, d.id, e.target.value)}
-                          >
-                            {DOC_STATUSES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-                          </select>
+                          {needsApplying(d) && (
+                            <select
+                              aria-label="Document status"
+                              className={`tone-${DOC_STATUS_TONE[d.status || "not_applied"]}`}
+                              value={d.status || "not_applied"}
+                              onChange={(e) => actions.updateDocumentStatus(saleId, pfi.id, d.id, e.target.value)}
+                            >
+                              {DOC_STATUSES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+                            </select>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -6309,6 +6353,17 @@ export default function App() {
     if (source) pushSaleFeed(saleId, pfiId, source.customerName, "Document", `Buyer set a document status to "${DOC_STATUS_LABEL[status]}".`);
   };
 
+  /** The buyer's copy of a paper once issued ({ name, url }, null to remove): the sale downloads it from the PFI. */
+  const setDocumentFile = (saleId, pfiId, docId, file) => {
+    const source = (pfisBySale[saleId] || []).find((p) => p.id === pfiId);
+    const type = ((source && source.documents.find((d) => d.id === docId)) || {}).type || "document";
+    setPfisAs("buyer")((prev) => ({
+      ...prev,
+      [saleId]: (prev[saleId] || []).map((p) => (p.id === pfiId ? { ...p, documents: p.documents.map((d) => (d.id === docId ? { ...d, issuedFileName: file ? file.name : "", issuedFileUrl: file ? file.url : "" } : d)) } : p)),
+    }));
+    if (source) pushSaleFeed(saleId, pfiId, source.customerName, "Document", file ? `Buyer attached the issued ${type}: ${file.name}.` : `Buyer removed the issued ${type} file.`);
+  };
+
   const addPayment = (saleId, pfiId, payment) => {
     setPfisAs("sale")((prev) => {
       const list = prev[saleId] || [];
@@ -6554,7 +6609,7 @@ export default function App() {
     addLane, updateLane, deleteLane, addQuote, updateQuote, deleteQuote,
     addCustomer, addNote, sendExisting, deleteNote, markSeen, answerFeedItem, deleteFeedItem,
     addPfi, deletePfi, addProduct, addProductsBulk, deleteProduct, updateProductSaleField, updateProductBuyerField,
-    toggleReorder, updateDelivery, addDocument, updateDocumentStatus,
+    toggleReorder, updateDelivery, addDocument, updateDocumentStatus, setDocumentFile,
     addPayment, markOrderFeedSeen, markPfiFeedBuyerSeen,
     addSupplier, addPo, deletePo, addPoProduct, addPoProductsBulk, deletePoProduct,
     updatePoProductField, togglePoProductPfiLink, updatePoAllocation, togglePoReorder, updatePoDelivery, addPoPayment,

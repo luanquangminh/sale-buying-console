@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { DOC_STATUSES, DOC_STATUS_LABEL, DOC_STATUS_TONE, awaitingDocuments, docProgress } from "../src/documents.js";
+import { DOC_STATUSES, DOC_STATUS_LABEL, DOC_STATUS_TONE, FILE_ONLY_TYPES, awaitingDocuments, docProgress, needsApplying } from "../src/documents.js";
 
-const doc = (id: string, status = "not_applied") => ({ id, type: "COO", content: "", fileName: "", fileUrl: "", status });
+const doc = (id: string, status = "not_applied", type = "COO") => ({ id, type, content: "", fileName: "", fileUrl: "", status });
 const pfi = (id: string, createdAt: string, extra: Record<string, unknown> = {}) => ({
   id, pfiNo: id.toUpperCase(), customerName: `Cust ${id}`, saleName: "Rep", createdAt,
   delivery: { loaded: "loaded" }, documents: [doc(`${id}-1`)], ...extra,
@@ -12,6 +12,11 @@ describe("docProgress", () => {
     expect(docProgress([doc("a", "done"), doc("b", "applied"), doc("c", "waiting_delivery"), doc("d")])).toEqual({ total: 4, done: 1, open: 3 });
     expect(docProgress([])).toEqual({ total: 0, done: 0, open: 0 });
     expect(docProgress(undefined as any)).toEqual({ total: 0, done: 0, open: 0 });
+  });
+  it("leaves the invoice and the packing list out: files to hand over, not papers to apply for", () => {
+    expect(FILE_ONLY_TYPES).toEqual(["PL", "INV"]);
+    expect([needsApplying(doc("a")), needsApplying(doc("b", "done", "INV")), needsApplying(doc("c", "not_applied", "PL")), needsApplying(doc("d", "applied", "EUR1"))]).toEqual([true, false, false, true]);
+    expect(docProgress([doc("a", "done"), doc("b", "not_applied", "INV"), doc("c", "not_applied", "PL")])).toEqual({ total: 1, done: 1, open: 0 });
   });
 });
 
@@ -26,6 +31,11 @@ describe("awaitingDocuments", () => {
   });
   it("hides a PFI whose documents are all Done unless showDone asks for it", () => {
     const bySale = { s1: [pfi("a", "2026-11-01", { documents: [doc("a-1", "done"), doc("a-2", "done")] }), pfi("b", "2026-11-02", { documents: [doc("b-1", "done"), doc("b-2", "applied")] })] };
+    expect(awaitingDocuments(bySale).map((r) => r.pfi.id)).toEqual(["b"]);
+    expect(awaitingDocuments(bySale, { showDone: true }).map((r) => r.pfi.id)).toEqual(["b", "a"]);
+  });
+  it("a Loaded PFI with files only (invoice, packing list) has nothing to apply: listed under Show done only", () => {
+    const bySale = { s1: [pfi("a", "2026-11-01", { documents: [doc("a-1", "not_applied", "INV"), doc("a-2", "not_applied", "PL")] }), pfi("b", "2026-11-02", { documents: [doc("b-1", "not_applied", "INV"), doc("b-2")] })] };
     expect(awaitingDocuments(bySale).map((r) => r.pfi.id)).toEqual(["b"]);
     expect(awaitingDocuments(bySale, { showDone: true }).map((r) => r.pfi.id)).toEqual(["b", "a"]);
   });

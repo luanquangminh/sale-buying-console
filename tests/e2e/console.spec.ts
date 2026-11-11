@@ -486,22 +486,47 @@ test("documents: a Loaded PFI's papers show on the buyer's Documents tab; the st
   const status = coos.nth(open).locator('[aria-label="Document status"]');
   await status.selectOption("done");
   await expect(status).toHaveValue("done");
-  const dl = page.waitForEvent("download"); // the sale's invoice file, downloaded from the buyer's tab
-  await detail.locator(".doc-file-link", { hasText: "invoice-3200" }).first().click();
+  // The invoice is a file to hand over, not a paper to apply for: no status on it, just the download from the buyer's tab.
+  const invCard = detail.locator(".doc-card").filter({ has: page.locator(".doc-file-link", { hasText: "invoice-3200" }) }).first();
+  await expect(invCard.locator('[aria-label="Document status"]')).toHaveCount(0);
+  await expect(invCard.locator('input[type="file"]')).toHaveCount(0);
+  const dl = page.waitForEvent("download");
+  await invCard.locator(".doc-file-link").first().click();
   const file = await dl;
   expect(file.suggestedFilename()).toBe("invoice-3200.txt");
   expect(await (await import("node:fs/promises")).readFile((await file.path())!, "utf8")).toContain("INVOICE 3200");
+  // The COO, once issued, is attached for the sale.
+  const cooCard = coos.nth(open);
+  await cooCard.locator('input[type="file"]').setInputFiles({ name: "coo-3200-issued.txt", mimeType: "text/plain", buffer: Buffer.from("COO 3200 ISSUED") });
+  await expect(cooCard.locator(".doc-issued-link")).toHaveText(/coo-3200-issued\.txt/);
   await page.getByLabel("Show done").check(); // all Done or not, the PFI stays listed
   await expect(docRow).toBeVisible();
   expect(await doneCount()).toBe(before + 1);
   await settled(page);
 
-  await signIn(page, A.sale.username, A.sale.password); // the sale reads the status, it cannot edit it
+  await signIn(page, A.sale.username, A.sale.password); // the sale reads the status, it cannot edit it; it downloads the issued paper
   await side(page, "Order Tracking").click();
   await openDetail(page, row);
   await expect(docs.locator(".doc-card", { hasText: COO_NOTE }).first()).toBeVisible();
   await expect(docs.locator(".doc-status-row", { hasText: "Done" })).toHaveCount(before + 1); // one more paper Done than the buyer found
+  const issuedCard = docs.locator(".doc-card", { hasText: COO_NOTE }).filter({ has: page.locator(".doc-issued-link") }).first();
+  await expect(issuedCard).toContainText("From buyer");
+  const dl2 = page.waitForEvent("download");
+  await issuedCard.locator(".doc-issued-link").click();
+  const issued = await dl2;
+  expect(issued.suggestedFilename()).toBe("coo-3200-issued.txt");
+  expect(await (await import("node:fs/promises")).readFile((await issued.path())!, "utf8")).toContain("COO 3200 ISSUED");
+  await expect(docs.locator(".doc-card").filter({ has: page.locator(".doc-file-link", { hasText: "invoice-3200" }) }).first().locator(".doc-status-row")).toHaveCount(0); // no status on the invoice here either
   await close(page);
+
+  await signIn(page, A.buyer.username, A.buyer.password); // the buyer takes the file off again, so the next run starts clean
+  await side(page, "Documents").click();
+  await page.getByLabel("Show done").check();
+  await docRow.click();
+  const withFile = detail.locator(".doc-card").filter({ has: page.locator(".doc-issued-link") }).first();
+  await withFile.getByRole("button", { name: "Remove" }).click();
+  await expect(detail.locator(".doc-issued-link")).toHaveCount(0);
+  await settled(page);
 });
 
 test("documents, in detail: a PFI reaches the tab only once Loaded; the sale's INV number survives the buyer's save; a PFI with every paper Done leaves the tab until Show done; the admin sets statuses there too", async ({ browser, baseURL }) => {
