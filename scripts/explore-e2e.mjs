@@ -242,7 +242,7 @@ await step("buyer: fulfil PFI 9101 fully → Complete Ordering; floor stock via 
   await closeModal();
 });
 
-await step("container rate: lane, quotes, edit, remove quote, delete lane", async () => {
+await step("container rate: lane, quotes, edit, remove quote, delete the POD as a whole", async () => {
   await login("exp-buyer", EXP_PASS); await side("Container Rate").click();
   if (!(await page.locator(".pod-row", { hasText: "Exp Port" }).count())) {
     await page.getByRole("button", { name: "Add lane" }).click();
@@ -264,8 +264,11 @@ await step("container rate: lane, quotes, edit, remove quote, delete lane", asyn
   expect((await laneRow.innerText()).includes("2,100.00"), "best quote updates on edit");
   await lane.locator('button[title="Remove rate"]').last().click(); await settle();
   expect((await realRows(lane).count()) === 1, "quote removed");
-  await page.getByRole("button", { name: "Delete lane" }).click(); await settle();
-  expect((await laneRow.count()) === 0, "lane deleted");
+  const tools = page.locator(".pod-detail .pod-tools");
+  expect((await tools.getByRole("button", { name: "Rename POD" }).count()) === 1, "Rename POD on the open POD");
+  await tools.getByRole("button", { name: "Delete POD" }).click();
+  await tools.getByRole("button", { name: "Yes, delete POD" }).click(); await settle();
+  expect((await laneRow.count()) === 0, "POD deleted with its lane");
 });
 
 await step("booking as buyer: all fields, 2-digit year, status, search by sale name, reload, delete", async () => {

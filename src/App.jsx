@@ -8,7 +8,7 @@ import { floorStockOf, keepRemoved, lineReceivedTotal, lineStatusSource, pfiTrac
 import { matchNames, uniqueNames } from "./suggest";
 import { fmtNumber, numOrNull, orderTotals, vatOption, VAT_OPTIONS } from "./money";
 import { DUE_TONE, dueLabel, dueState, groupByCustomer, PAY_STATUSES, PAY_STATUS_TONE, payStatus } from "./payments";
-import { bestQuote, cheapestOf, groupLanesByPod } from "./lanes";
+import { bestQuote, cheapestOf, groupLanesByPod, podKey, renamePod as renamePodIn, withoutPod } from "./lanes";
 import { lineCover, pfiLineCover, pfiShortages, poShortages } from "./allocation";
 import { LEDGER_COLUMNS, LEDGER_FILTERS, LEDGER_GROUPS, PAY_COMPANIES, QB_ADDERS, adderTone, diffTone, difference, enteredBy, fmtDiff, forSale, inFilter, inSpan, isConfirmed, ledgerMonths, ledgerRows, ledgerSheet, monthOf, monthRange, qbText, splitExpected, toConfirmCount, unmatchedRows } from "./paymentsReceived";
 import { homeFor, pathFor, sectionAllowed, stateFor } from "./routes";
@@ -445,6 +445,9 @@ const GlobalStyle = () => (
     .pod-detail .lane-head-row, .pod-detail .lane-row { grid-template-columns:1.8fr .9fr .8fr .8fr 1.2fr 28px; padding-left:34px; }
     .pod-detail .lane-row.open { background:#E6F2EA; border-left-color:transparent; }
     .pod-detail .lane-detail { border-left:none; padding-left:34px; }
+    .pod-tools { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 18px 8px 34px; border-bottom:1px solid #E5E9E9; font-size:12.5px; background:#F4FAF6; }
+    .pod-tools input { flex:1 1 220px; max-width:320px; }
+    .pod-tools .pod-hint { flex-basis:100%; }
 
     .docs-head-row { display:grid; grid-template-columns:.9fr 1fr 1.4fr 1fr .9fr 28px; gap:10px; padding:10px 18px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#7C8891; border-bottom:1px solid #E5E9E9; }
     .docs-row { display:grid; grid-template-columns:.9fr 1fr 1.4fr 1fr .9fr 28px; gap:10px; padding:13px 18px; align-items:center; border-bottom:1px solid #EEF0EF; cursor:pointer; font-size:13.5px; border-left:3px solid transparent; }
@@ -544,18 +547,18 @@ const GlobalStyle = () => (
     .pay-qb-title { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#2F7A52; margin-bottom:8px; }
     .pay-table th.num, .pay-table td.num { text-align:right; padding-right:18px; min-width:110px; white-space:nowrap; }
     .qb-cell { font-size:11.5px; color:#5B6770; white-space:nowrap; }
+    td.qb-cell.qb-pink { background:#FCE4EC; color:#8A2C4F; }
     .pay-confirm-del { display:inline-flex; gap:6px; align-items:center; }
     .pay-ledger-bars { display:flex; gap:12px; flex-wrap:wrap; align-items:flex-start; }
     .pay-ledger-bars .pill-tabs { margin-bottom:14px; flex-wrap:wrap; }
-    td.qb-cell.qb-pink { background:#FCE4EC; color:#8A2C4F; }
     .pay-ledger th.pay-group { text-align:center; color:#fff; font-size:11px; letter-spacing:.06em; height:26px; padding:0 8px; line-height:26px; top:0; }
     .pay-ledger th.pay-group.finance { background:#2F7A52; }
     .pay-ledger th.pay-group.sales { background:#D97B2B; }
     .pay-ledger th.pay-group.diff { background:#5B6570; }
+    .pay-ledger th.pay-group.qb { background:#7A6472; }
     .pay-ledger th.pay-group.blank { background:#F7FBF8; }
     .pay-ledger thead tr:last-child th { top:27px; white-space:normal; line-height:1.2; vertical-align:bottom; max-width:110px; }
     .pay-ledger td { font-size:12.5px; }
-    .pay-ledger th.pay-group.qb { background:#7A6472; }
     .pay-ledger th.num, .pay-ledger td.num { min-width:96px; padding-right:12px; }
     .pay-ledger td.wrap { white-space:normal; min-width:150px; max-width:220px; line-height:1.25; }
     .pay-ledger th:first-child, .pay-ledger .ro:first-child { padding-left:12px; }
@@ -3507,6 +3510,7 @@ function PoTrackingArea({ suppliers, pos, actions, allPfiOptions }) {
 
 /* ---------------- Container Rate (shared by Admin, Sale and Buyer) ---------------- */
 
+const addresses = (n) => `${n} loading address${n === 1 ? "" : "es"}`;
 function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) {
   const [showAdd, setShowAdd] = useState(false);
   const [expandedPod, setExpandedPod] = useState(null); // the POD dropped down to its lanes
@@ -3516,6 +3520,8 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
   const [find, setFind] = useState("");
   const [editLane, setEditLane] = useState(null); // { id, pod, loadingAddress, containerType, transitTime }
   const [editQuote, setEditQuote] = useState(null); // { laneId, id, company, currency, rate }
+  const [podEdit, setPodEdit] = useState(null); // { key, pod }: the POD renamed as a whole
+  const [podRemoving, setPodRemoving] = useState(null); // the POD key whose delete awaits a second click
 
   const forwarderNames = React.useMemo(
     () => uniqueNames([...lanes.flatMap((l) => l.quotes.map((q) => q.company)), ...bookings.map((b) => b.forwarder)]),
@@ -3527,7 +3533,7 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
     ? lanes.filter((l) => [l.pod, l.loadingAddress, l.containerType].some((f) => String(f || "").toLowerCase().includes(fq)))
     : lanes;
   const groups = groupLanesByPod(visibleLanes); // one row a POD, its lanes underneath
-  const podKey = (pod) => String(pod ?? "").trim().toLowerCase();
+  const allPods = React.useMemo(() => groupLanesByPod(lanes), [lanes]); // every POD, to say which one a new name joins
   const pager = usePager(groups, { resetKey: find, ensureIndex: groups.findIndex((g) => g.key === expandedPod) });
 
   const submitLane = () => {
@@ -3553,6 +3559,20 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
     });
     setExpandedPod(podKey(editLane.pod)); // a renamed POD takes its open lane along
     setEditLane(null);
+  };
+
+  /** The whole route: every lane under the POD takes the new name, so a misspelt twin joins the POD it was meant to be. */
+  const savePod = () => {
+    const name = podEdit.pod.trim();
+    if (!name) return;
+    actions.renamePod(podEdit.key, name);
+    setExpandedPod(podKey(name)); setPodEdit(null);
+  };
+  const joins = (edit) => { const k = podKey(edit.pod); return k && k !== edit.key ? allPods.find((g) => g.key === k) || null : null; };
+  const removePod = (key) => {
+    actions.deletePod(key);
+    setPodRemoving(null); setExpanded(null);
+    if (expandedPod === key) setExpandedPod(null);
   };
 
   const saveQuote = () => {
@@ -3633,11 +3653,12 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
               const cheapest = cheapestOf(g.lanes);
               const types = [...new Set(g.lanes.map((l) => l.containerType).filter(Boolean))];
               const forwarders = new Set(g.lanes.flatMap((l) => l.quotes.map((q) => String(q.company || "").trim().toLowerCase()).filter(Boolean))).size;
+              const target = podEdit && podEdit.key === g.key ? joins(podEdit) : null;
               return (
                 <React.Fragment key={g.key || "no-pod"}>
                   <div className={`pod-row ${open ? "open" : ""}`} onClick={() => setExpandedPod(open ? null : g.key)}>
                     <div className="company-name">{g.pod || "No POD"}</div>
-                    <div className="muted">{g.lanes.length} loading address{g.lanes.length === 1 ? "" : "es"}</div>
+                    <div className="muted">{addresses(g.lanes.length)}</div>
                     <div>{types.map((t) => <span key={t} className="chip gray" style={{ marginRight: 4 }}>{t}</span>)}</div>
                     <div className="muted">{forwarders === 0 ? "—" : `${forwarders} quoted`}</div>
                     <div>
@@ -3652,6 +3673,30 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
                   </div>
                   {open && (
                     <div className="pod-detail">
+                      {canEdit && (
+                        <div className="pod-tools" onClick={(e) => e.stopPropagation()}>
+                          {podEdit && podEdit.key === g.key ? (
+                            <>
+                              <input aria-label="POD name" value={podEdit.pod} autoFocus onChange={(e) => setPodEdit({ ...podEdit, pod: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") savePod(); if (e.key === "Escape") setPodEdit(null); }} />
+                              <button className="btn btn-accent btn-sm" disabled={!podEdit.pod.trim()} onClick={savePod}><Save size={12} /> Save POD name</button>
+                              <button className="btn btn-ghost btn-sm" onClick={() => setPodEdit(null)}>Cancel</button>
+                              <span className="muted pod-hint">{target ? `Joins “${target.pod}” (${addresses(target.lanes.length)} there already)` : `Renames ${addresses(g.lanes.length)} under this POD`}</span>
+                            </>
+                          ) : podRemoving === g.key ? (
+                            <>
+                              <span>Delete the POD <strong>{g.pod || "No POD"}</strong> with its {addresses(g.lanes.length)} and every rate? This cannot be undone.</span>
+                              <button className="btn btn-danger btn-sm" onClick={() => removePod(g.key)}>Yes, delete POD</button>
+                              <button className="btn btn-ghost btn-sm" onClick={() => setPodRemoving(null)}>Cancel</button>
+                            </>
+                          ) : (
+                            <>
+                              <span className="muted">The whole route: every loading address under <strong>{g.pod || "No POD"}</strong></span>
+                              <button className="btn btn-sm" onClick={() => { setPodRemoving(null); setPodEdit({ key: g.key, pod: g.pod }); }}><Pencil size={12} /> Rename POD</button>
+                              <button className="btn btn-sm" onClick={() => { setPodEdit(null); setPodRemoving(g.key); }}><Trash2 size={12} /> Delete POD</button>
+                            </>
+                          )}
+                        </div>
+                      )}
                       <div className="lane-head-row">
                         <div>Loading address</div><div>Container</div><div>Transit time</div><div>Forwarders</div><div>Cheapest rate</div><div />
                       </div>
@@ -4672,6 +4717,7 @@ function ExpectedFields({ value, onChange, onEnter }) {
       <div><label>Sender name</label><input aria-label="Sender name" placeholder="Name on the transfer" value={value.sender} onChange={(e) => set({ sender: e.target.value })} onKeyDown={enter} /></div>
       <div><label>Customer name</label><input aria-label="Customer name" placeholder="Customer" value={value.customer} onChange={(e) => set({ customer: e.target.value })} onKeyDown={enter} /></div>
       <div><label>Payment proof</label><label className={`done-tick ${value.proof ? "on" : ""}`}><input type="checkbox" aria-label="Payment proof" checked={!!value.proof} onChange={(e) => set({ proof: e.target.checked })} /> {value.proof ? "Yes" : "No"}</label></div>
+      <div><label>Valuation date <span className="muted">(optional)</span></label><DateField value={value.valuationDate} onChange={(v) => set({ valuationDate: v })} /></div>
       <div><label>INV no. <span className="muted">(optional)</span></label><input aria-label="INV no." placeholder="INV" value={value.invNo} onChange={(e) => set({ invNo: e.target.value })} onKeyDown={enter} /></div>
     </div>
   );
@@ -4705,6 +4751,7 @@ function ReceivedFields({ value, onChange, expected }) {
         </div>
         <div><label>Sender name</label><input aria-label="Sender name" placeholder="Name on the bank statement" value={value.sender} onChange={(e) => set({ sender: e.target.value })} /></div>
         {!expected && <div><label>Customer <span className="muted">(if known)</span></label><input aria-label="Customer name" placeholder="Customer" value={value.customer} onChange={(e) => set({ customer: e.target.value })} /></div>}
+        <div><label>Entered by</label><AdderSelect label="Entered by" value={value.enteredBy} onChange={(v) => set({ enteredBy: v })} /></div>
       </div>
       <div className="pay-qb">
         <div className="pay-qb-title">Add to QuickBooks</div>
@@ -4722,10 +4769,11 @@ function ReceivedFields({ value, onChange, expected }) {
 /** The delete control of a payment row: one click asks, the second removes. */
 function PayRemove({ id, label = "Delete", removing, onAsk, onCancel, onRemove }) {
   if (removing !== id) return <button className="btn-icon" title={label} onClick={() => onAsk(id)}><Trash2 size={14} /></button>;
-      <div><label>Valuation date <span className="muted">(optional)</span></label><DateField value={value.valuationDate} onChange={(v) => set({ valuationDate: v })} /></div>
   return <span className="pay-confirm-del"><button className="btn btn-sm btn-danger" onClick={() => onRemove(id)}>Yes, {label.toLowerCase()}</button><button className="btn btn-sm" onClick={onCancel}>Cancel</button></span>;
 }
 const PayDiff = ({ value }) => <span className={`ro pay-diff tone-${diffTone(value)}`}>{fmtDiff(value) || "—"}</span>;
+/** The QuickBooks note of a receipt: date, time and name, the cell tinted by the name. */
+const QbCell = ({ qb, className = "" }) => { const tone = qb && adderTone(qb.addedBy); return <td className={`ro qb-cell ${className}${tone ? ` qb-${tone}` : ""}`}>{qbText(qb) || "—"}</td>; };
 /** One list of payments: the card, the empty states, the table scaffold; each tab supplies its header cells and a row renderer. */
 function PayTable({ list, rows, pager, emptyText, head, className = "", children }) {
   const empty = (text) => <div className="empty"><CreditCard size={30} /><div style={{ fontWeight: 600 }}>{text}</div></div>;
@@ -4746,7 +4794,6 @@ function PayTable({ list, rows, pager, emptyText, head, className = "", children
 const curChip = (c) => <span className={`chip ${c === "EUR" ? "violet" : "blue"}`}>{c}</span>;
 
 /**
-        <div><label>Entered by</label><AdderSelect label="Entered by" value={value.enteredBy} onChange={(v) => set({ enteredBy: v })} /></div>
  * Sale: their own expected payments — Expected (pending), Confirmed, and Unmatched: the money nobody announced, which a rep claims
  * with Confirm payment. Accountant and Admin: the finance Excel — one ledger a month, every payment one row, the bank's side (finance)
  * on the left and the rep's (sales) on the right; the pending and the claimed rows wait for Confirm.
@@ -4772,8 +4819,6 @@ function PaymentsReceivedTab({ mode, saleId, saleName, expected, received, actio
 
   const scope = React.useMemo(() => (isRep ? forSale(expected, saleId) : expected || []), [expected, isRep, saleId]);
   const { pending, confirmed } = React.useMemo(() => splitExpected(scope, received), [scope, received]);
-/** The QuickBooks note of a receipt: date, time and name, the cell tinted by the name. */
-const QbCell = ({ qb, className = "" }) => { const tone = qb && adderTone(qb.addedBy); return <td className={`ro qb-cell ${className}${tone ? ` qb-${tone}` : ""}`}>{qbText(qb) || "—"}</td>; };
   const unmatchedList = React.useMemo(() => (isRep ? unmatchedRows(received, expected) : []), [isRep, received, expected]);
   const ledger = React.useMemo(() => (isRep ? [] : ledgerRows(expected, received)), [isRep, expected, received]);
   const months = React.useMemo(() => ledgerMonths(ledger, today), [ledger, today]);
@@ -4903,6 +4948,7 @@ const QbCell = ({ qb, className = "" }) => { const tone = qb && adderTone(qb.add
               <td className="ro">{e.company}</td>
               <td className="ro">{e.currency}</td>
               <td className="ro num sm-mono">{fmtAmount(e.expectedAmount)}</td>
+              <td className="ro">{fmtDate(e.valuationDate) || "—"}</td>
               <td className="ro">{e.sender || "—"}</td>
               <td><span className={`chip ${e.proof ? "green" : "gray"}`}>{e.proof ? "Yes" : "No"}</span></td>
               <td className="ro">{e.invNo || "—"}</td>
@@ -4948,7 +4994,6 @@ const QbCell = ({ qb, className = "" }) => { const tone = qb && adderTone(qb.add
                 {!c && <button className="btn btn-sm btn-accent" onClick={() => openClaim(r)}>Confirm payment</button>}
                 {c && c.saleId === saleId && <><button className="btn btn-sm" onClick={() => openEdit("expected", c)}>Edit</button>{" "}{removeExpectedCtl(c.id)}</>}
               </td>
-              <td className="ro">{fmtDate(e.valuationDate) || "—"}</td>
             </tr>
           )}
         </PayTable>
@@ -4969,15 +5014,19 @@ const QbCell = ({ qb, className = "" }) => { const tone = qb && adderTone(qb.add
               <td className="ro num sm-mono">{r ? fmtAmount(r.receivedAmount) : "—"}</td>
               <td className="ro">{(r && r.enteredBy) || "—"}</td>
               <td className="ro sales-start">{e ? fmtDate(e.date) || "—" : "—"}</td>
+              <td>{e ? <span className="chip blue">{e.company}</span> : "—"}</td>
+              <td>{e ? curChip(e.currency) : "—"}</td>
               <td className="ro wrap customer" style={{ fontWeight: 600 }}>
                 {(e ? e.customer : r.customer) || "—"}
                 {e && e.invNo && <div className="pay-sub">INV {e.invNo}</div>}
                 {kind === "claimed" && <div className="pay-sub pay-claimed">Claimed by {claimedBy(e)} · to confirm</div>}
               </td>
               <td className="ro num sm-mono">{e ? fmtAmount(e.expectedAmount) : "—"}</td>
+              <td className="ro">{(e && fmtDate(e.valuationDate)) || "—"}</td>
               <td>{e ? <input type="checkbox" className="pay-tick" aria-label="Proof of payment" checked={!!e.proof} readOnly /> : "—"}</td>
               <td className="ro">{enteredBy(row, repName) || "—"}</td>
               <td className={`num diff-start ${diff ? "pay-off" : ""}`}>{e && r ? <PayDiff value={diff} /> : "—"}</td>
+              <QbCell qb={r && r.qb} className="qb-start" />
               <td style={{ whiteSpace: "nowrap" }}>
                 {kind === "pending" && <><button className="btn btn-sm btn-accent" onClick={() => openConfirm(e)}>Confirm</button>{" "}<button className="btn btn-sm" onClick={() => openEdit("expected", e)}>Edit</button>{" "}{removeExpectedCtl(e.id)}</>}
                 {kind === "claimed" && <><button className="btn btn-sm btn-accent" onClick={() => openConfirm(e, r)}>Confirm</button>{" "}<button className="btn btn-sm" onClick={() => openEdit("received", r, e)}>Edit</button>{" "}{removeClaimedCtl(r.id)}</>}
@@ -5013,8 +5062,6 @@ const QbCell = ({ qb, className = "" }) => { const tone = qb && adderTone(qb.add
           <ReceivedFields value={confirming.draft} onChange={(draft) => setConfirming({ ...confirming, draft })} expected={confirming.expected} />
           <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 14 }}>
             <button className="btn btn-accent" disabled={!amountOk(confirming.draft.receivedAmount)} onClick={saveConfirm}><Save size={14} /> Confirm payment</button>
-              <td>{e ? <span className="chip blue">{e.company}</span> : "—"}</td>
-              <td>{e ? curChip(e.currency) : "—"}</td>
             <button className="btn btn-ghost" onClick={() => setConfirming(null)}>Cancel</button>
             <span className="muted" style={{ fontSize: 12 }}>The rep sees the amount received and the difference once saved.</span>
           </div>
@@ -5022,11 +5069,9 @@ const QbCell = ({ qb, className = "" }) => { const tone = qb && adderTone(qb.add
       )}
       {editing && (
         <Modal
-              <td className="ro">{(e && fmtDate(e.valuationDate)) || "—"}</td>
           title={editing.kind === "expected" ? (editing.row.receivedId ? "Claimed payment" : "Expected payment") : editing.row.expectedId ? `Confirmation — ${(editing.expected && editing.expected.customer) || "customer"}` : "Received payment"}
           subtitle={editing.kind === "expected" ? (isRep ? "Change what you announced; the accountant has not confirmed it yet" : `What ${editing.row.saleName || repName(editing.row.saleId) || "the rep"} ${editing.row.receivedId ? "claims" : "announced"}, not confirmed yet`) : editing.expected && !editing.row.expectedId ? `What the bank showed · claimed by ${claimedBy(editing.expected)}` : "What the bank showed"}
           onClose={() => setEditing(null)}>
-              <QbCell qb={r && r.qb} className="qb-start" />
           {editing.kind === "expected"
             ? <ExpectedFields value={editing.draft} onChange={(draft) => setEditing({ ...editing, draft })} onEnter={saveEdit} />
             : <ReceivedFields value={editing.draft} onChange={(draft) => setEditing({ ...editing, draft })} expected={editing.expected} />}
@@ -5918,6 +5963,8 @@ export default function App() {
     return lane.id;
   };
   const deleteLane = (laneId) => setLanes((prev) => prev.filter((l) => l.id !== laneId));
+  const renamePod = (key, pod) => setLanes((prev) => renamePodIn(prev, key, pod)); // the whole route: every lane under the POD
+  const deletePod = (key) => setLanes((prev) => withoutPod(prev, key));
   const addQuote = (laneId, quote) => {
     setLanes((prev) => prev.map((l) => (l.id === laneId ? { ...l, quotes: [...l.quotes, { id: uid("quote"), ...quote }] } : l)));
   };
@@ -6657,7 +6704,7 @@ export default function App() {
     buyerJobs, addBuyerJob, updateBuyerJob, deleteBuyerJob, addBuyerJobNote,
     warehouseEvents, addWarehouseEvent, updateWarehouseEvent, deleteWarehouseEvent,
     markReorderHandled, dismissReorder, savePfi, savePo,
-    addLane, updateLane, deleteLane, addQuote, updateQuote, deleteQuote,
+    addLane, updateLane, deleteLane, renamePod, deletePod, addQuote, updateQuote, deleteQuote,
     addCustomer, addNote, sendExisting, deleteNote, markSeen, answerFeedItem, deleteFeedItem,
     addPfi, deletePfi, addProduct, addProductsBulk, deleteProduct, updateProductSaleField, updateProductBuyerField,
     toggleReorder, updateDelivery, addDocument, updateDocumentStatus, setDocumentFile,

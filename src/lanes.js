@@ -4,6 +4,8 @@ import { numOrNull } from "./money";
 
 const text = (v) => String(v ?? "").trim();
 const compare = (a, b) => a.localeCompare(b, undefined, { sensitivity: "base", numeric: true });
+/** The key a POD is grouped by: its name trimmed, case ignored. */
+export const podKey = (pod) => text(pod).toLowerCase();
 
 /** The cheapest priced quote on a lane, or null while none has a rate. */
 export function bestQuote(lane) {
@@ -31,9 +33,17 @@ export function sortLanesByPod(lanes) {
 export function groupLanesByPod(lanes) {
   const groups = new Map();
   for (const lane of sortLanesByPod(lanes)) {
-    const key = text(lane.pod).toLowerCase();
+    const key = podKey(lane.pod);
     if (!groups.has(key)) groups.set(key, { key, pod: text(lane.pod), lanes: [] });
     groups.get(key).lanes.push(lane);
   }
   return [...groups.values()];
 }
+
+/** Every lane under the POD `key` renamed to `pod` (trimmed): spelt like another POD, the two become one. The other lanes are the same objects. */
+export function renamePod(lanes, key, pod) {
+  const name = text(pod);
+  return (lanes || []).map((l) => (podKey(l.pod) === key && l.pod !== name ? { ...l, pod: name } : l));
+}
+/** The lanes without those under the POD `key`. */
+export const withoutPod = (lanes, key) => (lanes || []).filter((l) => podKey(l.pod) !== key);
