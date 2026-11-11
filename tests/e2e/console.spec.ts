@@ -186,7 +186,7 @@ test("sale rep: note, PFI lines, attachment, payment, export", async ({ page }) 
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "Export packing list" }).click();
   expect((await download).suggestedFilename()).toBe("PFI_3200_packing_list.xlsx");
-  const href = await page.locator(".doc-file-link").first().getAttribute("href");
+  const href = await page.locator(".doc-file-link:not(.doc-issued-link)").first().getAttribute("href"); // the sale's own attachment, not a paper the buyer issued
   const file = await page.request.get(href!);
   expect(file.status()).toBe(200);
   expect(await file.text()).toContain("INVOICE 3200");
@@ -508,8 +508,9 @@ test("documents: a Loaded PFI's papers show on the buyer's Documents tab; the st
   expect(await (await import("node:fs/promises")).readFile((await file.path())!, "utf8")).toContain("INVOICE 3200");
   // The COO, once issued, is attached for the sale.
   const cooCard = coos.nth(open);
-  await cooCard.locator('input[type="file"]').setInputFiles({ name: "coo-3200-issued.txt", mimeType: "text/plain", buffer: Buffer.from("COO 3200 ISSUED") });
-  await expect(cooCard.locator(".doc-issued-link")).toHaveText(/coo-3200-issued\.txt/);
+  const ISSUED = Buffer.alloc(1300 * 1024, 7); // 1.3 MB: goes up in three parts, as a scanned paper on a slow line would
+  await cooCard.locator('input[type="file"]').setInputFiles({ name: "coo-3200-issued.pdf", mimeType: "application/pdf", buffer: ISSUED });
+  await expect(cooCard.locator(".doc-issued-link")).toHaveText(/coo-3200-issued\.pdf/, { timeout: 120_000 });
   await page.getByLabel("Show done").check(); // all Done or not, the PFI stays listed
   await expect(docRow).toBeVisible();
   expect(await doneCount()).toBe(before + 1);
@@ -525,8 +526,8 @@ test("documents: a Loaded PFI's papers show on the buyer's Documents tab; the st
   const dl2 = page.waitForEvent("download");
   await issuedCard.locator(".doc-issued-link").click();
   const issued = await dl2;
-  expect(issued.suggestedFilename()).toBe("coo-3200-issued.txt");
-  expect(await (await import("node:fs/promises")).readFile((await issued.path())!, "utf8")).toContain("COO 3200 ISSUED");
+  expect(issued.suggestedFilename()).toBe("coo-3200-issued.pdf");
+  expect((await (await import("node:fs/promises")).readFile((await issued.path())!)).equals(ISSUED)).toBe(true); // every part, in order
   await expect(docs.locator(".doc-card").filter({ has: page.locator(".doc-file-link", { hasText: "invoice-3200" }) }).first().locator(".doc-status-row")).toHaveCount(0); // no status on the invoice here either
   await close(page);
 
@@ -534,8 +535,8 @@ test("documents: a Loaded PFI's papers show on the buyer's Documents tab; the st
   await side(page, "Documents").click();
   await page.getByLabel("Show done").check();
   await docRow.click();
-  const withFile = detail.locator(".doc-card").filter({ has: page.locator(".doc-issued-link") }).first();
-  await withFile.getByRole("button", { name: "Remove" }).click();
+  const withFile = () => detail.locator(".doc-card").filter({ has: page.locator(".doc-issued-link") }).first();
+  while (await detail.locator(".doc-issued-link").count()) { await withFile().getByRole("button", { name: "Remove" }).click(); await page.waitForTimeout(300); } // every issued file, a leftover of another run included
   await expect(detail.locator(".doc-issued-link")).toHaveCount(0);
   await settled(page);
 });

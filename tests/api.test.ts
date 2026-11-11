@@ -122,6 +122,34 @@ describe("files", () => {
     expect(await down.text()).toBe("hello packing list");
   });
 
+  it.skipIf(!("FILES" in env))("stores a file sent in parts as one object and forgets the parts; refuses a missing part, a bad part number and an oversize start", async () => {
+    const { cookie } = await login();
+    const started = await post(cookie, "/files/start", { fileName: "EUR1 3388.pdf", contentType: "application/pdf", size: 7 });
+    expect(started.status).toBe(200);
+    const { id } = await started.json();
+    const part = (n: number | string, body: Uint8Array) => SELF.fetch(`${BASE}/files/${id}/part/${n}`, { method: "PUT", headers: { cookie, "content-type": "application/octet-stream" }, body });
+    expect((await part(1, new Uint8Array([1, 2, 3]))).status).toBe(200);
+    expect((await part(3, new Uint8Array([7]))).status).toBe(200);
+    expect((await part(0, new Uint8Array([9]))).status).toBe(400);
+    expect((await part("x", new Uint8Array([9]))).status).toBe(400);
+    const gap = await post(cookie, `/files/${id}/finish`, { fileName: "EUR1 3388.pdf", contentType: "application/pdf", parts: 3 });
+    expect(gap.status).toBe(400); expect((await gap.json()).error).toContain("Part 2");
+    expect((await part(2, new Uint8Array([4, 5, 6]))).status).toBe(200);
+    const done = await post(cookie, `/files/${id}/finish`, { fileName: "EUR1 3388.pdf", contentType: "application/pdf", parts: 3 });
+    expect(done.status).toBe(200);
+    const meta = await done.json();
+    expect(meta).toMatchObject({ ok: true, id, fileName: "EUR1 3388.pdf", url: `/api/files/${id}` });
+    const down = await SELF.fetch(`http://console.test${meta.url}`, { headers: { cookie } });
+    expect(down.status).toBe(200);
+    expect(down.headers.get("content-type")).toContain("application/pdf");
+    expect(down.headers.get("content-disposition")).toContain("EUR1%203388.pdf");
+    expect(Array.from(new Uint8Array(await down.arrayBuffer()))).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    for (const n of [1, 2, 3]) expect(await (env as any).FILES.get(`files/${id}/part-${n}`)).toBeNull();
+    expect((await post(cookie, `/files/${id}/finish`, { fileName: "x", contentType: "", parts: 3 })).status).toBe(409); // stored already
+    expect((await post(cookie, "/files/start", { fileName: "big.pdf", contentType: "application/pdf", size: 26 * 1024 * 1024 })).status).toBe(413);
+    expect((await SELF.fetch(`${BASE}/files/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ size: 1 }) })).status).toBe(401);
+  });
+
   it("rejects a document request with no text or images", async () => {
     const { cookie } = await login();
     const res = await post(cookie, "/ai/parse-document", { mediaType: "application/pdf", base64: "JVBERi0=" });

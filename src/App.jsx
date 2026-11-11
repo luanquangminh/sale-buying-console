@@ -9,6 +9,7 @@ import { matchNames, uniqueNames } from "./suggest";
 import { fmtNumber, numOrNull, orderTotals, vatOption, VAT_OPTIONS } from "./money";
 import { DUE_TONE, dueLabel, dueState, groupByCustomer, PAY_STATUSES, PAY_STATUS_TONE, payStatus } from "./payments";
 import { bestQuote, cheapestOf, groupLanesByPod, podKey, renamePod as renamePodIn, withoutPod } from "./lanes";
+import { fmtBytes } from "./upload";
 import { lineCover, pfiLineCover, pfiShortages, poShortages } from "./allocation";
 import { LEDGER_COLUMNS, LEDGER_FILTERS, LEDGER_GROUPS, PAY_COMPANIES, QB_ADDERS, adderTone, diffTone, difference, enteredBy, fmtDiff, forSale, inFilter, inSpan, isConfirmed, ledgerMonths, ledgerRows, ledgerSheet, monthOf, monthRange, qbText, splitExpected, toConfirmCount, unmatchedRows } from "./paymentsReceived";
 import { homeFor, pathFor, sectionAllowed, stateFor } from "./routes";
@@ -474,6 +475,10 @@ const GlobalStyle = () => (
     .doc-issued { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:6px; font-size:11.5px; }
     .doc-issued .doc-file-link { margin-top:0; }
     .doc-issued input[type="file"] { font-size:11px; width:auto; }
+    .upload-status { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:#2F7A52; white-space:nowrap; }
+    .upload-bar { display:inline-block; width:120px; height:5px; background:#D7EADD; border-radius:3px; overflow:hidden; }
+    .upload-bar b { display:block; height:100%; background:#2F7A52; }
+    .upload-error { font-size:11.5px; color:#B23B3B; }
     .doc-status-row { margin-top:8px; display:flex; align-items:center; gap:8px; }
 
     .reorder-btn { font-size:10.5px; padding:3px 8px; border-radius:3px; border:1px solid #C64B4B; color:#C64B4B; background:#fff; cursor:pointer; font-weight:700; display:inline-flex; align-items:center; gap:4px; }
@@ -2253,28 +2258,44 @@ function PfiDeliverySection({ delivery, role, onChange }) {
   );
 }
 
+/** One upload at a time: busy with how far it is, or the reason it failed; `run(file)` resolves with the stored file, or null. */
+function useUpload() {
+  const [state, setState] = useState({ busy: false, done: 0, size: 0, name: "", error: "" });
+  const run = async (file) => {
+    setState({ busy: true, done: 0, size: file.size, name: file.name, error: "" });
+    try {
+      const res = await api.uploadFile(file, (done, size) => setState((s) => ({ ...s, done, size })));
+      setState({ busy: false, done: file.size, size: file.size, name: file.name, error: "" });
+      return res;
+    } catch (err) {
+      console.error(err);
+      const reason = err && err.status ? err.message : "The connection dropped before the file was through — check the line and try again.";
+      setState({ busy: false, done: 0, size: file.size, name: file.name, error: reason });
+      return null;
+    }
+  };
+  return { ...state, run };
+}
+/** "Uploading name… 1.2 / 4.8 MB" with a bar while a file goes up; the reason, in red, when it failed. */
+function UploadStatus({ upload }) {
+  if (upload.busy) return <span className="upload-status"><i className="upload-bar"><b style={{ width: `${upload.size ? Math.round((100 * upload.done) / upload.size) : 0}%` }} /></i> Uploading {upload.name}… {fmtBytes(upload.done)} / {fmtBytes(upload.size)}</span>;
+  if (upload.error) return <span className="upload-error">{upload.error}</span>;
+  return null;
+}
+
 function DocumentsSection({ documents, canAdd, canEditStatus, onAdd, onStatusChange, invNo = "", onInvNoChange }) {
   const [type, setType] = useState(DOC_TYPES[0]);
   const [content, setContent] = useState("");
   const [fileMeta, setFileMeta] = useState(null);
-  const [uploading, setUploading] = useState(false);
+  const upload = useUpload();
   const fileRef = useRef(null);
 
   const handleFile = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    setUploading(true);
-    try {
-      const res = await api.uploadFile(file);
-      setFileMeta({ name: res.fileName, url: res.url });
-    } catch (err) {
-      console.error(err);
-      alert("Could not upload that file. Please try again.");
-      setFileMeta(null);
-      if (fileRef.current) fileRef.current.value = "";
-    } finally {
-      setUploading(false);
-    }
+    const res = await upload.run(file);
+    setFileMeta(res ? { name: res.fileName, url: res.url } : null);
+    if (!res && fileRef.current) fileRef.current.value = "";
   };
 
   const submit = () => {
@@ -2347,10 +2368,11 @@ function DocumentsSection({ documents, canAdd, canEditStatus, onAdd, onStatusCha
           {(type === "INV" || type === "PL") && (
             <div className="mini-field">
               <label>Attach file</label>
-              <input ref={fileRef} type="file" onChange={handleFile} />
+              <input ref={fileRef} type="file" onChange={handleFile} disabled={upload.busy} />
+              <UploadStatus upload={upload} />
             </div>
           )}
-          <button className="btn btn-accent btn-sm" disabled={uploading} onClick={submit}><Plus size={12} /> Add</button>
+          <button className="btn btn-accent btn-sm" disabled={upload.busy} onClick={submit}><Plus size={12} /> Add</button>
         </div>
       )}
     </div>
@@ -2882,15 +2904,14 @@ function ReorderPanel({ reorders, onOpen, onHandled, onDismiss }) {
 
 /** The buyer's copy of a paper once it is issued: attached, replaced or removed here; the sale downloads it from the PFI. */
 function IssuedFile({ doc, onChange }) {
-  const [busy, setBusy] = useState(false);
+  const upload = useUpload();
   const ref = useRef(null);
   const handle = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    setBusy(true);
-    try { const res = await api.uploadFile(file); onChange({ name: res.fileName, url: res.url }); }
-    catch (err) { console.error(err); alert("Could not upload that file. Please try again."); }
-    finally { setBusy(false); if (ref.current) ref.current.value = ""; }
+    const res = await upload.run(file);
+    if (res) onChange({ name: res.fileName, url: res.url });
+    if (ref.current) ref.current.value = "";
   };
   return (
     <div className="doc-issued">
@@ -2901,7 +2922,8 @@ function IssuedFile({ doc, onChange }) {
           <button className="btn btn-sm btn-ghost" onClick={() => onChange(null)}>Remove</button>
         </>
       ) : <span className="muted">Issued paper for the sale:</span>}
-      <input ref={ref} type="file" aria-label={`Issued ${doc.type}`} disabled={busy} onChange={handle} />
+      <input ref={ref} type="file" aria-label={`Issued ${doc.type}`} disabled={upload.busy} onChange={handle} />
+      <UploadStatus upload={upload} />
     </div>
   );
 }
