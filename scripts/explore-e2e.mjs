@@ -239,13 +239,15 @@ await step("buyer: fulfil PFI 9101 fully → Complete Ordering; floor stock via 
 
 await step("container rate: lane, quotes, edit, remove quote, delete lane", async () => {
   await login("exp-buyer", EXP_PASS); await side("Container Rate").click();
-  if (!(await page.locator(".lane-row", { hasText: "Exp Port" }).count())) {
+  if (!(await page.locator(".pod-row", { hasText: "Exp Port" }).count())) {
     await page.getByRole("button", { name: "Add lane" }).click();
     const f = page.locator(".add-form").first(); await f.locator("input").nth(0).fill("Exp Port"); await f.locator("input").nth(1).fill("Exp Warehouse"); await f.locator("input").nth(2).fill("21 days");
     await page.getByRole("button", { name: "Save lane" }).click();
   }
-  const laneRow = page.locator(".lane-row", { hasText: "Exp Port" });
-  if (!(await isOpen(laneRow))) await laneRow.click(); // make sure THIS lane is the open one
+  const laneRow = page.locator(".pod-row", { hasText: "Exp Port" }); // the POD row: its cheapest rate, then its lanes underneath
+  if (!(await isOpen(laneRow))) await laneRow.click(); // make sure THIS POD is the open one
+  const subRow = page.locator(".pod-detail .lane-row").first();
+  if (!(await isOpen(subRow))) await subRow.click();
   const lane = page.locator(".lane-detail").first();
   if (!(await realRows(lane).count())) {
     await lane.locator(".mini-form-row input").nth(0).fill("Exp Lines"); await lane.locator(".mini-form-row input").nth(1).fill("2500"); await lane.getByRole("button", { name: "Add rate" }).click();

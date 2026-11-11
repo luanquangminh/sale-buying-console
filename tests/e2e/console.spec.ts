@@ -74,6 +74,17 @@ const side = (page: Page, text: string) => page.locator(".side-item", { hasText:
 const pill = (page: Page, text: string | RegExp) => page.locator(".pill", { hasText: text });
 const isoDay = (offset: number) => { const d = new Date(); d.setDate(d.getDate() + offset); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }; // today ± days, local, as the date inputs take it
 const openDetail = async (page: Page, row: ReturnType<Page["locator"]>) => { await row.click(); await page.locator(".detail-body").waitFor(); };
+/** Container Rate lists PODs; a POD drops down to its lanes. */
+const podRow = (page: Page, pod: string) => page.locator(".pod-row", { hasText: pod });
+/** Opens the POD (if closed) and its first lane (if closed); returns that lane's detail. */
+const openLaneOf = async (page: Page, pod: string) => {
+  const row = podRow(page, pod).first();
+  if (!/\bopen\b/.test((await row.getAttribute("class")) || "")) await row.click();
+  const lane = page.locator(".pod-detail .lane-row").first();
+  if (!/\bopen\b/.test((await lane.getAttribute("class")) || "")) await lane.click();
+  await page.locator(".lane-detail").waitFor();
+  return page.locator(".lane-detail").first();
+};
 const save = async (page: Page) => {
   const btn = page.getByRole("button", { name: "Save changes" });
   if (await btn.isEnabled()) {
@@ -240,7 +251,7 @@ test("buyer: inbox reply, PFI update, PO linked to the PFI, container rate", asy
   await expect(page.locator(".pfi-list-row", { hasText: "PO 4500" })).toBeVisible();
 
   await side(page, "Container Rate").click();
-  if (!(await page.locator(".lane-row", { hasText: "Lagos" }).count())) {
+  if (!(await podRow(page, "Lagos").count())) {
     await page.getByRole("button", { name: "Add lane" }).click();
     const form = page.locator(".add-form").first();
     await form.locator("input").nth(0).fill("Lagos, Apapa");
@@ -255,7 +266,7 @@ test("buyer: inbox reply, PFI update, PO linked to the PFI, container rate", asy
     await lane.locator(".mini-form-row input").nth(1).fill("3990");
     await lane.getByRole("button", { name: "Add rate" }).click();
   }
-  await expect(page.locator(".lane-row", { hasText: "Lagos" })).toContainText("$3,990.00");
+  await expect(podRow(page, "Lagos")).toContainText("$3,990.00"); // the POD row carries the cheapest rate of its lanes
 });
 
 test("sale rep sees the buyer's updates and the PO receipt, requests a reorder", async ({ page }) => {
@@ -1144,11 +1155,8 @@ test("container rate: forwarders typed before are offered when adding a rate", a
   await signIn(page, A.buyer.username, A.buyer.password);
   await side(page, "Container Rate").click();
   const POD = "E2E Suggest Port";
-  const stale = page.locator(".lane-row", { hasText: POD });
-  while (await stale.count()) {
-    await stale.first().click();
-    await page.locator(".lane-detail").getByRole("button", { name: "Delete lane" }).click();
-  }
+  const stale = podRow(page, POD);
+  while (await stale.count()) await (await openLaneOf(page, POD)).getByRole("button", { name: "Delete lane" }).click();
   await page.getByRole("button", { name: "Add lane" }).click();
   const form = page.locator(".add-form").first();
   await form.locator("input").nth(0).fill(POD);
@@ -1183,7 +1191,7 @@ test("container rate: forwarders typed before are offered when adding a rate", a
   await forwarder.fill("");
 
   await lane.getByRole("button", { name: "Delete lane" }).click();
-  await expect(page.locator(".lane-row", { hasText: POD })).toHaveCount(0);
+  await expect(podRow(page, POD)).toHaveCount(0);
 });
 
 test("order status Removed: offered on every screen, kept on a PO-wide change, ignored for Complete Ordering", async ({ page }) => {
@@ -1488,8 +1496,8 @@ test("container rate: a lane and a rate can be edited, and nothing changes until
   await signIn(page, A.buyer.username, A.buyer.password);
   await side(page, "Container Rate").click();
   for (const pod of ["E2E Edit Port", "E2E Edited Port"]) {
-    const stale = page.locator(".lane-row", { hasText: pod });
-    while (await stale.count()) { await stale.first().click(); await page.locator(".lane-detail").getByRole("button", { name: "Delete lane" }).click(); }
+    const stale = podRow(page, pod);
+    while (await stale.count()) await (await openLaneOf(page, pod)).getByRole("button", { name: "Delete lane" }).click();
   }
   await page.getByRole("button", { name: "Add lane" }).click();
   const form = page.locator(".add-form").first();
@@ -1508,14 +1516,14 @@ test("container rate: a lane and a rate can be edited, and nothing changes until
   await expect(rates).toHaveCount(2);
   await expect(rates.locator("input")).toHaveCount(0); // rows are read until Edit is clicked
 
-  // Lane: edit, cancel keeps the old values, save applies the new ones.
-  const laneRow = page.locator(".lane-row.open");
+  // Lane: edit, cancel keeps the old values, save applies the new ones. The POD sits on the POD row, the rest on the lane row under it.
+  const laneRow = page.locator(".lane-row.open"); const openPod = page.locator(".pod-row.open");
   await lane.getByRole("button", { name: "Edit lane" }).click();
   const edit = lane.locator(".lane-edit");
   await expect(edit.locator("input").nth(0)).toHaveValue("E2E Edit Port");
   await edit.locator("input").nth(0).fill("Something else");
   await edit.getByRole("button", { name: "Cancel" }).click();
-  await expect(laneRow).toContainText("E2E Edit Port");
+  await expect(openPod).toContainText("E2E Edit Port");
   await lane.getByRole("button", { name: "Edit lane" }).click();
   await edit.locator("input").nth(0).fill("E2E Edited Port");
   await edit.locator("input").nth(1).fill("1 Test Way, Northampton");
@@ -1523,7 +1531,7 @@ test("container rate: a lane and a rate can be edited, and nothing changes until
   await edit.locator("input").nth(2).fill("26 days");
   await edit.getByRole("button", { name: "Save lane changes" }).click();
   await expect(edit).toHaveCount(0);
-  await expect(laneRow).toContainText("E2E Edited Port");
+  await expect(openPod).toContainText("E2E Edited Port"); // the lane followed its new POD, still open
   await expect(laneRow).toContainText("1 Test Way, Northampton");
   await expect(laneRow).toContainText("40ft Reefer");
   await expect(laneRow).toContainText("26 days");
@@ -1552,10 +1560,9 @@ test("container rate: a lane and a rate can be edited, and nothing changes until
 
   await page.reload(); // saved for real
   await side(page, "Container Rate").click();
-  const saved = page.locator(".lane-row", { hasText: "E2E Edited Port" });
+  const saved = podRow(page, "E2E Edited Port");
   await expect(saved).toContainText("£3,100.00");
-  await saved.click();
-  await page.locator(".lane-detail").getByRole("button", { name: "Delete lane" }).click();
+  await (await openLaneOf(page, "E2E Edited Port")).getByRole("button", { name: "Delete lane" }).click();
   await expect(saved).toHaveCount(0);
 });
 
@@ -1954,8 +1961,8 @@ test("container rate: lanes are listed A to Z by POD, also after a new lane, a r
   const PODS = ["E2E Sort Zeta", "e2e sort alpha", "E2E Sort Mid", "E2E Sort Omega"];
   const clean = async () => {
     for (const pod of PODS) {
-      const stale = page.locator(".lane-row", { hasText: pod });
-      while (await stale.count()) { await stale.first().click(); await page.locator(".lane-detail").getByRole("button", { name: "Delete lane" }).click(); }
+      const stale = podRow(page, pod);
+      while (await stale.count()) await (await openLaneOf(page, pod)).getByRole("button", { name: "Delete lane" }).click();
     }
   };
   await clean();
@@ -1965,9 +1972,10 @@ test("container rate: lanes are listed A to Z by POD, also after a new lane, a r
     await form.locator("input").nth(0).fill(pod);
     await form.locator("input").nth(1).fill("1 Sort Way, Northampton");
     await page.getByRole("button", { name: "Save lane" }).click();
-    await expect(page.locator(".lane-row.open .company-name")).toHaveText(pod); // the new lane opens wherever it lands
+    await expect(page.locator(".pod-row.open .company-name")).toHaveText(pod); // the new lane opens its POD wherever it lands
+    await expect(page.locator(".pod-detail .lane-row.open")).toHaveCount(1);
   };
-  const listed = () => page.locator(".lane-row .company-name").allInnerTexts();
+  const listed = () => page.locator(".pod-row .company-name").allInnerTexts();
   const mine = async () => (await listed()).filter((p) => /e2e sort/i.test(p));
   const inOrder = (names: string[]) => [...names].sort((a, b) => a.trim().localeCompare(b.trim(), undefined, { sensitivity: "base", numeric: true }));
 
@@ -1978,12 +1986,12 @@ test("container rate: lanes are listed A to Z by POD, also after a new lane, a r
   expect(all.indexOf("Lagos, Apapa")).toBeGreaterThan(all.indexOf("E2E Sort Zeta"));
 
   // Renaming a lane moves it to its new place.
-  await expect(page.locator(".lane-row.open .company-name")).toHaveText("E2E Sort Mid"); // still open from being added last
+  await expect(page.locator(".pod-row.open .company-name")).toHaveText("E2E Sort Mid"); // still open from being added last
   await page.locator(".lane-detail").getByRole("button", { name: "Edit lane" }).click();
   await page.locator(".lane-edit input").nth(0).fill("E2E Sort Omega");
   await page.locator(".lane-edit").getByRole("button", { name: "Save lane changes" }).click();
   expect(await mine()).toEqual(["e2e sort alpha", "E2E Sort Omega", "E2E Sort Zeta"]);
-  await expect(page.locator(".lane-row.open .company-name")).toHaveText("E2E Sort Omega"); // and stays open
+  await expect(page.locator(".pod-row.open .company-name")).toHaveText("E2E Sort Omega"); // and stays open
 
   // The search keeps the order; so does a reload.
   await page.locator(".overview-bar input").fill("e2e sort");
@@ -1992,7 +2000,7 @@ test("container rate: lanes are listed A to Z by POD, also after a new lane, a r
   await page.waitForTimeout(1200);
   await page.reload();
   await side(page, "Container Rate").click();
-  await expect(page.locator(".lane-row").first()).toBeVisible();
+  await expect(page.locator(".pod-row").first()).toBeVisible();
   expect(await mine()).toEqual(["e2e sort alpha", "E2E Sort Omega", "E2E Sort Zeta"]);
   const after = await listed();
   expect(after).toEqual(inOrder(after));
@@ -3024,7 +3032,7 @@ test("drop-down panels open upwards when their button sits at the bottom of the 
 
   // Forwarder suggestions in Container Rate, in a window only tall enough for the form.
   await side(page, "Container Rate").click();
-  await page.locator(".lane-row", { hasText: "Lagos" }).first().click();
+  await openLaneOf(page, "Lagos");
   const FORWARDER = ".lane-detail .mini-form-row input";
   const forwarder = page.locator(FORWARDER).first();
   const box = (await forwarder.boundingBox())!;
