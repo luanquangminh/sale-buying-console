@@ -8,7 +8,7 @@ import { floorStockOf, keepRemoved, lineReceivedTotal, lineStatusSource, pfiTrac
 import { matchNames, uniqueNames } from "./suggest";
 import { fmtNumber, numOrNull, orderTotals, vatOption, VAT_OPTIONS } from "./money";
 import { DUE_TONE, dueLabel, dueState, groupByCustomer, PAY_STATUSES, PAY_STATUS_TONE, payStatus } from "./payments";
-import { sortLanesByPod } from "./lanes";
+import { bestQuote, cheapestOf, groupLanesByPod } from "./lanes";
 import { lineCover, pfiLineCover, pfiShortages, poShortages } from "./allocation";
 import { LEDGER_COLUMNS, LEDGER_FILTERS, LEDGER_GROUPS, PAY_COMPANIES, QB_ADDERS, diffTone, difference, enteredBy, fmtDiff, forSale, inFilter, inSpan, isConfirmed, ledgerMonths, ledgerRows, ledgerSheet, monthOf, monthRange, qbText, splitExpected, toConfirmCount, unmatchedRows } from "./paymentsReceived";
 import { homeFor, pathFor, sectionAllowed, stateFor } from "./routes";
@@ -437,6 +437,14 @@ const GlobalStyle = () => (
     .lane-row:hover { background:#F7FBF8; }
     .lane-row.open { background:#D7EADD; border-left-color:#2F7A52; border-bottom-color:#BFE3CB; }
     .lane-detail { background:#FCFEFC; border-left:3px solid #2F7A52; border-bottom:1px solid #E5E9E9; padding:16px 20px 18px; }
+    .pod-row { display:grid; grid-template-columns:1.3fr 1.1fr 1.3fr .9fr 1.6fr 28px; gap:10px; padding:13px 18px; align-items:center; border-bottom:1px solid #EEF0EF; cursor:pointer; font-size:13.5px; border-left:3px solid transparent; }
+    .pod-row:hover { background:#F7FBF8; }
+    .pod-row.open { background:#D7EADD; border-left-color:#2F7A52; border-bottom-color:#BFE3CB; }
+    .lane-head-row.pod-head { grid-template-columns:1.3fr 1.1fr 1.3fr .9fr 1.6fr 28px; }
+    .pod-detail { border-left:3px solid #2F7A52; border-bottom:1px solid #E5E9E9; background:#FCFEFC; }
+    .pod-detail .lane-head-row, .pod-detail .lane-row { grid-template-columns:1.8fr .9fr .8fr .8fr 1.2fr 28px; padding-left:34px; }
+    .pod-detail .lane-row.open { background:#E6F2EA; border-left-color:transparent; }
+    .pod-detail .lane-detail { border-left:none; padding-left:34px; }
 
     .docs-head-row { display:grid; grid-template-columns:.9fr 1fr 1.4fr 1fr .9fr 28px; gap:10px; padding:10px 18px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#7C8891; border-bottom:1px solid #E5E9E9; }
     .docs-row { display:grid; grid-template-columns:.9fr 1fr 1.4fr 1fr .9fr 28px; gap:10px; padding:13px 18px; align-items:center; border-bottom:1px solid #EEF0EF; cursor:pointer; font-size:13.5px; border-left:3px solid transparent; }
@@ -447,7 +455,7 @@ const GlobalStyle = () => (
 
     @media (max-width: 860px) {
       .lane-head-row, .docs-head-row { display:none; }
-      .lane-row, .docs-row { grid-template-columns:1fr; gap:4px; }
+      .lane-row, .pod-row, .docs-row, .pod-detail .lane-row { grid-template-columns:1fr; gap:4px; }
     }
 
     .mini-form-row { display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-top:8px; }
@@ -3497,15 +3505,10 @@ function PoTrackingArea({ suppliers, pos, actions, allPfiOptions }) {
 
 /* ---------------- Container Rate (shared by Admin, Sale and Buyer) ---------------- */
 
-function bestQuote(lane) {
-  const priced = lane.quotes.filter((q) => numOrNull(q.rate) !== null);
-  if (priced.length === 0) return null;
-  return priced.reduce((a, b) => (Number(b.rate) < Number(a.rate) ? b : a));
-}
-
 function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) {
   const [showAdd, setShowAdd] = useState(false);
-  const [expanded, setExpanded] = useState(null);
+  const [expandedPod, setExpandedPod] = useState(null); // the POD dropped down to its lanes
+  const [expanded, setExpanded] = useState(null); // the lane open inside it
   const [form, setForm] = useState({ pod: "", loadingAddress: "", containerType: CONTAINER_TYPES[0], transitTime: "" });
   const [quoteDraft, setQuoteDraft] = useState({});
   const [find, setFind] = useState("");
@@ -3517,12 +3520,13 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
     [lanes, bookings],
   );
 
-  const sortedLanes = React.useMemo(() => sortLanesByPod(lanes), [lanes]);
   const fq = find.trim().toLowerCase();
   const visibleLanes = fq
-    ? sortedLanes.filter((l) => [l.pod, l.loadingAddress, l.containerType].some((f) => String(f || "").toLowerCase().includes(fq)))
-    : sortedLanes;
-  const pager = usePager(visibleLanes, { resetKey: find, ensureIndex: visibleLanes.findIndex((l) => l.id === expanded) });
+    ? lanes.filter((l) => [l.pod, l.loadingAddress, l.containerType].some((f) => String(f || "").toLowerCase().includes(fq)))
+    : lanes;
+  const groups = groupLanesByPod(visibleLanes); // one row a POD, its lanes underneath
+  const podKey = (pod) => String(pod ?? "").trim().toLowerCase();
+  const pager = usePager(groups, { resetKey: find, ensureIndex: groups.findIndex((g) => g.key === expandedPod) });
 
   const submitLane = () => {
     if (!form.pod.trim() || !form.loadingAddress.trim()) return;
@@ -3534,7 +3538,7 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
     });
     setForm({ pod: "", loadingAddress: "", containerType: CONTAINER_TYPES[0], transitTime: "" });
     setShowAdd(false);
-    setExpanded(id);
+    setExpandedPod(podKey(form.pod)); setExpanded(id);
   };
 
   const saveLane = () => {
@@ -3545,6 +3549,7 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
       containerType: editLane.containerType,
       transitTime: editLane.transitTime.trim(),
     });
+    setExpandedPod(podKey(editLane.pod)); // a renamed POD takes its open lane along
     setEditLane(null);
   };
 
@@ -3618,18 +3623,44 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
           </div>
         ) : (
           <>
-            <div className="lane-head-row">
-              <div>POD</div><div>Loading address</div><div>Container</div><div>Transit time</div><div>Forwarders</div><div>Cheapest rate</div><div />
+            <div className="lane-head-row pod-head">
+              <div>POD</div><div>Loading addresses</div><div>Containers</div><div>Forwarders</div><div>Cheapest rate</div><div />
             </div>
-            {pager.rows.map((lane) => {
+            {pager.rows.map((g) => {
+              const open = expandedPod === g.key;
+              const cheapest = cheapestOf(g.lanes);
+              const types = [...new Set(g.lanes.map((l) => l.containerType).filter(Boolean))];
+              const forwarders = new Set(g.lanes.flatMap((l) => l.quotes.map((q) => String(q.company || "").trim().toLowerCase()).filter(Boolean))).size;
+              return (
+                <React.Fragment key={g.key || "no-pod"}>
+                  <div className={`pod-row ${open ? "open" : ""}`} onClick={() => setExpandedPod(open ? null : g.key)}>
+                    <div className="company-name">{g.pod || "No POD"}</div>
+                    <div className="muted">{g.lanes.length} loading address{g.lanes.length === 1 ? "" : "es"}</div>
+                    <div>{types.map((t) => <span key={t} className="chip gray" style={{ marginRight: 4 }}>{t}</span>)}</div>
+                    <div className="muted">{forwarders === 0 ? "—" : `${forwarders} quoted`}</div>
+                    <div>
+                      {cheapest ? (
+                        <div>
+                          <span className="sm-mono" style={{ fontWeight: 700, color: "#1F5B3D" }}>{formatMoney(cheapest.quote.rate, cheapest.quote.currency)}</span>
+                          <div className="muted" style={{ fontSize: 11.5 }}>{cheapest.lane.containerType} · {cheapest.lane.loadingAddress}{canEdit ? ` · ${cheapest.quote.company}` : ""}</div>
+                        </div>
+                      ) : <span className="muted">No rate yet</span>}
+                    </div>
+                    <ChevronRight size={16} className={`chev ${open ? "open" : ""}`} />
+                  </div>
+                  {open && (
+                    <div className="pod-detail">
+                      <div className="lane-head-row">
+                        <div>Loading address</div><div>Container</div><div>Transit time</div><div>Forwarders</div><div>Cheapest rate</div><div />
+                      </div>
+                      {g.lanes.map((lane) => {
               const best = bestQuote(lane);
               const isOpen = expanded === lane.id;
               const d = draftFor(lane.id);
               return (
                 <React.Fragment key={lane.id}>
                   <div className={`lane-row ${isOpen ? "open" : ""}`} onClick={() => setExpanded(isOpen ? null : lane.id)}>
-                    <div className="company-name">{lane.pod}</div>
-                    <div className="muted">{lane.loadingAddress}</div>
+                    <div className="company-name">{lane.loadingAddress || "—"}</div>
                     <div><span className="chip gray">{lane.containerType}</span></div>
                     <div className="muted">{lane.transitTime || "—"}</div>
                     <div className="muted">{lane.quotes.length === 0 ? "—" : `${lane.quotes.length} quoted`}</div>
@@ -3756,6 +3787,11 @@ function ContainerRateTab({ lanes, bookings = [], actions, userName, canEdit }) 
                         <div className="mini-field"><label>Rate</label><input type="number" value={d.rate} onChange={(e) => setDraft(lane.id, { rate: e.target.value })} style={{ width: 110 }} /></div>
                         <button className="btn btn-accent btn-sm" onClick={() => submitQuote(lane.id)}><Plus size={12} /> Add rate</button>
                       </div>}
+                    </div>
+                  )}
+                </React.Fragment>
+              );
+            })}
                     </div>
                   )}
                 </React.Fragment>

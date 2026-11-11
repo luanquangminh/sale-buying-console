@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { sortLanesByPod } from "../src/lanes.js";
+import { bestQuote, cheapestOf, groupLanesByPod, sortLanesByPod } from "../src/lanes.js";
 
-const lane = (pod: unknown, loadingAddress = "", containerType = "20ft Dry") => ({ id: `${pod}|${loadingAddress}|${containerType}`, pod, loadingAddress, containerType, quotes: [] });
+const lane = (pod: unknown, loadingAddress = "", containerType = "20ft Dry", quotes: any[] = []) => ({ id: `${pod}|${loadingAddress}|${containerType}`, pod, loadingAddress, containerType, quotes });
+const q = (company: string, rate: unknown, currency = "USD") => ({ id: `${company}-${rate}`, company, rate, currency });
 const pods = (list: any[]) => list.map((l) => l.pod);
 
 describe("sortLanesByPod", () => {
@@ -29,5 +30,40 @@ describe("sortLanesByPod", () => {
     const stored = [lane("Tema"), lane("Accra")];
     sortLanesByPod(stored);
     expect(pods(stored)).toEqual(["Tema", "Accra"]);
+  });
+});
+
+describe("the cheapest quote", () => {
+  it("on a lane: the lowest priced rate, whatever the order; none while nothing is priced", () => {
+    expect(bestQuote(lane("Lagos", "", "20ft Dry", [q("Maersk", 4150), q("MSC", "3990"), q("CMA", "")]))!.company).toBe("MSC");
+    expect(bestQuote(lane("Lagos", "", "20ft Dry", [q("CMA", "")]))).toBe(null);
+    expect(bestQuote(lane("Lagos"))).toBe(null);
+    expect(bestQuote({ id: "x" })).toBe(null);
+  });
+  it("across the lanes of a POD: the lowest, with the lane it sits on", () => {
+    const a = lane("Lagos", "Northampton", "20ft Dry", [q("Maersk", 4150)]);
+    const b = lane("Lagos", "Felixstowe", "40ft Dry", [q("MSC", 3990), q("CMA", 4300)]);
+    const c = lane("Lagos", "Tilbury", "40ft Reefer");
+    const best = cheapestOf([a, b, c])!;
+    expect([best.quote.company, best.lane.loadingAddress]).toEqual(["MSC", "Felixstowe"]);
+    expect(cheapestOf([c])).toBe(null);
+    expect(cheapestOf([])).toBe(null);
+    expect(cheapestOf(undefined)).toBe(null);
+  });
+});
+
+describe("groupLanesByPod", () => {
+  it("one group a POD, A to Z, spelling and spaces ignored, each POD's lanes by loading address then container", () => {
+    const groups = groupLanesByPod([
+      lane("Tema", "Northampton"), lane("lagos, Apapa", "Northampton", "40ft Dry"), lane("Lagos, Apapa ", "Felixstowe"), lane("Lagos, Apapa", "Northampton", "20ft Dry"), lane("Accra"),
+    ]);
+    expect(groups.map((g) => [g.key, g.pod, g.lanes.length])).toEqual([["accra", "Accra", 1], ["lagos, apapa", "Lagos, Apapa", 3], ["tema", "Tema", 1]]); // the label is the first lane's spelling in list order
+    expect(groups[1].lanes.map((l) => `${l.loadingAddress.trim()} ${l.containerType}`)).toEqual(["Felixstowe 20ft Dry", "Northampton 20ft Dry", "Northampton 40ft Dry"]);
+  });
+  it("puts the lanes without a POD last, under an empty key, and copes with an empty list", () => {
+    const groups = groupLanesByPod([lane(""), lane("Tema"), lane(undefined)]);
+    expect(groups.map((g) => [g.key, g.lanes.length])).toEqual([["tema", 1], ["", 2]]);
+    expect(groupLanesByPod([])).toEqual([]);
+    expect(groupLanesByPod(undefined)).toEqual([]);
   });
 });
