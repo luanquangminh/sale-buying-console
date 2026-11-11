@@ -38,18 +38,21 @@ export const kindAllowed = (kind: Kind, user: User) => readRoles(kind).includes(
 export const kindWritable = (kind: Kind, user: User) => (("write" in KINDS[kind] ? (KINDS[kind] as any).write : readRoles(kind)) as readonly string[]).includes(user.role);
 
 /**
- * The kinds a role reaches record by record: `own` says which records are theirs, `write` whether they may write those.
- * A sale rep: the calendar entries of their own customers; their own expected payments; the receipts confirming them
- * (the sync route stamps the rep on each receipt), never the unannounced money nor the accountant's side to write.
+ * The kinds a role reaches record by record: `own` says which records are theirs, `write` whether they may write those,
+ * `shared` which other records they read too (never write). A sale rep: the calendar entries of their own customers; their own
+ * expected payments and every rep's claim on a receipt (so the UI can say who claimed it); the receipts confirming their own
+ * (the sync route stamps the rep on each receipt) and every receipt not yet confirmed, loose or claimed, never another rep's
+ * confirmed one nor the accountant's side to write.
  */
-const PARTLY: Partial<Record<Kind, { roles: readonly string[]; own: (rec: any, user: User) => boolean; write: boolean }>> = {
+const PARTLY: Partial<Record<Kind, { roles: readonly string[]; own: (rec: any, user: User) => boolean; shared?: (rec: any) => boolean; write: boolean }>> = {
   warehouseEvents: { roles: ["sale"], own: (rec, u) => rec.party === "customer" && rec.saleId === u.id, write: true },
-  expectedPayments: { roles: ["sale"], own: (rec, u) => rec.saleId === u.id, write: true },
-  receivedPayments: { roles: ["sale"], own: (rec, u) => Boolean(rec.expectedId) && rec.saleId === u.id, write: false },
+  expectedPayments: { roles: ["sale"], own: (rec, u) => rec.saleId === u.id, shared: (rec) => Boolean(rec.receivedId), write: true },
+  receivedPayments: { roles: ["sale"], own: (rec, u) => Boolean(rec.expectedId) && rec.saleId === u.id, shared: (rec) => !rec.expectedId, write: false },
 };
 export const partlyAllowed = (kind: Kind, user: User) => Boolean(PARTLY[kind]?.roles.includes(user.role));
-export const recordReadable = (kind: Kind, user: User, rec: any) => partlyAllowed(kind, user) && Boolean(rec) && PARTLY[kind]!.own(rec, user);
-export const recordWritable = (kind: Kind, user: User, rec: any) => Boolean(PARTLY[kind]?.write) && recordReadable(kind, user, rec);
+const recordOwn = (kind: Kind, user: User, rec: any) => partlyAllowed(kind, user) && Boolean(rec) && PARTLY[kind]!.own(rec, user);
+export const recordReadable = (kind: Kind, user: User, rec: any) => recordOwn(kind, user, rec) || (partlyAllowed(kind, user) && Boolean(rec) && Boolean(PARTLY[kind]!.shared?.(rec)));
+export const recordWritable = (kind: Kind, user: User, rec: any) => Boolean(PARTLY[kind]?.write) && recordOwn(kind, user, rec);
 
 type Row = { kind: string; id: string; sale_id: string | null; data: string };
 

@@ -71,25 +71,33 @@ async function storedOf(db: D1Database, refs: Array<{ kind: string; id: string }
 
 type Change = { kind?: unknown; id?: unknown; data?: any; deleted?: boolean };
 
+type PaymentRow = { kind: string; id: string; expectedId: string | null; receivedId: string | null; saleId: string | null };
+
 /**
  * Payments received, for every role, in one round trip: an expected payment the accountant has confirmed stays as the confirmation
- * found it (undo the confirmation first); a confirmation points at an expected payment that exists and has no other confirmation.
+ * found it (undo the confirmation first); a confirmation points at an expected payment that exists and has no other confirmation;
+ * a rep's claim (an expected payment carrying `receivedId`) points at a receipt that exists, is not confirmed, and is claimed by no other.
  * Each receipt is stamped with the rep of the expected payment it confirms, so a rep's snapshot can pick its own receipts.
  */
 async function applyPaymentRules(db: D1Database, changes: Change[]): Promise<string | null> {
   const touched = changes.filter((ch) => ch.kind === "expectedPayments").map((ch) => String(ch.id));
+  const claims = changes.filter((ch) => ch.kind === "expectedPayments" && !ch.deleted && ch.data?.receivedId).map((ch) => ({ id: String(ch.id), receivedId: String(ch.data.receivedId) }));
   const receiptsGoing = new Set(changes.filter((ch) => ch.kind === "receivedPayments" && ch.deleted).map((ch) => String(ch.id)));
   const receipts = changes.filter((ch) => ch.kind === "receivedPayments" && !ch.deleted && ch.data);
   const confirms = receipts.filter((ch) => ch.data.expectedId).map((ch) => ({ id: String(ch.id), expectedId: String(ch.data.expectedId) }));
   if (!touched.length && !receipts.length) return null;
   const expectedIds = confirms.map((x) => x.expectedId);
-  const stmts: D1PreparedStatement[] = [];
-  if (touched.length) stmts.push(db.prepare(`SELECT id FROM records WHERE kind = 'receivedPayments' AND json_extract(data, '$.expectedId') IN (${marks(touched.length)})`).bind(...touched));
-  if (expectedIds.length) stmts.push(db.prepare(`SELECT kind, id, json_extract(data, '$.expectedId') AS expectedId, json_extract(data, '$.saleId') AS saleId FROM records WHERE (kind = 'expectedPayments' AND id IN (${marks(expectedIds.length)})) OR (kind = 'receivedPayments' AND json_extract(data, '$.expectedId') IN (${marks(expectedIds.length)}))`).bind(...expectedIds, ...expectedIds));
-  const results = stmts.length ? await db.batch<{ kind: string; id: string; expectedId: string | null; saleId: string | null }>(stmts) : [];
+  const receivedIds = claims.map((x) => x.receivedId);
+  const queries: Record<string, D1PreparedStatement> = {}; // each one read back under its own name below
+  if (touched.length) queries.locks = db.prepare(`SELECT id FROM records WHERE kind = 'receivedPayments' AND json_extract(data, '$.expectedId') IN (${marks(touched.length)})`).bind(...touched);
+  if (expectedIds.length) queries.links = db.prepare(`SELECT kind, id, json_extract(data, '$.expectedId') AS expectedId, json_extract(data, '$.saleId') AS saleId FROM records WHERE (kind = 'expectedPayments' AND id IN (${marks(expectedIds.length)})) OR (kind = 'receivedPayments' AND json_extract(data, '$.expectedId') IN (${marks(expectedIds.length)}))`).bind(...expectedIds, ...expectedIds);
+  if (receivedIds.length) queries.claimed = db.prepare(`SELECT kind, id, json_extract(data, '$.expectedId') AS expectedId, json_extract(data, '$.receivedId') AS receivedId FROM records WHERE (kind = 'receivedPayments' AND id IN (${marks(receivedIds.length)})) OR (kind = 'expectedPayments' AND json_extract(data, '$.receivedId') IN (${marks(receivedIds.length)}))`).bind(...receivedIds, ...receivedIds);
+  const names = Object.keys(queries);
+  const batched = names.length ? await db.batch<PaymentRow>(names.map((n) => queries[n])) : [];
+  const rowsOf = (name: string): PaymentRow[] => batched[names.indexOf(name)]?.results ?? [];
   // locked while a confirmation points at it, unless that confirmation goes in the same batch (the accountant deleting the row whole)
-  if (touched.length && results[0].results.some((r) => !receiptsGoing.has(r.id))) return "expectedPayments: this payment has been confirmed by the accountant and can no longer be changed; undo the confirmation first";
-  const rows = expectedIds.length ? results[touched.length ? 1 : 0].results : [];
+  if (rowsOf("locks").some((r) => !receiptsGoing.has(r.id))) return "expectedPayments: this payment has been confirmed by the accountant and can no longer be changed; undo the confirmation first";
+  const rows = rowsOf("links");
   const repOf = new Map(rows.filter((r) => r.kind === "expectedPayments").map((r) => [r.id, r.saleId || ""]));
   if (confirms.some((x) => !repOf.has(x.expectedId))) return "receivedPayments: the expected payment this confirms no longer exists";
   const confirmedBy = new Map<string, Set<string>>(); // expected id → the receipts pointing at it, stored and in this batch
@@ -97,6 +105,16 @@ async function applyPaymentRules(db: D1Database, changes: Change[]): Promise<str
     const ids = confirmedBy.get(r.expectedId) ?? new Set<string>(); ids.add(r.id); confirmedBy.set(r.expectedId, ids);
   }
   if ([...confirmedBy.values()].some((ids) => ids.size > 1)) return "receivedPayments: that expected payment has already been confirmed";
+  // a claim: the receipt is there, nobody's confirmation points at it (one's own is caught above), and no other expected payment claims it
+  const claimedRows = rowsOf("claimed");
+  const receiptOf = new Map(claimedRows.filter((r) => r.kind === "receivedPayments").map((r) => [r.id, r.expectedId || ""]));
+  if (claims.some((x) => !receiptOf.has(x.receivedId))) return "expectedPayments: the received payment this claims no longer exists";
+  if (claims.some((x) => receiptOf.get(x.receivedId) && receiptOf.get(x.receivedId) !== x.id)) return "expectedPayments: that money has already been confirmed";
+  const claimedBy = new Map<string, Set<string>>(); // receipt id → the expected payments claiming it, stored and in this batch
+  for (const x of [...claimedRows.filter((r) => r.kind === "expectedPayments").map((r) => ({ id: r.id, receivedId: String(r.receivedId) })), ...claims]) {
+    const ids = claimedBy.get(x.receivedId) ?? new Set<string>(); ids.add(x.id); claimedBy.set(x.receivedId, ids);
+  }
+  if ([...claimedBy.values()].some((ids) => ids.size > 1)) return "expectedPayments: that money has already been claimed by another rep";
   for (const ch of receipts) ch.data.saleId = ch.data.expectedId ? repOf.get(String(ch.data.expectedId)) || "" : "";
   return null;
 }

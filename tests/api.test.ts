@@ -408,11 +408,11 @@ describe("payments received: a rep's expected payments, the accountant's confirm
       { id: "buyer-1700000000050-dddddd", role: "buyer", name: "Buyer Pay", username: "buyerpr", password: "pw-buyer-test", createdAt: "2026-09-20T00:00:00.000Z" },
     ];
     // The tests share one database: the receipts go first (a confirmed expected payment cannot be re-written), then the rest.
-    await post(admin, "/sync", { changes: ["000001", "000002", "000003", "000004", "000005", "000006"].map((n) => ({ kind: "receivedPayments", id: `rpay-1700000000050-${n}`, deleted: true })) });
+    await post(admin, "/sync", { changes: ["000001", "000002", "000003", "000004", "000005", "000006", "000007"].map((n) => ({ kind: "receivedPayments", id: `rpay-1700000000050-${n}`, deleted: true })) });
     await post(admin, "/sync", { changes: [
       ...accounts.map((a) => ({ kind: "accounts", id: a.id, createdAt: a.createdAt, data: a })),
       ...[MINE_PENDING, MINE_DONE, THEIRS].map((e) => change("expectedPayments", e)),
-      { kind: "expectedPayments", id: "xpay-1700000000050-000009", deleted: true },
+      ...["000009", "000011", "000012", "000013", "000014"].map((n) => ({ kind: "expectedPayments", id: `xpay-1700000000050-${n}`, deleted: true })),
     ] });
     const seeded = await post(admin, "/sync", { changes: [CONFIRMS_MINE, CONFIRMS_THEIRS, UNANNOUNCED].map((r) => change("receivedPayments", r)) });
     if (seeded.status !== 200) throw new Error(`setup: ${seeded.status} ${await seeded.text()}`);
@@ -431,14 +431,14 @@ describe("payments received: a rep's expected payments, the accountant's confirm
     expect((await post(acc, "/sync", { changes: [{ kind: "pos", id: "po-1700000000050-qqqqqq", data: { id: "po-1700000000050-qqqqqq" } }] })).status).toBe(403);
   });
 
-  it("a rep receives their own expected payments and the receipts confirming them: not another rep's, not the unannounced money", async () => {
+  it("a rep receives their own expected payments, the receipts confirming them and the unannounced money: not another rep's announcements or confirmations", async () => {
     const { rep, other } = await setup();
     expect(await ids(rep, "expectedPayments")).toEqual([MINE_PENDING.id, MINE_DONE.id].sort());
-    expect(await ids(rep, "receivedPayments")).toEqual([CONFIRMS_MINE.id]);
+    expect(await ids(rep, "receivedPayments")).toEqual([CONFIRMS_MINE.id, UNANNOUNCED.id].sort());
     const { slices } = await (await call(rep, "/state")).json();
-    for (const s of ["Mary", String(UNANNOUNCED.receivedAmount)]) expect(JSON.stringify(slices)).not.toContain(s); // another rep's customer, the unannounced money
+    expect(JSON.stringify(slices)).not.toContain("Mary"); // another rep's customer: a plain announcement, not a claim
     expect(await ids(other, "expectedPayments")).toEqual([THEIRS.id]);
-    expect(await ids(other, "receivedPayments")).toEqual([CONFIRMS_THEIRS.id]);
+    expect(await ids(other, "receivedPayments")).toEqual([CONFIRMS_THEIRS.id, UNANNOUNCED.id].sort());
   });
 
   it("a buyer has neither", async () => {
@@ -474,12 +474,12 @@ describe("payments received: a rep's expected payments, the accountant's confirm
     const { admin, acc, rep } = await setup();
     const conf = received("rpay-1700000000050-000004", MINE_PENDING.id, 13500);
     expect((await post(acc, "/sync", { changes: [change("receivedPayments", conf)] })).status).toBe(200);
-    expect(await ids(rep, "receivedPayments")).toEqual([CONFIRMS_MINE.id, conf.id].sort());
+    expect(await ids(rep, "receivedPayments")).toEqual([CONFIRMS_MINE.id, UNANNOUNCED.id, conf.id].sort());
     expect((await post(acc, "/sync", { changes: [change("receivedPayments", { ...conf, receivedAmount: 13510.36, qb: { date: "2026-10-22", time: "09:30", done: true, addedBy: "Finance" } })] })).status).toBe(200);
     const mine = ((await (await call(rep, "/state")).json()).slices.receivedPayments as any[]).find((r) => r.id === conf.id);
     expect(mine).toMatchObject({ receivedAmount: 13510.36, qb: { done: true, addedBy: "Finance" } });
     expect((await post(acc, "/sync", { changes: [{ kind: "receivedPayments", id: conf.id, deleted: true }] })).status).toBe(200); // undone: pending again
-    expect(await ids(rep, "receivedPayments")).toEqual([CONFIRMS_MINE.id]);
+    expect(await ids(rep, "receivedPayments")).toEqual([CONFIRMS_MINE.id, UNANNOUNCED.id].sort());
     expect(await ids(admin, "receivedPayments")).toEqual([CONFIRMS_MINE.id, CONFIRMS_THEIRS.id, UNANNOUNCED.id].sort());
   });
 
@@ -500,7 +500,41 @@ describe("payments received: a rep's expected payments, the accountant's confirm
     expect((await post(acc, "/sync", { changes: [{ kind: "expectedPayments", id: MINE_DONE.id, deleted: true }] })).status).toBe(403); // the announcement alone: still confirmed
     expect((await post(acc, "/sync", { changes: [{ kind: "receivedPayments", id: CONFIRMS_MINE.id, deleted: true }, { kind: "expectedPayments", id: MINE_DONE.id, deleted: true }] })).status).toBe(200);
     expect(await ids(rep, "expectedPayments")).toEqual([MINE_PENDING.id]);
-    expect(await ids(rep, "receivedPayments")).toEqual([]);
+    expect(await ids(rep, "receivedPayments")).toEqual([UNANNOUNCED.id]);
+  });
+
+  it("a rep claims the unannounced money; every rep reads the claim, only its owner writes it, and the receipt takes one claim", async () => {
+    const { admin, acc, rep, other } = await setup();
+    const claim = { ...expected("xpay-1700000000050-000011", REP, "Juara Trade Fzco"), receivedId: UNANNOUNCED.id };
+    expect((await post(rep, "/sync", { changes: [change("expectedPayments", claim)] })).status).toBe(200);
+    expect(await ids(rep, "expectedPayments")).toEqual([MINE_PENDING.id, MINE_DONE.id, claim.id].sort());
+    expect(await ids(other, "expectedPayments")).toEqual([THEIRS.id, claim.id].sort()); // so the UI can say who claimed it
+    expect((await post(other, "/sync", { changes: [change("expectedPayments", { ...claim, expectedAmount: 1 })] })).status).toBe(403);
+    expect((await post(other, "/sync", { changes: [change("expectedPayments", claim, { deleted: true, data: undefined })] })).status).toBe(403);
+    expect((await post(other, "/sync", { changes: [change("expectedPayments", { ...expected("xpay-1700000000050-000012", OTHER, "Mary"), receivedId: UNANNOUNCED.id })] })).status).toBe(403); // claimed already
+    expect((await post(rep, "/sync", { changes: [change("expectedPayments", { ...expected("xpay-1700000000050-000013", REP, "x"), receivedId: "rpay-1700000000050-gone" })] })).status).toBe(403);
+    expect((await post(rep, "/sync", { changes: [change("expectedPayments", { ...expected("xpay-1700000000050-000013", REP, "x"), receivedId: CONFIRMS_THEIRS.id })] })).status).toBe(403); // confirmed elsewhere
+    const loose = received("rpay-1700000000050-000007", "", 100);
+    expect((await post(acc, "/sync", { changes: [change("receivedPayments", loose)] })).status).toBe(200);
+    expect((await post(rep, "/sync", { changes: [
+      change("expectedPayments", { ...expected("xpay-1700000000050-000013", REP, "x"), receivedId: loose.id }),
+      change("expectedPayments", { ...expected("xpay-1700000000050-000014", REP, "y"), receivedId: loose.id }),
+    ] })).status).toBe(403); // twice in one batch
+    expect(await ids(admin, "expectedPayments")).toEqual([MINE_PENDING.id, MINE_DONE.id, THEIRS.id, claim.id].sort());
+    expect((await post(rep, "/sync", { changes: [change("expectedPayments", { ...claim, expectedAmount: 592 })] })).status).toBe(200); // one's own claim stays editable
+  });
+
+  it("the accountant confirms a claim: the receipt leaves the other reps' view, the claim locks, and undo opens both again", async () => {
+    const { acc, rep, other } = await setup();
+    const claim = { ...expected("xpay-1700000000050-000011", REP, "Juara Trade Fzco"), receivedId: UNANNOUNCED.id };
+    expect((await post(rep, "/sync", { changes: [change("expectedPayments", claim)] })).status).toBe(200);
+    expect((await post(acc, "/sync", { changes: [change("receivedPayments", { ...UNANNOUNCED, expectedId: claim.id })] })).status).toBe(200);
+    expect(await ids(rep, "receivedPayments")).toEqual([CONFIRMS_MINE.id, UNANNOUNCED.id].sort());
+    expect(await ids(other, "receivedPayments")).toEqual([CONFIRMS_THEIRS.id]); // confirmed for someone else
+    expect((await post(rep, "/sync", { changes: [change("expectedPayments", { ...claim, expectedAmount: 1 })] })).status).toBe(403); // confirmed: locked
+    expect((await post(acc, "/sync", { changes: [change("receivedPayments", UNANNOUNCED)] })).status).toBe(200); // undone: unannounced again
+    expect(await ids(other, "receivedPayments")).toEqual([CONFIRMS_THEIRS.id, UNANNOUNCED.id].sort());
+    expect((await post(rep, "/sync", { changes: [change("expectedPayments", { ...claim, expectedAmount: 1 })] })).status).toBe(200);
   });
 
   it("a confirmation needs an expected payment that exists and has no confirmation yet", async () => {
